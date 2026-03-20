@@ -18,6 +18,16 @@
 - **Character System** — Custom GIF animations, pair different agents with different characters
 - **Menu Bar Only** — No dock icon, runs as a status bar tray app
 
+## Install
+
+One-line install (recommended):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash
+```
+
+Or download the DMG manually from [Releases](https://github.com/rainnoon/oc-claw/releases). After installing, run `xattr -cr /Applications/oc-claw.app` in Terminal to bypass macOS Gatekeeper (the app is not signed with an Apple Developer certificate).
+
 ## Tech Stack
 
 - **Tauri v2** + **React** + **TypeScript**

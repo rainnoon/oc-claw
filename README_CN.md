@@ -18,6 +18,16 @@
 - **角色系统** — 自定义角色 GIF 动画，将不同 agent 配对不同角色
 - **纯状态栏应用** — 不占用程序坞，仅在菜单栏显示托盘图标
 
+## 安装
+
+一键安装（推荐）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash
+```
+
+或从 [Releases](https://github.com/rainnoon/oc-claw/releases) 手动下载 DMG。安装后需在终端运行 `xattr -cr /Applications/oc-claw.app` 解除 macOS 安全限制（应用未经 Apple 开发者签名）。
+
 ## 技术栈
 
 - **Tauri v2** + **React** + **TypeScript**
