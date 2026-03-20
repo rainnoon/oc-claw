@@ -1,10 +1,13 @@
-<img src="icon.png" width="80" />
-
-# OC-Claw
-
-[English](./README.md) | **中文**
-
-一个 macOS 菜单栏桌宠应用，实时监控你的 AI 编程 agent 工作状态。
+<p align="center">
+  <img src="icon.png" width="80" />
+</p>
+<h1 align="center">OC-Claw</h1>
+<p align="center">
+  <a href="./README.md">English</a> | <b>中文</b>
+</p>
+<p align="center">
+  一个 macOS 菜单栏桌宠应用，实时监控你的 AI 编程 agent 工作状态。
+</p>
 
 ## 功能
 

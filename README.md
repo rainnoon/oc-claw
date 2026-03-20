@@ -1,10 +1,13 @@
-<img src="icon.png" width="80" />
-
-# OC-Claw
-
-**English** | [中文](./README_CN.md)
-
-A macOS menu bar desktop pet that monitors your AI coding agents in real time.
+<p align="center">
+  <img src="icon.png" width="80" />
+</p>
+<h1 align="center">OC-Claw</h1>
+<p align="center">
+  <b>English</b> | <a href="./README_CN.md">中文</a>
+</p>
+<p align="center">
+  A macOS menu bar desktop pet that monitors your AI coding agents in real time.
+</p>
 
 ## Features
 
