@@ -345,6 +345,7 @@ export default function Mini() {
   const [bobPhase, setBobPhase] = useState(0)
   const [allSessions, setAllSessions] = useState<MiniSessionInfo[]>([])
   const [anySessionActive, setAnySessionActive] = useState(false)
+  const dismissedSessionsRef = useRef<Map<string, number>>(new Map())
 
   // Agent detail
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
@@ -444,8 +445,16 @@ export default function Mini() {
         } catch { /* ignore */ }
       })
     )
-    results.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
-    setAllSessions(results)
+    const filtered = results.filter(s => {
+      const key = `${s.agentId}:${s.key}`
+      const dismissedAt = dismissedSessionsRef.current.get(key)
+      if (dismissedAt !== undefined && s.updatedAt > dismissedAt) {
+        dismissedSessionsRef.current.delete(key)
+      }
+      return !dismissedSessionsRef.current.has(key)
+    })
+    filtered.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
+    setAllSessions(filtered)
   }, [agents])
 
   useEffect(() => {
@@ -1119,7 +1128,7 @@ export default function Mini() {
                               </div>
                               <button
                                 data-no-drag
-                                onClick={(e) => { e.stopPropagation(); setAllSessions(prev => prev.filter(ss => !(ss.agentId === s.agentId && ss.key === s.key))) }}
+                                onClick={(e) => { e.stopPropagation(); dismissedSessionsRef.current.set(`${s.agentId}:${s.key}`, s.updatedAt); setAllSessions(prev => prev.filter(ss => !(ss.agentId === s.agentId && ss.key === s.key))) }}
                                 style={{
                                   background: 'none', border: 'none', color: 'rgba(255,255,255,0.15)',
                                   fontSize: 14, cursor: 'pointer', padding: '2px 4px', flexShrink: 0,
