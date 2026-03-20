@@ -25,7 +25,7 @@ echo "Downloading..."
 curl -sL "$DMG_URL" -o "$DMG_PATH"
 
 echo "Installing..."
-MOUNT_POINT=$(hdiutil attach "$DMG_PATH" -nobrowse -quiet | tail -1 | awk '{print $3}')
+MOUNT_POINT=$(hdiutil attach "$DMG_PATH" -nobrowse -quiet | tail -1 | sed 's/.*\(\/Volumes\/.*\)/\1/' | xargs)
 
 # Remove old version if exists
 if [ -d "${INSTALL_DIR}/${APP_NAME}.app" ]; then
