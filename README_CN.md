@@ -1,4 +1,6 @@
-# 🐾 OC-Claw
+<img src="icon.png" width="80" />
+
+# OC-Claw
 
 [English](./README.md) | **中文**
 
