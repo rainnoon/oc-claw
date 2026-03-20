@@ -23,7 +23,10 @@
 > [!TIP]
 > **直接丢给你的 AI agent：**
 >
-> *"帮我安装 oc-claw：`curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash`"*
+>
+> ```
+> 帮我安装 oc-claw：curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash
+> ```
 
 > [!NOTE]
 > **或自己在终端运行：**
