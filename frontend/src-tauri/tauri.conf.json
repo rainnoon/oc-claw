@@ -51,6 +51,9 @@
     ],
     "macOS": {
       "infoPlist": "Info.plist"
+    },
+    "resources": {
+      "../public/assets": "assets/"
     }
   }
 }

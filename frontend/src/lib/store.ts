@@ -39,6 +39,22 @@ export async function loadCharacters(): Promise<CharacterMeta[]> {
   }
 
   await store.set('characters', merged)
+
+  // Clean up stale pairings that reference removed characters
+  const validNames = new Set(merged.map((c) => c.name))
+  const charMap = ((await store.get('agent_char_map')) as Record<string, string>) || {}
+  let mapDirty = false
+  for (const [k, v] of Object.entries(charMap)) {
+    if (v && !validNames.has(v)) { charMap[k] = 'default'; mapDirty = true }
+  }
+  if (mapDirty) await store.set('agent_char_map', charMap)
+
+  const claudeChar = (await store.get('claude_char')) as string
+  if (claudeChar && !validNames.has(claudeChar)) await store.set('claude_char', 'default')
+
+  const miniChar = (await store.get('mini_character')) as string
+  if (miniChar && !validNames.has(miniChar)) await store.set('mini_character', 'default')
+
   await store.save()
 
   return merged
