@@ -1002,25 +1002,6 @@ async fn interrupt_agent(agent_id: String, state: tauri::State<'_, ActiveAgentPi
     }
 }
 
-#[tauri::command]
-async fn open_room(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("room") {
-        win.show().map_err(|e| e.to_string())?;
-        win.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    WebviewWindowBuilder::new(&app, "room", WebviewUrl::App("index.html#/room".into()))
-        .title("ooclaw - Room")
-        .inner_size(800.0, 500.0)
-        .decorations(true)
-        .resizable(true)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DailyCount {
@@ -2198,42 +2179,16 @@ pub fn run() {
                 )?;
             }
 
-            // Set dock icon from app icons
+            // Hide from Dock, show only in menu bar
             #[cfg(target_os = "macos")]
             {
                 use objc2::runtime::{AnyClass, AnyObject};
                 use objc2::msg_send;
-                // Try multiple paths: resource_dir (production) and src-tauri/icons (dev)
-                let mut icon_path = None;
-                if let Ok(rd) = app.path().resource_dir() {
-                    let p = rd.join("icons/icon.png");
-                    if p.exists() { icon_path = Some(p); }
-                }
-                if icon_path.is_none() {
-                    // Dev mode: icons are relative to the Cargo.toml directory
-                    let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons/icon.png");
-                    if dev_path.exists() { icon_path = Some(dev_path); }
-                }
-                if let Some(path) = icon_path {
-                    log::info!("[dock-icon] loading from: {:?}", path);
-                    let c_str = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
-                    unsafe {
-                        let ns_string_cls = AnyClass::get(c"NSString").unwrap();
-                        let path_ns: *mut AnyObject = msg_send![ns_string_cls, stringWithUTF8String: c_str.as_ptr()];
-                        let ns_image_cls = AnyClass::get(c"NSImage").unwrap();
-                        let image: *mut AnyObject = msg_send![ns_image_cls, alloc];
-                        let image: *mut AnyObject = msg_send![image, initByReferencingFile: path_ns];
-                        if !image.is_null() {
-                            let ns_app_cls = AnyClass::get(c"NSApplication").unwrap();
-                            let ns_app: *mut AnyObject = msg_send![ns_app_cls, sharedApplication];
-                            let _: () = msg_send![ns_app, setApplicationIconImage: image];
-                            log::info!("[dock-icon] set successfully");
-                        } else {
-                            log::warn!("[dock-icon] NSImage init failed");
-                        }
-                    }
-                } else {
-                    log::warn!("[dock-icon] icon.png not found");
+                unsafe {
+                    let ns_app_cls = AnyClass::get(c"NSApplication").unwrap();
+                    let ns_app: *mut AnyObject = msg_send![ns_app_cls, sharedApplication];
+                    // NSApplicationActivationPolicyAccessory = 1
+                    let _: () = msg_send![ns_app, setActivationPolicy: 1i64];
                 }
             }
 
@@ -2296,9 +2251,8 @@ pub fn run() {
             // System tray
             let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "隐藏", true, None::<&str>)?;
-            let room = MenuItem::with_id(app, "room", "房间模式", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &hide, &room, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -2315,12 +2269,6 @@ pub fn run() {
                             let _ = win.hide();
                         }
                     }
-                    "room" => {
-                        let handle = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = open_room(handle).await;
-                        });
-                    }
                     "quit" => {
                         app.exit(0);
                     }
@@ -2330,7 +2278,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_room, open_mini, close_mini, set_mini_expanded, set_mini_size, get_agent_sessions, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, get_agent_sessions, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
