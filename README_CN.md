@@ -20,9 +20,10 @@
 
 ## 安装
 
-**直接丢给你的 AI agent：**
-
-> 帮我安装 oc-claw：`curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash`
+> [!TIP]
+> **直接丢给你的 AI agent：**
+>
+> *"帮我安装 oc-claw：`curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash`"*
 
 或自己在终端运行：
 

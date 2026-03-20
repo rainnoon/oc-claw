@@ -20,9 +20,10 @@
 
 ## Install
 
-**Just tell your AI agent:**
-
-> Install oc-claw: `curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash`
+> [!TIP]
+> **Just tell your AI agent:**
+>
+> *"Install oc-claw: `curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash`"*
 
 Or run it yourself in Terminal:
 
