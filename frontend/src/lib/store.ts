@@ -7,14 +7,14 @@ export async function getStore() {
   return load('settings.json', { defaults: {}, autoSave: true })
 }
 
-export const DEFAULT_KELI: CharacterMeta = {
-  name: 'keli',
+export const DEFAULT_CHAR: CharacterMeta = {
+  name: 'default',
   workGifs: [],
   restGifs: [],
   miniActions: {
     top: [
-      '/assets/keli/mini/top/sleep.gif',
-      '/assets/keli/mini/top/work.gif',
+      '/assets/default/mini/top/sleep.gif',
+      '/assets/default/mini/top/work.gif',
     ],
   },
 }
@@ -31,10 +31,10 @@ export async function loadCharacters(): Promise<CharacterMeta[]> {
     console.warn('[loadCharacters] scan_characters failed:', e)
   }
 
-  const scannedKeli = scanned.find((sc) => sc.name === 'keli')
-  const merged: CharacterMeta[] = [scannedKeli ? { ...DEFAULT_KELI, ...scannedKeli } : DEFAULT_KELI]
+  const scannedDefault = scanned.find((sc) => sc.name === 'default')
+  const merged: CharacterMeta[] = [scannedDefault ? { ...DEFAULT_CHAR, ...scannedDefault } : DEFAULT_CHAR]
   for (const sc of scanned) {
-    if (sc.name === 'keli') continue
+    if (sc.name === 'default') continue
     merged.push(sc)
   }
 
@@ -53,7 +53,7 @@ export async function saveCharacters(chars: CharacterMeta[]) {
 
 export async function getActiveCharacter(): Promise<string> {
   const store = await getStore()
-  return ((await store.get('active_character')) as string) || 'keli'
+  return ((await store.get('active_character')) as string) || 'default'
 }
 
 export async function setActiveCharacter(name: string) {

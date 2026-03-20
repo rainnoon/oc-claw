@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ChevronDown, Check, Image as ImageIcon, Loader2 } from 'lucide-react'
+import { Image as ImageIcon, Loader2 } from 'lucide-react'
 import {
   sliceSprite, groupFramesByRow, applyChromaKey, drawFrameWithOffset,
   type Offset,
@@ -37,7 +37,7 @@ function AnimPreview({ frames, offsets, fps, size = 80 }: {
   return <canvas ref={canvasRef} style={{ width: size, height: size, imageRendering: 'pixelated', borderRadius: 6, background: 'repeating-conic-gradient(#eee 0% 25%, #fff 0% 50%) 0 0 / 12px 12px' }} />
 }
 
-export function GifMakerTab({ onBack }: { onBack: () => void }) {
+export function GifMakerTab() {
   const [charName, setCharName] = useState('')
   const [pipelineId, setPipelineId] = useState<string | null>(null)
   const [pipelines, setPipelines] = useState<PipelineConfig[]>([])
@@ -366,7 +366,6 @@ export function GifMakerTab({ onBack }: { onBack: () => void }) {
               idx={idx}
               pipeline={pipeline}
               fps={fps}
-              charName={charName}
               onUpdate={updateItem}
               onRetry={(i) => pipeline && generateOne(i, pipeline)}
               onUpload={(i, file) => pipeline && uploadSpriteSheet(i, file, pipeline)}
@@ -382,9 +381,9 @@ export function GifMakerTab({ onBack }: { onBack: () => void }) {
 
 // ─── Pipeline Card ───
 
-function PipelineCard({ item, idx, pipeline, fps, charName, onUpdate, onRetry, onUpload, onSaveItem, onSaveRow }: {
+function PipelineCard({ item, idx, pipeline, fps, onUpdate, onRetry, onUpload, onSaveItem, onSaveRow }: {
   item: PipelineItem; idx: number; pipeline: PipelineConfig | null
-  fps: number; charName: string
+  fps: number
   onUpdate: (idx: number, patch: Partial<PipelineItem>) => void; onRetry: (idx: number) => void
   onUpload: (idx: number, file: File) => void
   onSaveItem: (idx: number) => void; onSaveRow: (idx: number, ri: number) => void
@@ -572,61 +571,3 @@ function PipelineCard({ item, idx, pipeline, fps, charName, onUpdate, onRetry, o
   )
 }
 
-// ─── Custom Select Dropdown ───
-
-function CustomSelect({ value, onChange, placeholder, options }: {
-  value: string
-  onChange: (value: string) => void
-  placeholder: string
-  options: { value: string; label: string; desc?: string }[]
-}) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const onClickOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onClickOutside)
-    return () => document.removeEventListener('mousedown', onClickOutside)
-  }, [])
-
-  const selected = options.find((o) => o.value === value)
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-left cursor-pointer hover:bg-gray-100 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-900/10 focus:border-gray-900"
-      >
-        <span className={selected ? 'text-gray-900 font-medium truncate' : 'text-gray-400 truncate'}>
-          {selected ? selected.label : placeholder}
-        </span>
-        <ChevronDown size={16} className={`text-gray-400 shrink-0 ml-2 transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-
-      {open && (
-        <div className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-gray-200 rounded-xl shadow-lg z-20 py-1.5 max-h-60 overflow-y-auto">
-          {options.map((opt) => {
-            const isSelected = opt.value === value
-            return (
-              <button
-                key={opt.value}
-                onClick={() => { onChange(opt.value); setOpen(false) }}
-                className={`w-full flex items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
-                  isSelected ? 'bg-gray-50 text-gray-900' : 'text-gray-700 hover:bg-gray-50'
-                }`}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className={`truncate ${isSelected ? 'font-medium' : ''}`}>{opt.label}</span>
-                  {opt.desc && <span className="text-gray-400 text-xs shrink-0">{opt.desc}</span>}
-                </div>
-                {isSelected && <Check size={14} className="text-emerald-500 shrink-0" />}
-              </button>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}

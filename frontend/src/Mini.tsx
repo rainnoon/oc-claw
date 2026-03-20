@@ -3,10 +3,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { PlusSquare, Settings as SettingsIcon } from 'lucide-react'
 import { GifMakerTab } from './components/GifMakerTab'
 import { SettingsTab } from './components/SettingsTab'
-import { getStore } from './lib/store'
+import { getStore, DEFAULT_CHAR } from './lib/store'
 import { formatTokens, formatTime, formatDuration, saveAgentCharMap } from './lib/agents'
 import type { AgentMetrics } from './lib/types'
 
@@ -51,9 +50,10 @@ interface SessionSlot {
 const MAX_SLOTS = 10
 
 function getMiniGif(char: CharacterMeta | undefined, isWorking: boolean, useTop = false): string | undefined {
-  if (!char?.miniActions) return undefined
-  if (useTop && char.miniActions['top']?.length) {
-    const topGifs = char.miniActions['top']
+  const c = (char?.miniActions && Object.values(char.miniActions).flat().length > 0) ? char : DEFAULT_CHAR
+  if (!c?.miniActions) return undefined
+  if (useTop && c.miniActions['top']?.length) {
+    const topGifs = c.miniActions['top']
     if (isWorking) {
       const work = topGifs.find((g) => g.includes('work'))
       if (work) return work
@@ -62,7 +62,7 @@ function getMiniGif(char: CharacterMeta | undefined, isWorking: boolean, useTop 
     if (sleep) return sleep
     return topGifs[0]
   }
-  const allGifs = Object.values(char.miniActions).flat()
+  const allGifs = Object.values(c.miniActions).flat()
   if (allGifs.length === 0) return undefined
   const idleGifs = allGifs.filter((g) => g.includes('idle'))
   const actionGifs = allGifs.filter((g) => !g.includes('idle'))
@@ -617,12 +617,12 @@ export default function Mini() {
   const ocSlots: SessionSlot[] = allSessions.slice(0, MAX_SLOTS).map((s, i) => {
     const agent = agents.find(a => a.id === s.agentId) || { id: s.agentId }
     const charName = agentCharMap[s.agentId]
-    const char = characters.find((c) => c.name === charName)
+    const char = characters.find((c) => c.name === charName) || DEFAULT_CHAR
     return { agentId: s.agentId, sessionIdx: i, agent, char, isWorking: s.active }
   })
   const claudeSlots: SessionSlot[] = claudeSessions.map((cs, i) => {
     const isActive = cs.status === 'processing' || cs.status === 'tool_running'
-    const char = characters.find((c) => c.name === claudeCharName)
+    const char = characters.find((c) => c.name === claudeCharName) || DEFAULT_CHAR
     return { agentId: `claude:${cs.sessionId}`, sessionIdx: ocSlots.length + i, agent: { id: `claude:${cs.sessionId}`, identityName: 'Claude', identityEmoji: '🤖' }, char, isWorking: isActive }
   })
   const sessionSlots = [...ocSlots, ...claudeSlots].slice(0, MAX_SLOTS)
@@ -630,7 +630,7 @@ export default function Mini() {
   const expand = useCallback(async () => {
     setHiding(true)
     // Wait for the browser to paint the hidden state before resizing the window
-    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
     await invoke('set_mini_expanded', { expanded: true })
     setHiding(false)
     setExpanded(true)
@@ -739,7 +739,7 @@ export default function Mini() {
 
   const claudeWorking = claudeSessions.some(cs => cs.status === 'processing' || cs.status === 'tool_running')
   const hasWorking = anySessionActive || Object.values(healthMap).some(Boolean) || claudeWorking
-  const miniGif = getMiniGif(miniChar, hasWorking, true)
+  const miniGif = getMiniGif(miniChar ?? undefined, hasWorking, true)
   const inAgentDetail = selectedAgentId !== null
   const selectedAgent = agents.find(a => a.id === selectedAgentId)
 
@@ -923,7 +923,7 @@ export default function Mini() {
             {settingsMode ? (
               <div data-no-drag className="scrollbar-thin" style={{ flex: 1, overflow: 'hidden', margin: 8, marginTop: 0, borderRadius: 12, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
                 <div className="bg-[#fafafa] text-gray-800 font-sans antialiased scrollbar-thin" style={{ borderRadius: '12px 12px 0 0', overflow: 'auto', flex: 1, minHeight: 0 }}>
-                  {settingsNav === 'create' && <GifMakerTab onBack={() => setSettingsNav('create')} />}
+                  {settingsNav === 'create' && <GifMakerTab />}
                   {settingsNav === 'pairing' && (
                     <div className="h-full overflow-y-auto bg-slate-50 p-6 scrollbar-thin">
                       <div className="max-w-2xl mx-auto space-y-4">
