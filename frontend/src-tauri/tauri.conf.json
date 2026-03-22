@@ -32,12 +32,7 @@
     "security": {
       "csp": null
     },
-    "macOSPrivateApi": true,
-    "trayIcon": {
-      "iconPath": "icons/32x32.png",
-      "iconAsTemplate": true,
-      "tooltip": "ooclaw 桌宠"
-    }
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
