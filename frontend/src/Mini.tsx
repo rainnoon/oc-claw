@@ -147,6 +147,31 @@ function VirtualChatList({ messages, accentColor }: { messages: { role: string; 
   )
 }
 
+/** Plays a GIF once, then freezes for `pause` ms, then repeats. */
+function IntervalGif({ src, playMs = 1300, pauseMs = 4000, style, ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { playMs?: number; pauseMs?: number }) {
+  const [playing, setPlaying] = useState(true)
+  const [gifSrc, setGifSrc] = useState(src)
+  useEffect(() => {
+    setPlaying(true)
+    setGifSrc(src)
+  }, [src])
+  useEffect(() => {
+    if (playing) {
+      const t = setTimeout(() => setPlaying(false), playMs)
+      return () => clearTimeout(t)
+    } else {
+      const t = setTimeout(() => {
+        // Force GIF restart by briefly clearing src
+        setGifSrc('')
+        requestAnimationFrame(() => { setGifSrc(src!); setPlaying(true) })
+      }, pauseMs)
+      return () => clearTimeout(t)
+    }
+  }, [playing, src, playMs, pauseMs])
+  if (!playing) return <FrozenImg src={src} style={style} {...props} />
+  return <img src={gifSrc || undefined} alt="mini" style={style} draggable={false} {...props} />
+}
+
 function FrozenImg({ src, style, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
@@ -931,6 +956,9 @@ export default function Mini() {
                 <FrozenImg src={miniGif}
                   style={{ width: 43, height: 43, objectFit: 'contain' }}
                   draggable={false} />
+              ) : mainPetState === 'compacting' ? (
+                <IntervalGif src={miniGif}
+                  style={{ width: 43, height: 43, objectFit: 'contain' }} />
               ) : (
                 <img src={miniGif} alt="mini"
                   style={{ width: 43, height: 43, objectFit: 'contain' }}
