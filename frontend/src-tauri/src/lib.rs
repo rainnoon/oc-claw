@@ -482,17 +482,12 @@ async fn send_chat(message: String, agent_id: String, state: tauri::State<'_, Ac
     Ok(String::new())
 }
 
-fn assets_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    // In dev mode, write to public/assets so vite can serve them.
-    // In production, use resource_dir.
+/// Built-in assets directory (read-only in production).
+fn builtin_assets_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        // exe is in src-tauri/target/debug/ooclaw → go up to frontend/public/assets
         let project_root = exe
-            .parent() // debug
-            .and_then(|p| p.parent()) // target
-            .and_then(|p| p.parent()) // src-tauri
-            .and_then(|p| p.parent()) // frontend
+            .parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent())
             .ok_or("cannot resolve project root")?;
         Ok(project_root.join("public").join("assets"))
     } else {
@@ -500,79 +495,106 @@ fn assets_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 }
 
+/// Custom (user-created) assets directory (always writable).
+fn custom_assets_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if cfg!(debug_assertions) {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let project_root = exe
+            .parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent())
+            .ok_or("cannot resolve project root")?;
+        Ok(project_root.join("public").join("custom_assets"))
+    } else {
+        app.path().app_data_dir().map(|p| p.join("characters")).map_err(|e| e.to_string())
+    }
+}
+
 #[tauri::command]
 async fn scan_characters(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> {
-    let base = assets_dir(&app)?;
     let mut results = vec![];
-    // In dev mode, use /assets/ (served by vite). In production, use localasset:// protocol.
-    let url_prefix = if cfg!(debug_assertions) { "/assets" } else { "localasset://localhost" };
 
-    let entries = std::fs::read_dir(&base).map_err(|e| e.to_string())?;
-    for entry in entries.filter_map(|e| e.ok()) {
-        if !entry.path().is_dir() { continue; }
-        let name = entry.file_name().to_string_lossy().to_string();
+    // Scan a directory and append characters to results
+    fn scan_dir(base: &std::path::Path, url_prefix: &str, builtin: bool, results: &mut Vec<serde_json::Value>) {
+        let entries = match std::fs::read_dir(base) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            if !entry.path().is_dir() { continue; }
+            let name = entry.file_name().to_string_lossy().to_string();
 
-        // Scan pet gifs
-        let mut work_gifs = vec![];
-        let mut rest_gifs = vec![];
-        let mut crawl_gifs = vec![];
-        let mut angry_gifs = vec![];
-        let mut shy_gifs = vec![];
-        let pet_dir = entry.path().join("pet");
-        if pet_dir.exists() {
-            for (subdir, target) in [("work", &mut work_gifs), ("rest", &mut rest_gifs), ("crawl", &mut crawl_gifs), ("angry", &mut angry_gifs), ("shy", &mut shy_gifs)] {
-                if let Ok(files) = std::fs::read_dir(pet_dir.join(subdir)) {
-                    for f in files.filter_map(|f| f.ok()) {
-                        if f.path().extension().map(|e| e == "gif").unwrap_or(false) {
-                            target.push(format!("{}/{}/pet/{}/{}", url_prefix, name, subdir, f.file_name().to_string_lossy()));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Scan mini gifs
-        let mut mini_actions: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-        let mini_dir = entry.path().join("mini");
-        if mini_dir.exists() {
-            if let Ok(cats) = std::fs::read_dir(&mini_dir) {
-                for cat in cats.filter_map(|c| c.ok()) {
-                    if !cat.path().is_dir() { continue; }
-                    let cat_name = cat.file_name().to_string_lossy().to_string();
-                    let mut gifs = vec![];
-                    if let Ok(files) = std::fs::read_dir(cat.path()) {
+            let mut work_gifs = vec![];
+            let mut rest_gifs = vec![];
+            let mut crawl_gifs = vec![];
+            let mut angry_gifs = vec![];
+            let mut shy_gifs = vec![];
+            let pet_dir = entry.path().join("pet");
+            if pet_dir.exists() {
+                for (subdir, target) in [("work", &mut work_gifs), ("rest", &mut rest_gifs), ("crawl", &mut crawl_gifs), ("angry", &mut angry_gifs), ("shy", &mut shy_gifs)] {
+                    if let Ok(files) = std::fs::read_dir(pet_dir.join(subdir)) {
                         for f in files.filter_map(|f| f.ok()) {
                             if f.path().extension().map(|e| e == "gif").unwrap_or(false) {
-                                gifs.push(serde_json::Value::String(
-                                    format!("{}/{}/mini/{}/{}", url_prefix, name, cat_name, f.file_name().to_string_lossy())
-                                ));
+                                target.push(format!("{}/{}/pet/{}/{}", url_prefix, name, subdir, f.file_name().to_string_lossy()));
                             }
                         }
                     }
-                    if !gifs.is_empty() {
-                        mini_actions.insert(cat_name, serde_json::Value::Array(gifs));
+                }
+            }
+
+            let mut mini_actions: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+            let mini_dir = entry.path().join("mini");
+            if mini_dir.exists() {
+                if let Ok(cats) = std::fs::read_dir(&mini_dir) {
+                    for cat in cats.filter_map(|c| c.ok()) {
+                        if !cat.path().is_dir() { continue; }
+                        let cat_name = cat.file_name().to_string_lossy().to_string();
+                        let mut gifs = vec![];
+                        if let Ok(files) = std::fs::read_dir(cat.path()) {
+                            for f in files.filter_map(|f| f.ok()) {
+                                if f.path().extension().map(|e| e == "gif").unwrap_or(false) {
+                                    gifs.push(serde_json::Value::String(
+                                        format!("{}/{}/mini/{}/{}", url_prefix, name, cat_name, f.file_name().to_string_lossy())
+                                    ));
+                                }
+                            }
+                        }
+                        if !gifs.is_empty() {
+                            mini_actions.insert(cat_name, serde_json::Value::Array(gifs));
+                        }
                     }
                 }
             }
-        }
 
-        let mut char_obj = serde_json::Map::new();
-        char_obj.insert("name".into(), serde_json::Value::String(name));
-        char_obj.insert("workGifs".into(), serde_json::Value::Array(work_gifs.into_iter().map(serde_json::Value::String).collect()));
-        char_obj.insert("restGifs".into(), serde_json::Value::Array(rest_gifs.into_iter().map(serde_json::Value::String).collect()));
-        if !crawl_gifs.is_empty() {
-            char_obj.insert("crawlGifs".into(), serde_json::Value::Array(crawl_gifs.into_iter().map(serde_json::Value::String).collect()));
+            let mut char_obj = serde_json::Map::new();
+            char_obj.insert("name".into(), serde_json::Value::String(name));
+            char_obj.insert("builtin".into(), serde_json::Value::Bool(builtin));
+            char_obj.insert("workGifs".into(), serde_json::Value::Array(work_gifs.into_iter().map(serde_json::Value::String).collect()));
+            char_obj.insert("restGifs".into(), serde_json::Value::Array(rest_gifs.into_iter().map(serde_json::Value::String).collect()));
+            if !crawl_gifs.is_empty() {
+                char_obj.insert("crawlGifs".into(), serde_json::Value::Array(crawl_gifs.into_iter().map(serde_json::Value::String).collect()));
+            }
+            if !angry_gifs.is_empty() {
+                char_obj.insert("angryGifs".into(), serde_json::Value::Array(angry_gifs.into_iter().map(serde_json::Value::String).collect()));
+            }
+            if !shy_gifs.is_empty() {
+                char_obj.insert("shyGifs".into(), serde_json::Value::Array(shy_gifs.into_iter().map(serde_json::Value::String).collect()));
+            }
+            if !mini_actions.is_empty() {
+                char_obj.insert("miniActions".into(), serde_json::Value::Object(mini_actions));
+            }
+            results.push(serde_json::Value::Object(char_obj));
         }
-        if !angry_gifs.is_empty() {
-            char_obj.insert("angryGifs".into(), serde_json::Value::Array(angry_gifs.into_iter().map(serde_json::Value::String).collect()));
-        }
-        if !shy_gifs.is_empty() {
-            char_obj.insert("shyGifs".into(), serde_json::Value::Array(shy_gifs.into_iter().map(serde_json::Value::String).collect()));
-        }
-        if !mini_actions.is_empty() {
-            char_obj.insert("miniActions".into(), serde_json::Value::Object(mini_actions));
-        }
-        results.push(serde_json::Value::Object(char_obj));
+    }
+
+    // Scan built-in assets
+    let builtin_prefix = if cfg!(debug_assertions) { "/assets" } else { "localasset://localhost" };
+    if let Ok(builtin_dir) = builtin_assets_dir(&app) {
+        scan_dir(&builtin_dir, builtin_prefix, true, &mut results);
+    }
+
+    // Scan custom assets
+    let custom_prefix = if cfg!(debug_assertions) { "/custom_assets" } else { "customasset://localhost" };
+    if let Ok(custom_dir) = custom_assets_dir(&app) {
+        scan_dir(&custom_dir, custom_prefix, false, &mut results);
     }
 
     Ok(results)
@@ -595,7 +617,7 @@ async fn save_character_gif(
         return Err("invalid file name".into());
     }
 
-    let base = assets_dir(&app)?;
+    let base = custom_assets_dir(&app)?;
     let mut target = base.join(&char_name);
     if !subfolder.is_empty() {
         if subfolder.contains("..") {
@@ -626,10 +648,10 @@ async fn save_character_gif(
 
 #[tauri::command]
 async fn delete_character_assets(app: tauri::AppHandle, name: String) -> Result<(), String> {
-    if name.contains("..") || name.contains('/') || name.contains('\\') || name == "keli" {
-        return Err("invalid or protected name".into());
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err("invalid name".into());
     }
-    let base = assets_dir(&app)?;
+    let base = custom_assets_dir(&app)?;
     let target = base.join(&name);
     if target.exists() {
         tokio::fs::remove_dir_all(&target)
@@ -647,7 +669,7 @@ async fn delete_character_gif(app: tauri::AppHandle, char_name: String, subfolde
     if subfolder.contains("..") || file_name.contains("..") || file_name.contains('/') || file_name.contains('\\') {
         return Err("invalid path".into());
     }
-    let base = assets_dir(&app)?;
+    let base = custom_assets_dir(&app)?;
     let target = base.join(&char_name).join(&subfolder).join(&file_name);
     if target.exists() {
         tokio::fs::remove_file(&target)
@@ -3233,9 +3255,28 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .register_uri_scheme_protocol("localasset", |ctx, req| {
             let path = req.uri().path();
-            // path is like /charname/mini/top/work.gif
             let resource_dir = ctx.app_handle().path().resource_dir().unwrap_or_default();
             let file_path = resource_dir.join("assets").join(path.trim_start_matches('/'));
+            match std::fs::read(&file_path) {
+                Ok(data) => {
+                    let mime = if path.ends_with(".gif") { "image/gif" }
+                        else if path.ends_with(".png") { "image/png" }
+                        else { "application/octet-stream" };
+                    tauri::http::Response::builder()
+                        .header("Content-Type", mime)
+                        .body(data)
+                        .unwrap()
+                }
+                Err(_) => tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap(),
+            }
+        })
+        .register_uri_scheme_protocol("customasset", |ctx, req| {
+            let path = req.uri().path();
+            let data_dir = ctx.app_handle().path().app_data_dir().unwrap_or_default();
+            let file_path = data_dir.join("characters").join(path.trim_start_matches('/'));
             match std::fs::read(&file_path) {
                 Ok(data) => {
                     let mime = if path.ends_with(".gif") { "image/gif" }

@@ -8,6 +8,7 @@ export async function getStore() {
 }
 
 const ASSET_PREFIX = import.meta.env.DEV ? '/assets' : 'localasset://localhost'
+export const CUSTOM_ASSET_PREFIX = import.meta.env.DEV ? '/custom_assets' : 'customasset://localhost'
 
 export const DEFAULT_CHAR: CharacterMeta = {
   name: 'default',
@@ -32,11 +33,6 @@ export async function loadCharacters(): Promise<CharacterMeta[]> {
   } catch (e) {
     console.warn('[loadCharacters] scan_characters failed:', e)
   }
-
-  // Filter out deleted characters
-  const deleted = ((await store.get('deleted_characters')) as string[]) || []
-  const deletedSet = new Set(deleted)
-  scanned = scanned.filter((sc) => !deletedSet.has(sc.name))
 
   const scannedDefault = scanned.find((sc) => sc.name === 'default')
   const merged: CharacterMeta[] = [scannedDefault ? { ...DEFAULT_CHAR, ...scannedDefault } : DEFAULT_CHAR]

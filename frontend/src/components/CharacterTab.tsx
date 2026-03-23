@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ChevronDown, Edit2, X, UploadCloud, Check } from 'lucide-react'
 import type { CharacterMeta, AgentInfo } from '../lib/types'
-import { getStore, loadCharacters, saveCharacters, getActiveCharacter, setActiveCharacter, fileToDataUrl, MINI_CATEGORIES } from '../lib/store'
+import { getStore, loadCharacters, saveCharacters, getActiveCharacter, setActiveCharacter, fileToDataUrl, MINI_CATEGORIES, CUSTOM_ASSET_PREFIX } from '../lib/store'
 
 export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
   const [characters, setCharacters] = useState<CharacterMeta[]>([])
@@ -59,21 +59,15 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
   }
 
   const handleDelete = async (name: string) => {
-    if (name === 'keli' || name === 'default') return
+    const char = characters.find((c) => c.name === name)
+    if (!char || char.builtin) return
     const next = characters.filter((c) => c.name !== name)
     await saveCharacters(next)
     if (active === name) {
-      await setActiveCharacter('keli')
-      setActive('keli')
+      await setActiveCharacter('default')
+      setActive('default')
     }
     setCharacters(next)
-    // Add to deleted list so scan_characters won't resurrect it
-    const store = await getStore()
-    const deleted = ((await store.get('deleted_characters')) as string[]) || []
-    if (!deleted.includes(name)) {
-      await store.set('deleted_characters', [...deleted, name])
-      await store.save()
-    }
     try { await invoke('delete_character_assets', { name }) } catch { /* ignore */ }
   }
 
@@ -138,12 +132,12 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
       for (const f of workFiles) {
         const data = await fileToDataUrl(f)
         await invoke('save_character_gif', { charName: name, fileName: f.name, subfolder: 'pet/work', dataUrl: data })
-        workPaths.push(`/assets/${name}/pet/work/${f.name}`)
+        workPaths.push(`${CUSTOM_ASSET_PREFIX}/${name}/pet/work/${f.name}`)
       }
       for (const f of restFiles) {
         const data = await fileToDataUrl(f)
         await invoke('save_character_gif', { charName: name, fileName: f.name, subfolder: 'pet/rest', dataUrl: data })
-        restPaths.push(`/assets/${name}/pet/rest/${f.name}`)
+        restPaths.push(`${CUSTOM_ASSET_PREFIX}/${name}/pet/rest/${f.name}`)
       }
       let updated: CharacterMeta[]
       if (existing) {
@@ -176,7 +170,7 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
       for (const f of miniFiles) {
         const data = await fileToDataUrl(f)
         await invoke('save_character_gif', { charName: name, fileName: f.name, subfolder: `mini/${cat}`, dataUrl: data })
-        gifPaths.push(`/assets/${name}/mini/${cat}/${f.name}`)
+        gifPaths.push(`${CUSTOM_ASSET_PREFIX}/${name}/mini/${cat}/${f.name}`)
       }
       const existing = characters.find((c) => c.name === name)
       let updated: CharacterMeta[]
@@ -324,7 +318,7 @@ function PetCharacterCard({
           >
             {isEditing ? <>完成</> : <><Edit2 size={12} /> 编辑图片</>}
           </button>
-          {character.name !== 'keli' && (
+          {!character.builtin && (
             <button
               onClick={(e) => { e.stopPropagation(); onDelete() }}
               className="text-gray-400 hover:text-red-500 transition-colors p-1"
@@ -533,7 +527,7 @@ function MiniCharacterCard({ character, isEditing, onDeleteGif, onDeleteCharacte
 }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden relative group">
-      {isEditing && character.name !== 'keli' && (
+      {isEditing && !character.builtin && (
         <button
           onClick={() => onDeleteCharacter()}
           className="absolute top-3 right-3 text-gray-400 hover:text-red-500 z-10 transition-colors"
