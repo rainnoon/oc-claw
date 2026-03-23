@@ -781,14 +781,19 @@ export default function Mini() {
     setTimeout(async () => {
       settingsModeRef.current = false
       setSettingsMode(false)
+      // Hide mascot first to avoid flicker at old position
+      setHiding(true)
       setExpanded(false)
-      // Wait for React to render collapsed state before resizing window
+      // Resize window to collapsed position while hidden
       await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
       if (wasSettings) {
         await invoke('set_mini_size', { restore: true })
       } else {
         await invoke('set_mini_expanded', { expanded: false })
       }
+      // Show mascot at new position
+      await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+      setHiding(false)
     }, 300)
   }, [])
 
