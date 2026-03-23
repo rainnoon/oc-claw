@@ -61,6 +61,7 @@ function VirtualChatList({ messages, accentColor }: { messages: { role: string; 
   const [scrollTop, setScrollTop] = useState(0)
   const [containerH, setContainerH] = useState(524)
   const heightsRef = useRef<Map<number, number>>(new Map())
+  const [, forceUpdate] = useState(0)
   const estimateH = 60
 
   // Auto-scroll to bottom when messages change
@@ -94,6 +95,7 @@ function VirtualChatList({ messages, accentColor }: { messages: { role: string; 
     const h = el.offsetHeight
     if (heightsRef.current.get(idx) !== h) {
       heightsRef.current.set(idx, h)
+      forceUpdate((n) => n + 1)
     }
   }, [])
 

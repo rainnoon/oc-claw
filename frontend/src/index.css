@@ -49,6 +49,16 @@ input, textarea, pre, [contenteditable] {
   margin: 0.4em 0;
   overflow-x: auto;
 }
+.markdown-content pre::-webkit-scrollbar {
+  height: 4px;
+}
+.markdown-content pre::-webkit-scrollbar-track {
+  background: none;
+}
+.markdown-content pre::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+}
 .markdown-content pre code {
   background: none;
   padding: 0;

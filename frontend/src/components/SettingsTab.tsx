@@ -260,16 +260,23 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail, disableSleepAn
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">显示</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4 border-b border-white/5">
+          <div className="flex items-center justify-between p-4">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">关闭睡眠动画</span>
               <span className="text-xs text-white/40">看板娘空闲时显示静态画面</span>
             </div>
             <Toggle checked={disableSleepAnim} onChange={onToggleSleepAnim} />
           </div>
-          <div className="flex items-center justify-between p-4">
+        </div>
+      </section>
+
+      {/* 提示音 */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-white">提示音</h2>
+        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">提示音</span>
+              <span className="text-sm font-medium text-white/90">完成提示音</span>
               <span className="text-xs text-white/40">任务完成时播放的提示音</span>
             </div>
             <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
@@ -284,7 +291,7 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail, disableSleepAn
               ))}
             </div>
           </div>
-          <div className="flex items-center justify-between p-4 border-t border-white/5">
+          <div className="flex items-center justify-between p-4">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">等待时提示音</span>
               <span className="text-xs text-white/40">Claude Code 等待用户确认时播放提示音</span>
