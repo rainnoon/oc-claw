@@ -2767,8 +2767,11 @@ async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>,
 
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let mut messages = Vec::new();
+    let max_messages = 1000;
 
-    for line in content.lines().rev().take(50) {
+    // Scan from end, collecting up to max_messages actual chat messages
+    for line in content.lines().rev() {
+        if messages.len() >= max_messages { break; }
         if line.trim().is_empty() { continue; }
         let parsed: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -2786,7 +2789,10 @@ async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>,
             s.to_string()
         } else if let Some(arr) = parsed.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
             arr.iter()
-                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter(|b| {
+                    let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    t == "text"
+                })
                 .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -2796,6 +2802,7 @@ async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>,
 
         if text.trim().is_empty() { continue; }
         if text.starts_with("<command-name>") || text.starts_with("[Request interrupted") { continue; }
+        if text.starts_with("<task-notification>") || text.starts_with("<local-command") { continue; }
 
         let timestamp = parsed.get("timestamp").and_then(|t| t.as_str()).map(String::from);
         messages.push(ChatMessage { role: role.to_string(), text, timestamp });

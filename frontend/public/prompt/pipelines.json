@@ -101,14 +101,15 @@
     "discardLastFrame": false,
     "presets": [
       {
-        "id": "top-sleep",
-        "name": "Top (Work + Eat)",
-        "description": "5x5 pixel art, rows 1-2 talking/working, rows 3-5 eating/compact (32x32 per cell)",
+        "id": "top-states",
+        "name": "Top (4 States)",
+        "description": "5x5 pixel art, row1 sleep, row2 work, row3 eat/compact, row4 look/wait, row5 unused (32x32 per cell)",
         "promptFile": "/prompt/top/sleep.txt",
         "cols": 5,
         "rows": 5,
         "needsRefImage": true,
-        "rowLabels": ["work-1", "work-2", "compact-1", "compact-2", "compact-3"]
+        "rowLabels": ["sleep", "work", "eat", "look", "unused"],
+        "excludeLastFrameRows": [4]
       }
     ]
   }

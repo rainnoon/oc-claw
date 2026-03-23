@@ -180,6 +180,7 @@ export function GifMakerTab() {
     for (let ri = 0; ri < item.rowGroups.length; ri++) {
       const frames = item.rowGroups[ri]
       if (!frames || frames.length === 0) continue
+      if (item.rowLabels[ri] === 'unused') continue
       const rowOff = item.rowOffsets[ri] || { dx: 0, dy: 0 }
       const combined: Offset = { dx: item.globalOffset.dx + rowOff.dx, dy: item.globalOffset.dy + rowOff.dy }
       const offsets = frames.map(() => combined)
@@ -262,9 +263,9 @@ export function GifMakerTab() {
       const offsets = frames.map(() => combined)
       const blob = await exportGif({ frames, frameOrder: frames.map((_, i) => i), offsets, fps, useOffsets: true })
       let label = item.rowLabels[ri] || `row-${ri}`
-      // For top pipeline: save as work.gif or sleep.gif
-      if (pipeline?.id === 'top') {
-        label = label.startsWith('work') ? 'work' : 'sleep'
+      // For top pipeline: use row label directly (sleep, work, eat, look)
+      if (pipeline?.id === 'top' && label !== 'unused') {
+        // label is already the correct name from rowLabels
       }
       const subfolder = getSubfolder(item)
       await saveGifBlob(blob, label, subfolder)
@@ -595,7 +596,7 @@ function PipelineCard({ item, idx, pipeline, fps, onUpdate, onRetry, onUpload, o
                       </div>
                       <button onClick={() => onSaveRow(idx, ri)} className="bg-gray-900 hover:bg-gray-800 text-white text-[10px] font-medium py-1 px-2.5 rounded-md transition-colors shadow-sm ml-auto shrink-0">
                         {pipeline?.id === 'top'
-                          ? `保存为 ${(item.rowLabels[ri] || '').startsWith('work') ? 'work' : 'sleep'}.gif`
+                          ? `保存为 ${item.rowLabels[ri] || `row-${ri}`}.gif`
                           : '保存'}
                       </button>
                     </div>

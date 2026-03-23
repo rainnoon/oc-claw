@@ -147,9 +147,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
           reader.readAsDataURL(blob)
         })
         let label = row.label
-        if (pipeline.id === 'top') {
-          label = label.startsWith('work') ? 'work' : 'sleep'
-        }
+        if (label === 'unused') continue
         const subfolder = pipeline.id === 'pet'
           ? `pet/${row.label === 'work' ? 'work' : row.label === 'crawl' ? 'crawl' : 'rest'}`
           : pipeline.id === 'top' ? 'mini/top'

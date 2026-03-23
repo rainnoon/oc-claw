@@ -54,7 +54,96 @@ interface SessionSlot {
 
 const MAX_SLOTS = 10
 
-type PetState = 'idle' | 'working' | 'compacting'
+type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
+
+function VirtualChatList({ messages, accentColor }: { messages: { role: string; text: string }[]; accentColor: string }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [containerH, setContainerH] = useState(524)
+  const heightsRef = useRef<Map<number, number>>(new Map())
+  const estimateH = 60
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    const el = containerRef.current
+    if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
+  }, [messages.length])
+
+  const getH = (i: number) => heightsRef.current.get(i) ?? estimateH
+
+  // Compute visible range
+  let totalH = 0
+  const offsets: number[] = []
+  for (let i = 0; i < messages.length; i++) {
+    offsets.push(totalH)
+    totalH += getH(i) + 6 // 6 = gap
+  }
+
+  let startIdx = 0
+  let endIdx = messages.length
+  const buffer = 200
+  for (let i = 0; i < messages.length; i++) {
+    if (offsets[i] + getH(i) >= scrollTop - buffer) { startIdx = i; break }
+  }
+  for (let i = startIdx; i < messages.length; i++) {
+    if (offsets[i] > scrollTop + containerH + buffer) { endIdx = i; break }
+  }
+
+  const measureRef = useCallback((idx: number, el: HTMLDivElement | null) => {
+    if (!el) return
+    const h = el.offsetHeight
+    if (heightsRef.current.get(idx) !== h) {
+      heightsRef.current.set(idx, h)
+    }
+  }, [])
+
+  return (
+    <div
+      ref={(el) => {
+        (containerRef as any).current = el
+        if (el) {
+          const h = el.clientHeight
+          if (h !== containerH) setContainerH(h)
+        }
+      }}
+      className="scrollbar-thin"
+      style={{ maxHeight: 524, overflowY: 'auto', padding: '12px 14px' }}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+    >
+      <div style={{ height: totalH, position: 'relative' }}>
+        {messages.slice(startIdx, endIdx).map((msg, offset) => {
+          const i = startIdx + offset
+          return (
+            <div key={i} ref={(el) => measureRef(i, el)} style={{ position: 'absolute', top: offsets[i], left: 0, right: 0 }}>
+              {msg.role === 'user' ? (
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <div style={{
+                    background: accentColor, borderRadius: 18,
+                    padding: '8px 14px', maxWidth: '80%',
+                    color: '#fff', fontSize: 13, lineHeight: 1.5,
+                    wordBreak: 'break-word', whiteSpace: 'pre-wrap',
+                  }}>
+                    {msg.text.length > 300 ? msg.text.slice(0, 300) + '...' : msg.text}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: accentColor, marginTop: 6, flexShrink: 0 }} />
+                  <div className="markdown-content" style={{
+                    color: '#ddd', fontSize: 13, lineHeight: 1.5,
+                    wordBreak: 'break-word', maxWidth: '90%',
+                  }}>
+                    <ReactMarkdown>{msg.text.length > 500 ? msg.text.slice(0, 500) + '...' : msg.text}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 function FrozenImg({ src, style, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -80,9 +169,14 @@ function getMiniGif(char: CharacterMeta | undefined, petState: PetState | boolea
   if (!c?.miniActions) return undefined
   if (useTop && c.miniActions['top']?.length) {
     const topGifs = c.miniActions['top']
+    // Priority: waiting(look) > compacting(eat) > working > idle(sleep)
+    if (state === 'waiting') {
+      const look = topGifs.find((g) => g.includes('look') || g.includes('wait'))
+      if (look) return look
+    }
     if (state === 'compacting') {
-      const compact = topGifs.find((g) => g.includes('compact'))
-      if (compact) return compact
+      const eat = topGifs.find((g) => g.includes('eat') || g.includes('compact'))
+      if (eat) return eat
     }
     if (state === 'working') {
       const work = topGifs.find((g) => g.includes('work'))
@@ -94,9 +188,13 @@ function getMiniGif(char: CharacterMeta | undefined, petState: PetState | boolea
   }
   const allGifs = Object.values(c.miniActions).flat()
   if (allGifs.length === 0) return undefined
+  if (state === 'waiting') {
+    const lookGifs = allGifs.filter((g) => g.includes('look') || g.includes('wait'))
+    if (lookGifs.length > 0) return lookGifs[0]
+  }
   if (state === 'compacting') {
-    const compactGifs = allGifs.filter((g) => g.includes('compact'))
-    if (compactGifs.length > 0) return compactGifs[0]
+    const eatGifs = allGifs.filter((g) => g.includes('eat') || g.includes('compact'))
+    if (eatGifs.length > 0) return eatGifs[0]
   }
   const idleGifs = allGifs.filter((g) => g.includes('idle'))
   const actionGifs = allGifs.filter((g) => !g.includes('idle'))
@@ -643,10 +741,12 @@ export default function Mini() {
     return { agentId: s.agentId, sessionIdx: i, agent, char, isWorking: s.active }
   })
   const claudeSlots: SessionSlot[] = claudeSessions.map((cs, i) => {
-    const isActive = cs.status === 'processing' || cs.status === 'tool_running'
+    const isWaiting = cs.status === 'waiting'
     const isCompacting = cs.status === 'compacting'
+    const isActive = cs.status === 'processing' || cs.status === 'tool_running'
     const char = characters.find((c) => c.name === claudeCharName) || DEFAULT_CHAR
-    return { agentId: `claude:${cs.sessionId}`, sessionIdx: ocSlots.length + i, agent: { id: `claude:${cs.sessionId}`, identityName: 'Claude', identityEmoji: '🤖' }, char, isWorking: isActive || isCompacting, petState: isCompacting ? 'compacting' as PetState : isActive ? 'working' as PetState : 'idle' as PetState }
+    const petState: PetState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle'
+    return { agentId: `claude:${cs.sessionId}`, sessionIdx: ocSlots.length + i, agent: { id: `claude:${cs.sessionId}`, identityName: 'Claude', identityEmoji: '🤖' }, char, isWorking: isActive || isCompacting || isWaiting, petState }
   })
   const sessionSlots = [...ocSlots, ...claudeSlots].slice(0, MAX_SLOTS)
 
@@ -765,10 +865,12 @@ export default function Mini() {
     return () => window.removeEventListener('focus', onFocus)
   }, [expanded, expand])
 
+  const claudeWaiting = claudeSessions.some(cs => cs.status === 'waiting')
   const claudeCompacting = claudeSessions.some(cs => cs.status === 'compacting')
   const claudeWorking = claudeSessions.some(cs => cs.status === 'processing' || cs.status === 'tool_running')
-  const hasWorking = anySessionActive || Object.values(healthMap).some(Boolean) || claudeWorking || claudeCompacting
-  const mainPetState: PetState = claudeCompacting ? 'compacting' : hasWorking ? 'working' : 'idle'
+  const hasWorking = anySessionActive || Object.values(healthMap).some(Boolean) || claudeWorking || claudeCompacting || claudeWaiting
+  // Priority: waiting > compacting > working > idle
+  const mainPetState: PetState = claudeWaiting ? 'waiting' : claudeCompacting ? 'compacting' : hasWorking ? 'working' : 'idle'
   const bobY = (disableSleepAnim && mainPetState === 'idle') ? 0 : bobYRaw
   const miniGif = getMiniGif(miniChar ?? undefined, mainPetState, true)
   const inAgentDetail = selectedAgentId !== null
@@ -821,7 +923,7 @@ export default function Mini() {
             <div style={{
               position: 'absolute', bottom: 0, right: 0,
               width: 8, height: 8, borderRadius: '50%',
-              background: hasWorking ? '#2ecc71' : '#777',
+              background: mainPetState === 'waiting' ? '#f59e0b' : hasWorking ? '#2ecc71' : '#777',
               border: '1.5px solid rgba(0,0,0,0.3)',
             }} />
           </div>
@@ -1252,6 +1354,7 @@ export default function Mini() {
                           const cs = item.data
                           const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
                           const isActive = item.active
+                          const isWaiting = cs.status === 'waiting'
                           return (
                             <div
                               key={`claude-${cs.sessionId}`}
@@ -1269,9 +1372,9 @@ export default function Mini() {
                             >
                               <div style={{
                                 width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                                background: isActive ? '#3b82f6' : 'rgba(255,255,255,0.15)',
-                                boxShadow: isActive ? '0 0 6px rgba(59,130,246,0.6)' : 'none',
-                                animation: isActive ? 'miniPulse 1.5s ease-in-out infinite' : 'none',
+                                background: isWaiting ? '#f59e0b' : isActive ? '#3b82f6' : 'rgba(255,255,255,0.15)',
+                                boxShadow: isWaiting ? '0 0 6px rgba(245,158,11,0.6)' : isActive ? '0 0 6px rgba(59,130,246,0.6)' : 'none',
+                                animation: (isActive || isWaiting) ? 'miniPulse 1.5s ease-in-out infinite' : 'none',
                               }} />
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 <div style={{
@@ -1288,7 +1391,7 @@ export default function Mini() {
                                   whiteSpace: 'nowrap', lineHeight: 1.5,
                                   marginTop: 1,
                                 }}>
-                                  {cs.tool ? `🔧 ${cs.tool}` : cs.status === 'stopped' ? 'idle' : cs.status === 'processing' ? 'thinking...' : cs.status === 'tool_running' ? 'working...' : cs.status}
+                                  {cs.tool ? `🔧 ${cs.tool}` : cs.status === 'stopped' ? 'idle' : cs.status === 'waiting' ? '⏳ waiting...' : cs.status === 'processing' ? 'thinking...' : cs.status === 'tool_running' ? 'working...' : cs.status === 'compacting' ? 'compacting...' : cs.status}
                                   {cs.userPrompt ? ` · ${cs.userPrompt}` : ''}
                                 </div>
                               </div>
@@ -1318,40 +1421,13 @@ export default function Mini() {
                 initial={{ opacity: 0, x: 30 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -30 }}
-                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
-                className="scrollbar-thin" style={{ maxHeight: 524, overflowY: 'auto', padding: '12px 14px' }}>
+                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}>
                 {sessionMessages.length === 0 ? (
                   <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>
                     loading...
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {sessionMessages.slice(-30).map((msg, i) => (
-                      msg.role === 'user' ? (
-                        <div key={i} style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                          <div style={{
-                            background: '#2ecc71', borderRadius: 18,
-                            padding: '8px 14px', maxWidth: '80%',
-                            color: '#fff', fontSize: 13, lineHeight: 1.5,
-                            wordBreak: 'break-word', whiteSpace: 'pre-wrap',
-                          }}>
-                            {msg.text.length > 300 ? msg.text.slice(0, 300) + '...' : msg.text}
-                          </div>
-                        </div>
-                      ) : (
-                        <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                          <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#2ecc71', marginTop: 6, flexShrink: 0 }} />
-                          <div className="markdown-content" style={{
-                            color: '#ddd', fontSize: 13, lineHeight: 1.5,
-                            wordBreak: 'break-word',
-                            maxWidth: '90%',
-                          }}>
-                            <ReactMarkdown>{msg.text.length > 500 ? msg.text.slice(0, 500) + '...' : msg.text}</ReactMarkdown>
-                          </div>
-                        </div>
-                      )
-                    ))}
-                  </div>
+                  <VirtualChatList messages={sessionMessages} accentColor="#2ecc71" />
                 )}
               </motion.div>
             ) : selectedClaudeSession ? (
@@ -1360,40 +1436,13 @@ export default function Mini() {
                 initial={{ opacity: 0, x: 30 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -30 }}
-                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
-                className="scrollbar-thin" style={{ maxHeight: 524, overflowY: 'auto', padding: '12px 14px' }}>
+                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}>
                 {claudeConversation.length === 0 ? (
                   <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>
                     loading...
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {claudeConversation.slice(-20).map((msg, i) => (
-                      msg.role === 'user' ? (
-                        <div key={i} style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                          <div style={{
-                            background: '#007AFF', borderRadius: 18,
-                            padding: '8px 14px', maxWidth: '80%',
-                            color: '#fff', fontSize: 13, lineHeight: 1.5,
-                            wordBreak: 'break-word', whiteSpace: 'pre-wrap',
-                          }}>
-                            {msg.text.length > 300 ? msg.text.slice(0, 300) + '...' : msg.text}
-                          </div>
-                        </div>
-                      ) : (
-                        <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                          <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#007AFF', marginTop: 6, flexShrink: 0 }} />
-                          <div className="markdown-content" style={{
-                            color: '#ddd', fontSize: 13, lineHeight: 1.5,
-                            wordBreak: 'break-word',
-                            maxWidth: '90%',
-                          }}>
-                            <ReactMarkdown>{msg.text.length > 500 ? msg.text.slice(0, 500) + '...' : msg.text}</ReactMarkdown>
-                          </div>
-                        </div>
-                      )
-                    ))}
-                  </div>
+                  <VirtualChatList messages={claudeConversation} accentColor="#007AFF" />
                 )}
               </motion.div>
             ) : (
