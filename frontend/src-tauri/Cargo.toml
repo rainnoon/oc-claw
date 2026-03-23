@@ -30,3 +30,4 @@ objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSApplic
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray"] }
 chrono = "0.4"
 dirs = "5"
+notify = { version = "6", default-features = false, features = ["macos_kqueue"] }

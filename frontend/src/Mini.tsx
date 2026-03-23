@@ -908,16 +908,16 @@ export default function Mini() {
             {miniGif ? (
               disableSleepAnim && mainPetState === 'idle' ? (
                 <FrozenImg src={miniGif}
-                  style={{ width: 40, height: 40, objectFit: 'contain' }}
+                  style={{ width: 43, height: 43, objectFit: 'contain' }}
                   draggable={false} />
               ) : (
                 <img src={miniGif} alt="mini"
-                  style={{ width: 40, height: 40, objectFit: 'contain' }}
+                  style={{ width: 43, height: 43, objectFit: 'contain' }}
                   draggable={false} />
               )
             ) : (
               <div style={{
-                width: 40, height: 40, borderRadius: 10,
+                width: 43, height: 43, borderRadius: 10,
                 background: 'rgba(0,0,0,0.3)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 color: '#999', fontSize: 16,

@@ -2642,10 +2642,137 @@ pub struct ClaudeSession {
     pub interactive: bool,
     #[serde(rename = "updatedAt")]
     pub updated_at: u64,
+    /// Derived from Claude's own status field: true when status != "waiting_for_input"
+    #[serde(rename = "isProcessing")]
+    pub is_processing: bool,
 }
 
 struct ClaudeState {
     sessions: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+}
+
+/// Compute the JSONL session file path (matching notchi's ConversationParser.sessionFilePath)
+fn claude_session_file_path(session_id: &str, cwd: &str) -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_default();
+    let project_dir = cwd.replace('/', "-").replace('.', "-");
+    home.join(".claude").join("projects").join(project_dir).join(format!("{}.jsonl", session_id))
+}
+
+/// Check if a JSONL file indicates an interrupted session
+fn check_interrupted(path: &std::path::Path) -> bool {
+    if let Ok(content) = std::fs::read_to_string(path) {
+        // Check last few lines for interruption marker (like notchi's ConversationParser)
+        for line in content.lines().rev().take(20) {
+            if line.contains("\"type\":\"user\"") && line.contains("[Request interrupted by user") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// --- Session File Watcher (matching notchi's NotchiStateMachine) ---
+use notify::{Watcher, RecursiveMode};
+
+/// Global registry of active file watchers, keyed by session ID
+static SESSION_WATCHERS: std::sync::LazyLock<Mutex<HashMap<String, notify::RecommendedWatcher>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Debounce interval matching notchi's syncDebounce (100ms)
+const WATCHER_DEBOUNCE_MS: u64 = 200;
+
+fn start_session_file_watcher(
+    session_id: String,
+    jsonl_path: PathBuf,
+    sessions: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    app: tauri::AppHandle,
+) {
+    // Stop existing watcher for this session
+    stop_session_file_watcher(&session_id);
+
+    let sid = session_id.clone();
+    let path_for_handler = jsonl_path.clone();
+
+    // Record initial file size (to detect compact truncation)
+    let initial_size = std::fs::metadata(&jsonl_path).map(|m| m.len()).unwrap_or(0);
+    let last_size = Arc::new(Mutex::new(initial_size));
+
+    let watcher_result = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+        if let Ok(event) = res {
+            // Only care about modifications
+            if !event.kind.is_modify() { return; }
+
+            let sessions2 = sessions.clone();
+            let app2 = app.clone();
+            let sid2 = sid.clone();
+            let path2 = path_for_handler.clone();
+            let last_size2 = last_size.clone();
+
+            // Debounce: spawn a thread that waits before processing
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(WATCHER_DEBOUNCE_MS));
+
+                let new_size = std::fs::metadata(&path2).map(|m| m.len()).unwrap_or(0);
+                let mut prev = last_size2.lock().unwrap();
+                let file_truncated = new_size < *prev;
+                *prev = new_size;
+
+                let mut sessions_guard = sessions2.lock().unwrap();
+                let session = match sessions_guard.get_mut(&sid2) {
+                    Some(s) => s,
+                    None => return,
+                };
+
+                let mut changed = false;
+
+                // Compact detection: file was rewritten (truncated) while in compacting state
+                if session.status == "compacting" && file_truncated {
+                    log::info!("File watcher: compact done for session {}, file truncated", sid2);
+                    session.status = "stopped".to_string();
+                    session.is_processing = false;
+                    changed = true;
+                }
+
+                // Interruption detection: working but file shows interrupted
+                if !changed && (session.status == "processing" || session.status == "tool_running") {
+                    if check_interrupted(&path2) {
+                        log::info!("File watcher: interrupted session {}", sid2);
+                        session.status = "stopped".to_string();
+                        session.is_processing = false;
+                        changed = true;
+                    }
+                }
+
+                if changed {
+                    session.updated_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                    let _ = app2.emit("claude-session-update", &sid2);
+                    let _ = app2.emit("claude-task-complete", &sid2);
+                }
+            });
+        }
+    });
+
+    match watcher_result {
+        Ok(mut watcher) => {
+            if let Err(e) = watcher.watch(&jsonl_path, RecursiveMode::NonRecursive) {
+                log::error!("Failed to watch session file {:?}: {}", jsonl_path, e);
+                return;
+            }
+            log::info!("Started file watcher for session {} at {:?}", session_id, jsonl_path);
+            SESSION_WATCHERS.lock().unwrap().insert(session_id, watcher);
+        }
+        Err(e) => {
+            log::error!("Failed to create file watcher: {}", e);
+        }
+    }
+}
+
+fn stop_session_file_watcher(session_id: &str) {
+    if let Some(_watcher) = SESSION_WATCHERS.lock().unwrap().remove(session_id) {
+        log::info!("Stopped file watcher for session {}", session_id);
+        // Watcher is dropped, which stops it
+    }
 }
 
 #[tauri::command]
@@ -2835,23 +2962,11 @@ except:
 
 hook_event = input_data.get('hook_event_name', '')
 
-status_map = {
-    'UserPromptSubmit': 'processing',
-    'PreCompact': 'compacting',
-    'SessionStart': 'waiting_for_input',
-    'SessionEnd': 'ended',
-    'PreToolUse': 'tool_running',
-    'PostToolUse': 'processing',
-    'PermissionRequest': 'waiting_for_input',
-    'Stop': 'waiting_for_input',
-    'SubagentStop': 'waiting_for_input',
-}
-
 output = {
     'sessionId': input_data.get('session_id', ''),
     'cwd': input_data.get('cwd', ''),
     'event': hook_event,
-    'status': input_data.get('status', status_map.get(hook_event, 'waiting')),
+    'claudeStatus': input_data.get('status', 'unknown'),
     'interactive': True,
 }
 
@@ -2903,24 +3018,45 @@ except:
         .entry("hooks").or_insert(serde_json::json!({}))
         .as_object_mut().ok_or("hooks not object")?;
 
-    let hook_events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SubagentStop", "PreCompact", "SessionStart", "SessionEnd", "PermissionRequest"];
-    for event in hook_events {
+    // Hook registration configs matching notchi's HookInstaller approach:
+    // - PreToolUse/PostToolUse/PermissionRequest: matcher "*" (match all tools)
+    // - PreCompact: matcher "auto" + "manual" (both compact types)
+    // - Others: no matcher
+    let hook_entry = serde_json::json!([{"type": "command", "command": hook_path_str}]);
+    let without_matcher = vec![serde_json::json!({"hooks": hook_entry})];
+    let with_matcher = vec![serde_json::json!({"matcher": "*", "hooks": hook_entry})];
+    let pre_compact = vec![
+        serde_json::json!({"matcher": "auto", "hooks": hook_entry}),
+        serde_json::json!({"matcher": "manual", "hooks": hook_entry}),
+    ];
+
+    let hook_configs: Vec<(&str, &Vec<serde_json::Value>)> = vec![
+        ("UserPromptSubmit", &without_matcher),
+        ("PreToolUse", &with_matcher),
+        ("PostToolUse", &with_matcher),
+        ("PermissionRequest", &with_matcher),
+        ("PreCompact", &pre_compact),
+        ("Stop", &without_matcher),
+        ("SubagentStop", &without_matcher),
+        ("SessionStart", &without_matcher),
+        ("SessionEnd", &without_matcher),
+    ];
+
+    let has_our_hook = |entry: &serde_json::Value| -> bool {
+        entry.get("command").and_then(|c| c.as_str()) == Some(&hook_path_str)
+        || entry.get("hooks").and_then(|hs| hs.as_array()).map_or(false, |hs| {
+            hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()) == Some(&hook_path_str))
+        })
+    };
+
+    for (event, configs) in hook_configs {
         let event_hooks = hooks.entry(event).or_insert(serde_json::json!([]));
         let arr = event_hooks.as_array_mut().ok_or("not array")?;
-        let already = arr.iter().any(|h| {
-            // Check both formats: direct command or nested hooks array
-            h.get("command").and_then(|c| c.as_str()) == Some(&hook_path_str)
-            || h.get("hooks").and_then(|hs| hs.as_array()).map_or(false, |hs| {
-                hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()) == Some(&hook_path_str))
-            })
-        });
+        let already = arr.iter().any(|h| has_our_hook(h));
         if !already {
-            arr.push(serde_json::json!({
-                "hooks": [{
-                    "type": "command",
-                    "command": hook_path_str
-                }]
-            }));
+            for config in configs {
+                arr.push(config.clone());
+            }
         }
     }
 
@@ -2955,29 +3091,41 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
                             if session_id.is_empty() { return; }
 
                             let hook_event = event.get("event").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let raw_status = event.get("status").and_then(|v| v.as_str()).unwrap_or("waiting").to_string();
+                            let claude_status = event.get("claudeStatus").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
 
-                            // Event-based state determination (matching notchi's SessionStore.process)
-                            let status = match hook_event.as_str() {
+                            // Matching notchi's SessionStore.process:
+                            // isProcessing is derived from Claude's own status field
+                            let is_processing = claude_status != "waiting_for_input";
+
+                            // Event-based task determination (matching notchi's SessionStore.process)
+                            let mut status = match hook_event.as_str() {
+                                "UserPromptSubmit" => "processing".to_string(),
+                                "PreCompact" => "compacting".to_string(),
+                                "PreToolUse" => "tool_running".to_string(),
+                                "PostToolUse" => "processing".to_string(),
                                 "Stop" | "SubagentStop" => "stopped".to_string(),
                                 "SessionEnd" => "ended".to_string(),
                                 "PermissionRequest" => "waiting".to_string(),
+                                "SessionStart" => {
+                                    if is_processing { "processing".to_string() } else { "stopped".to_string() }
+                                }
                                 _ => {
-                                    // For other events, use the status but treat waiting_for_input as idle
-                                    if raw_status == "waiting_for_input" {
-                                        "waiting".to_string()
-                                    } else {
-                                        raw_status.clone()
-                                    }
+                                    if !is_processing { "stopped".to_string() } else { claude_status.clone() }
                                 }
                             };
+
+                            // Notchi default: if Claude reports waiting_for_input,
+                            // any active task should be overridden to idle
+                            if !is_processing && matches!(status.as_str(), "compacting" | "processing" | "tool_running") {
+                                status = "stopped".to_string();
+                            }
 
                             let was_processing;
 
                             {
                                 let mut sessions = state.lock().unwrap();
                                 was_processing = sessions.get(&session_id)
-                                    .map(|s| s.status == "processing" || s.status == "tool_running")
+                                    .map(|s| s.is_processing)
                                     .unwrap_or(false);
 
                                 // SessionEnd: remove session entirely
@@ -2993,9 +3141,11 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
                                         user_prompt: None,
                                         interactive: true,
                                         updated_at: 0,
+                                        is_processing: false,
                                     });
 
                                     session.status = status.clone();
+                                    session.is_processing = is_processing;
                                     session.cwd = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                     session.interactive = event.get("interactive").and_then(|v| v.as_bool()).unwrap_or(true);
                                     session.updated_at = std::time::SystemTime::now()
@@ -3025,6 +3175,23 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
                             // If transitioned from processing to stopped/waiting, emit completion
                             if was_processing && (status == "stopped" || status == "waiting" || status == "ended") {
                                 let _ = app.emit("claude-task-complete", &session_id);
+                            }
+
+                            // File watcher: start on UserPromptSubmit, stop on Stop/SessionEnd
+                            // (matching notchi's NotchiStateMachine approach)
+                            let cwd_str = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            if hook_event == "UserPromptSubmit" && !cwd_str.is_empty() {
+                                let jsonl_path = claude_session_file_path(&session_id, &cwd_str);
+                                if jsonl_path.exists() {
+                                    start_session_file_watcher(
+                                        session_id.clone(),
+                                        jsonl_path,
+                                        state.clone(),
+                                        app.clone(),
+                                    );
+                                }
+                            } else if hook_event == "Stop" || hook_event == "SubagentStop" || hook_event == "SessionEnd" {
+                                stop_session_file_watcher(&session_id);
                             }
                         }
                     });
