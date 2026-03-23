@@ -818,7 +818,7 @@ export default function Mini() {
             : '0 2px 8px rgba(0,0,0,0.3)',
           transition: showPanel
             ? 'width 0.35s cubic-bezier(0.16, 1, 0.3, 1), max-height 0.35s cubic-bezier(0.16, 1, 0.3, 1), border-radius 0.35s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease'
-            : 'width 0.3s cubic-bezier(0.25, 0.1, 0.25, 1), max-height 0.3s cubic-bezier(0.25, 0.1, 0.25, 1), border-radius 0.3s cubic-bezier(0.25, 0.1, 0.25, 1), box-shadow 0.25s ease',
+            : 'width 0.3s cubic-bezier(0.25, 0.1, 0.25, 1), max-height 0.2s cubic-bezier(0.25, 0.1, 0.25, 1), border-radius 0.3s cubic-bezier(0.25, 0.1, 0.25, 1), box-shadow 0.25s ease',
         }}>
           <div style={{
             opacity: showPanel ? 1 : 0,
