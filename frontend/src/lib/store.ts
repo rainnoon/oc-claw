@@ -33,6 +33,11 @@ export async function loadCharacters(): Promise<CharacterMeta[]> {
     console.warn('[loadCharacters] scan_characters failed:', e)
   }
 
+  // Filter out deleted characters
+  const deleted = ((await store.get('deleted_characters')) as string[]) || []
+  const deletedSet = new Set(deleted)
+  scanned = scanned.filter((sc) => !deletedSet.has(sc.name))
+
   const scannedDefault = scanned.find((sc) => sc.name === 'default')
   const merged: CharacterMeta[] = [scannedDefault ? { ...DEFAULT_CHAR, ...scannedDefault } : DEFAULT_CHAR]
   for (const sc of scanned) {

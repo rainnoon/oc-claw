@@ -56,68 +56,30 @@ const MAX_SLOTS = 10
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 
-function VirtualChatList({ messages, accentColor }: { messages: { role: string; text: string }[]; accentColor: string }) {
+function ChatList({ messages, accentColor }: { messages: { role: string; text: string }[]; accentColor: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [scrollTop, setScrollTop] = useState(0)
-  const [containerH, setContainerH] = useState(524)
-  const heightsRef = useRef<Map<number, number>>(new Map())
-  const [, forceUpdate] = useState(0)
-  const estimateH = 60
+  const [expandedSet, setExpandedSet] = useState<Set<number>>(new Set())
 
-  // Auto-scroll to bottom when messages change
   useEffect(() => {
     const el = containerRef.current
     if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
   }, [messages.length])
 
-  const getH = (i: number) => heightsRef.current.get(i) ?? estimateH
-
-  // Compute visible range
-  let totalH = 0
-  const offsets: number[] = []
-  for (let i = 0; i < messages.length; i++) {
-    offsets.push(totalH)
-    totalH += getH(i) + 6 // 6 = gap
-  }
-
-  let startIdx = 0
-  let endIdx = messages.length
-  const buffer = 200
-  for (let i = 0; i < messages.length; i++) {
-    if (offsets[i] + getH(i) >= scrollTop - buffer) { startIdx = i; break }
-  }
-  for (let i = startIdx; i < messages.length; i++) {
-    if (offsets[i] > scrollTop + containerH + buffer) { endIdx = i; break }
-  }
-
-  const measureRef = useCallback((idx: number, el: HTMLDivElement | null) => {
-    if (!el) return
-    const h = el.offsetHeight
-    if (heightsRef.current.get(idx) !== h) {
-      heightsRef.current.set(idx, h)
-      forceUpdate((n) => n + 1)
-    }
-  }, [])
+  const toggle = (i: number) => setExpandedSet(prev => { const s = new Set(prev); if (s.has(i)) s.delete(i); else s.add(i); return s })
 
   return (
     <div
-      ref={(el) => {
-        (containerRef as any).current = el
-        if (el) {
-          const h = el.clientHeight
-          if (h !== containerH) setContainerH(h)
-        }
-      }}
-      className="scrollbar-thin"
+      ref={containerRef}
+      className="scrollbar-thin selectable-text"
       style={{ maxHeight: 524, overflowY: 'auto', padding: '12px 14px' }}
-      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
     >
-      <div style={{ height: totalH, position: 'relative' }}>
-        {messages.slice(startIdx, endIdx).map((msg, offset) => {
-          const i = startIdx + offset
-          return (
-            <div key={i} ref={(el) => measureRef(i, el)} style={{ position: 'absolute', top: offsets[i], left: 0, right: 0 }}>
-              {msg.role === 'user' ? (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {messages.map((msg, i) => (
+          <div key={i}>
+            {msg.role === 'user' ? (() => {
+              const limit = 300
+              const truncated = !expandedSet.has(i) && msg.text.length > limit
+              return (
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <div style={{
                     background: accentColor, borderRadius: 18,
@@ -125,23 +87,39 @@ function VirtualChatList({ messages, accentColor }: { messages: { role: string; 
                     color: '#fff', fontSize: 13, lineHeight: 1.5,
                     wordBreak: 'break-word', whiteSpace: 'pre-wrap',
                   }}>
-                    {msg.text.length > 300 ? msg.text.slice(0, 300) + '...' : msg.text}
+                    {truncated ? msg.text.slice(0, limit) + '...' : msg.text}
+                    {(truncated || (expandedSet.has(i) && msg.text.length > limit)) && (
+                      <button onClick={() => toggle(i)}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, width: '100%', marginTop: 4, padding: '2px 0', background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)', fontSize: 11, cursor: 'pointer' }}>
+                        <ChevronDown style={{ width: 12, height: 12, transition: 'transform 0.2s', transform: expandedSet.has(i) ? 'rotate(180deg)' : 'none' }} />
+                      </button>
+                    )}
                   </div>
                 </div>
-              ) : (
+              )
+            })() : (() => {
+              const limit = 500
+              const truncated = !expandedSet.has(i) && msg.text.length > limit
+              return (
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                   <div style={{ width: 5, height: 5, borderRadius: '50%', background: accentColor, marginTop: 6, flexShrink: 0 }} />
                   <div className="markdown-content" style={{
                     color: '#ddd', fontSize: 13, lineHeight: 1.5,
                     wordBreak: 'break-word', maxWidth: '90%',
                   }}>
-                    <ReactMarkdown>{msg.text.length > 500 ? msg.text.slice(0, 500) + '...' : msg.text}</ReactMarkdown>
+                    <ReactMarkdown>{truncated ? msg.text.slice(0, limit) + '...' : msg.text}</ReactMarkdown>
+                    {(truncated || (expandedSet.has(i) && msg.text.length > limit)) && (
+                      <button onClick={() => toggle(i)}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, width: '100%', marginTop: 2, padding: '2px 0', background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', fontSize: 11, cursor: 'pointer' }}>
+                        <ChevronDown style={{ width: 12, height: 12, transition: 'transform 0.2s', transform: expandedSet.has(i) ? 'rotate(180deg)' : 'none' }} />
+                      </button>
+                    )}
                   </div>
                 </div>
-              )}
-            </div>
-          )
-        })}
+              )
+            })()}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -505,6 +483,8 @@ export default function Mini() {
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
+  const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
+  const mascotPositionRef = useRef<'left' | 'right'>('right')
 
   // Settings mode: panel becomes wider, shows settings content
   const [settingsMode, setSettingsMode] = useState(false)
@@ -672,6 +652,8 @@ export default function Mini() {
       if (typeof ws === 'boolean') setWaitingSound(ws)
       const dsa = await store.get('disable_sleep_anim')
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
+      const mp = await store.get('mascot_position') as string
+      if (mp === 'left' || mp === 'right') { setMascotPosition(mp); mascotPositionRef.current = mp }
       const ccChar = ((await store.get('claude_char')) as string) || 'default'
       setClaudeCharName(ccChar)
     })()
@@ -795,7 +777,7 @@ export default function Mini() {
     setHiding(true)
     // Wait for the browser to paint the hidden state before resizing the window
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
-    await invoke('set_mini_expanded', { expanded: true })
+    await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current })
     setHiding(false)
     setExpanded(true)
     requestAnimationFrame(() => {
@@ -819,9 +801,9 @@ export default function Mini() {
       // Resize window to collapsed position while hidden
       await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
       if (wasSettings) {
-        await invoke('set_mini_size', { restore: true })
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
       } else {
-        await invoke('set_mini_expanded', { expanded: false })
+        await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current })
       }
       // Show mascot at new position
       await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
@@ -838,7 +820,7 @@ export default function Mini() {
     setTimeout(async () => {
       settingsModeRef.current = true
       setSettingsMode(true)
-      try { await invoke('set_mini_size', { restore: false }) } catch {}
+      try { await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current }) } catch {}
       requestAnimationFrame(() => {
         requestAnimationFrame(() => setShowPanel(true))
       })
@@ -853,7 +835,7 @@ export default function Mini() {
       settingsModeRef.current = false
       setSettingsMode(false)
       setSettingsNav('pairing')
-      try { await invoke('set_mini_expanded', { expanded: true }) } catch {}
+      try { await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current }) } catch {}
       requestAnimationFrame(() => {
         requestAnimationFrame(() => setShowPanel(true))
       })
@@ -1219,7 +1201,7 @@ export default function Mini() {
                   )}
                   {settingsNav === 'settings' && (
                     <div className="h-full overflow-y-auto bg-[#151515] scrollbar-thin">
-                      <SettingsTab showWorkDetail={showWorkDetail} onToggleWorkDetail={toggleWorkDetail} disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} notifySound={notifySound} onChangeNotifySound={async (v) => { setNotifySound(v); const store = await getStore(); await store.set('notify_sound', v); await store.save() }} waitingSound={waitingSound} onToggleWaitingSound={async (v) => { setWaitingSound(v); const store = await getStore(); await store.set('waiting_sound', v); await store.save() }} />
+                      <SettingsTab showWorkDetail={showWorkDetail} onToggleWorkDetail={toggleWorkDetail} disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} notifySound={notifySound} onChangeNotifySound={async (v) => { setNotifySound(v); const store = await getStore(); await store.set('notify_sound', v); await store.save() }} waitingSound={waitingSound} onToggleWaitingSound={async (v) => { setWaitingSound(v); const store = await getStore(); await store.set('waiting_sound', v); await store.save() }} mascotPosition={mascotPosition} onChangeMascotPosition={async (v) => { setMascotPosition(v); mascotPositionRef.current = v; const store = await getStore(); await store.set('mascot_position', v); await store.save() }} />
                     </div>
                   )}
                 </div>
@@ -1482,7 +1464,7 @@ export default function Mini() {
                     loading...
                   </div>
                 ) : (
-                  <VirtualChatList messages={sessionMessages} accentColor="#2ecc71" />
+                  <ChatList messages={sessionMessages} accentColor="#2ecc71" />
                 )}
               </motion.div>
             ) : selectedClaudeSession ? (
@@ -1497,7 +1479,7 @@ export default function Mini() {
                     loading...
                   </div>
                 ) : (
-                  <VirtualChatList messages={claudeConversation} accentColor="#007AFF" />
+                  <ChatList messages={claudeConversation} accentColor="#007AFF" />
                 )}
               </motion.div>
             ) : (

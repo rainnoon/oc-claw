@@ -1831,11 +1831,21 @@ async fn close_mini(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Compute collapsed mascot x position based on side preference.
+fn collapsed_x(sx: f64, sw: f64, win_w: f64, position: &str) -> f64 {
+    if position == "left" {
+        sx + sw / 2.0 - 80.0 - win_w
+    } else {
+        sx + sw / 2.0 + 80.0
+    }
+}
+
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
-async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool) -> Result<(), String> {
+async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
+    let pos = position.unwrap_or_else(|| "right".to_string());
 
     #[cfg(target_os = "macos")]
     {
@@ -1879,7 +1889,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool) -> Result<(), 
                     } else {
                         let win_w = 60.0;
                         let win_h = 45.0;
-                        let x = sx + sw / 2.0 + 80.0;
+                        let x = collapsed_x(sx, sw, win_w, &pos);
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
@@ -1897,8 +1907,9 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool) -> Result<(), 
 /// Resize the mini window to 3/4 of screen, centered, with normal window level.
 /// Used for settings panel mode. Pass `restore: true` to go back to mini mode.
 #[tauri::command]
-async fn set_mini_size(app: tauri::AppHandle, restore: bool) -> Result<(), String> {
+async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<String>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
+    let pos = position.unwrap_or_else(|| "right".to_string());
 
     #[cfg(target_os = "macos")]
     {
@@ -1928,10 +1939,10 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool) -> Result<(), Strin
 
                 if let Some((sx, sy, sw, sh)) = screen_frame {
                     if restore {
-                        // Restore to collapsed: small window right of notch
+                        // Restore to collapsed: small window beside notch
                         let win_w = 60.0;
                         let win_h = 45.0;
-                        let x = sx + sw / 2.0 + 80.0;
+                        let x = collapsed_x(sx, sw, win_w, &pos);
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
@@ -3098,11 +3109,23 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
                             // isProcessing is derived from Claude's own status field
                             let is_processing = claude_status != "waiting_for_input";
 
+                            // Local slash commands don't trigger Stop, so treat as idle (matching notchi)
+                            let user_prompt = event.get("userPrompt").and_then(|v| v.as_str()).unwrap_or("");
+                            let is_local_slash = if user_prompt.starts_with('/') {
+                                let cmd = user_prompt.split_whitespace().next().unwrap_or("");
+                                matches!(cmd, "/clear" | "/help" | "/cost" | "/status" | "/vim" | "/fast" | "/model" | "/login" | "/logout")
+                            } else { false };
+
                             // Event-based task determination (matching notchi's SessionStore.process)
                             let mut status = match hook_event.as_str() {
-                                "UserPromptSubmit" => "processing".to_string(),
+                                "UserPromptSubmit" => {
+                                    if is_local_slash { "stopped".to_string() } else { "processing".to_string() }
+                                }
                                 "PreCompact" => "compacting".to_string(),
-                                "PreToolUse" => "tool_running".to_string(),
+                                "PreToolUse" => {
+                                    let tool = event.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                                    if tool == "AskUserQuestion" { "waiting".to_string() } else { "tool_running".to_string() }
+                                }
                                 "PostToolUse" => "processing".to_string(),
                                 "Stop" | "SubagentStop" => "stopped".to_string(),
                                 "SessionEnd" => "ended".to_string(),

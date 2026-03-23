@@ -59,7 +59,7 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
   }
 
   const handleDelete = async (name: string) => {
-    if (name === 'keli') return
+    if (name === 'keli' || name === 'default') return
     const next = characters.filter((c) => c.name !== name)
     await saveCharacters(next)
     if (active === name) {
@@ -67,6 +67,13 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
       setActive('keli')
     }
     setCharacters(next)
+    // Add to deleted list so scan_characters won't resurrect it
+    const store = await getStore()
+    const deleted = ((await store.get('deleted_characters')) as string[]) || []
+    if (!deleted.includes(name)) {
+      await store.set('deleted_characters', [...deleted, name])
+      await store.save()
+    }
     try { await invoke('delete_character_assets', { name }) } catch { /* ignore */ }
   }
 
