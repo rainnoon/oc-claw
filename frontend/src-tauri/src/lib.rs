@@ -2747,7 +2747,8 @@ fn start_session_file_watcher(
                     session.updated_at = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                     let _ = app2.emit("claude-session-update", &sid2);
-                    let _ = app2.emit("claude-task-complete", &sid2);
+                    // Don't emit claude-task-complete here — the Stop hook event
+                    // already emits it. This avoids double sound playback.
                 }
             });
         }
