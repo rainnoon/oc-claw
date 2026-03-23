@@ -207,6 +207,131 @@ async fn is_remote_session_active(url: &str, token: &str, session_key: &str, s: 
     is_session_active(s)
 }
 
+/// Ensure an SSH ControlMaster socket is established (called once, reused by all ssh_exec).
+async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
+    use std::sync::OnceLock;
+    use tokio::sync::Mutex as TokioMutex;
+    static LOCK: OnceLock<TokioMutex<()>> = OnceLock::new();
+    let lock = LOCK.get_or_init(|| TokioMutex::new(()));
+    let _guard = lock.lock().await;
+
+    let control_path = format!("/tmp/oc-claw-ssh-{}@{}:22", ssh_user, ssh_host);
+    if std::path::Path::new(&control_path).exists() { return Ok(()); }
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let key_path = format!("{}/.ssh/id_ed25519", home);
+    let target = format!("{}@{}", ssh_user, ssh_host);
+    let cp = format!("ControlPath={}", control_path);
+    let output = tokio::process::Command::new("ssh")
+        .args([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=10",
+            "-o", "ControlMaster=yes",
+            "-o", &cp,
+            "-o", "ControlPersist=300",
+            "-i", &key_path,
+            "-fN",
+            &target,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("ssh master: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("SSH connection failed (check key auth): {}", stderr));
+    }
+    Ok(())
+}
+
+/// Execute a command on remote host via SSH, reusing ControlMaster socket.
+async fn ssh_exec(ssh_host: &str, ssh_user: &str, cmd: &str) -> Result<String, String> {
+    ensure_ssh_master(ssh_host, ssh_user).await?;
+    let control_path = format!("/tmp/oc-claw-ssh-{}@{}:22", ssh_user, ssh_host);
+    let target = format!("{}@{}", ssh_user, ssh_host);
+    let cp = format!("ControlPath={}", control_path);
+    let output = tokio::process::Command::new("ssh")
+        .args([
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            "-o", &cp,
+            &target,
+            cmd,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("ssh: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ssh cmd failed: {}", stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+async fn ssh_read_file(ssh_host: &str, ssh_user: &str, path: &str) -> Result<String, String> {
+    // Use double quotes so ~ expands, but escape any embedded double quotes
+    let escaped = path.replace('"', r#"\""#);
+    ssh_exec(ssh_host, ssh_user, &format!("cat \"{}\"", escaped)).await
+}
+
+/// Check if an agent is active by reading the tail of the latest .jsonl file via SSH.
+/// If the last message-type entry is a user message (no assistant response yet), agent is working.
+async fn ssh_is_agent_active(ssh_host: &str, ssh_user: &str, agent_id: &str) -> bool {
+    let agent_dir = if agent_id.is_empty() { "main" } else { agent_id };
+    // Read the last 5 lines of the newest .jsonl file
+    let cmd = format!(
+        "f=$(ls -t $HOME/.openclaw/agents/{}/sessions/*.jsonl 2>/dev/null | head -1); [ -f \"$f\" ] && tail -5 \"$f\"",
+        agent_dir
+    );
+    let output = match ssh_exec(ssh_host, ssh_user, &cmd).await {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    // Walk backwards through lines to find the last message entry
+    let mut last_role = "";
+    let mut has_usage = false;
+    for line in output.lines().rev() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val["type"].as_str() == Some("message") {
+                last_role = if val["message"]["role"].as_str() == Some("user") { "user" } else { "assistant" };
+                has_usage = val["message"]["usage"].is_object();
+                break;
+            }
+        }
+    }
+    // user message at the end = agent is processing; assistant with usage = done
+    last_role == "user" || (last_role == "assistant" && !has_usage)
+}
+
+/// Check if a specific session file is active by reading its tail.
+async fn ssh_is_session_file_active(ssh_host: &str, ssh_user: &str, session_file: &str) -> bool {
+    let escaped = session_file.replace('"', r#"\""#);
+    let cmd = format!("tail -5 \"{}\" 2>/dev/null", escaped);
+    let output = match ssh_exec(ssh_host, ssh_user, &cmd).await {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    for line in output.lines().rev() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val["type"].as_str() == Some("message") {
+                let role = val["message"]["role"].as_str().unwrap_or("");
+                let has_usage = val["message"]["usage"].is_object();
+                return role == "user" || (role == "assistant" && !has_usage);
+            }
+        }
+    }
+    false
+}
+
+fn remote_sessions_json_path(agent_id: &str) -> String {
+    let agent_dir = if agent_id.is_empty() { "main" } else { agent_id };
+    format!("$HOME/.openclaw/agents/{}/sessions/sessions.json", agent_dir)
+}
+
 fn sessions_json_path(agent_id: &str) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let agent_dir = if agent_id.is_empty() { "main" } else { agent_id };
@@ -495,7 +620,9 @@ async fn delete_character_gif(app: tauri::AppHandle, char_name: String, subfolde
 }
 
 #[tauri::command]
-async fn get_agents(mode: Option<String>, url: Option<String>, token: Option<String>) -> Result<Vec<AgentInfo>, String> {
+async fn get_agents(mode: Option<String>, url: Option<String>, token: Option<String>, ssh_host: Option<String>, ssh_user: Option<String>) -> Result<Vec<AgentInfo>, String> {
+    let _ = (&ssh_host, &ssh_user);
+    log::info!("[get_agents] mode={:?} url={:?}", mode, url);
     if mode.as_deref() == Some("remote") {
         let url = url.as_deref().unwrap_or("");
         let token = token.as_deref().unwrap_or("");
@@ -550,8 +677,25 @@ async fn get_agents(mode: Option<String>, url: Option<String>, token: Option<Str
 }
 
 #[tauri::command]
-async fn get_health(mode: Option<String>, url: Option<String>, token: Option<String>) -> Result<HealthResult, String> {
+async fn get_health(mode: Option<String>, url: Option<String>, token: Option<String>, ssh_host: Option<String>, ssh_user: Option<String>) -> Result<HealthResult, String> {
+    log::info!("[get_health] mode={:?} ssh_host={:?}", mode, ssh_host);
     if mode.as_deref() == Some("remote") {
+        let sh = ssh_host.as_deref().unwrap_or("");
+        let su = ssh_user.as_deref().unwrap_or("");
+        if !sh.is_empty() && !su.is_empty() {
+            let dirs_output = ssh_exec(sh, su, "ls -1 $HOME/.openclaw/agents/ 2>/dev/null").await.unwrap_or_default();
+            let agent_ids: Vec<String> = dirs_output.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|id| id.trim().to_string())
+                .collect();
+            let mut agents = Vec::new();
+            for id in &agent_ids {
+                let active = ssh_is_agent_active(sh, su, id).await;
+                agents.push(AgentHealth { agent_id: id.clone(), active });
+            }
+            return Ok(HealthResult { agents });
+        }
+        // Gateway API fallback
         let url = url.as_deref().unwrap_or("");
         let token = token.as_deref().unwrap_or("");
         let result = invoke_tool(url, token, "sessions_list", serde_json::json!({"activeMinutes": 5})).await?;
@@ -732,11 +876,195 @@ fn truncate_str(s: &str, max: usize) -> String {
 }
 
 #[tauri::command]
-async fn get_agent_metrics(agent_id: String, mode: Option<String>, url: Option<String>, token: Option<String>) -> Result<AgentMetrics, String> {
+async fn get_agent_metrics(agent_id: String, mode: Option<String>, url: Option<String>, token: Option<String>, ssh_host: Option<String>, ssh_user: Option<String>) -> Result<AgentMetrics, String> {
     if mode.as_deref() == Some("remote") {
+        let sh = ssh_host.as_deref().unwrap_or("");
+        let su = ssh_user.as_deref().unwrap_or("");
+        if !sh.is_empty() && !su.is_empty() {
+            // SSH-based: full local-like metrics via remote file reading
+            let active = ssh_is_agent_active(sh, su, &agent_id).await;
+
+            let mut metrics = AgentMetrics {
+                agent_id: agent_id.clone(),
+                active,
+                current_model: None,
+                thinking_level: None,
+                active_session_count: 0,
+                current_task: None,
+                current_tool: None,
+                total_tokens: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                total_cost: 0.0,
+                tool_calls: vec![],
+                recent_actions: vec![],
+                error_count: 0,
+                message_count: 0,
+                session_start: None,
+                last_activity: None,
+                channel: None,
+            };
+
+            let sess_path = remote_sessions_json_path(&agent_id);
+            let sess_content = match ssh_read_file(sh, su, &sess_path).await {
+                Ok(c) => c,
+                Err(_) => return Ok(metrics),
+            };
+            let sess_map: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&sess_content).unwrap_or_default();
+
+            metrics.active_session_count = sess_map.len();
+
+            let best_entry = sess_map.values()
+                .max_by_key(|v| v["updatedAt"].as_u64().unwrap_or(0));
+            if let Some(entry) = best_entry {
+                metrics.channel = entry["origin"]["surface"].as_str().map(|s| s.to_string());
+                metrics.current_model = entry["model"].as_str().map(|s| s.to_string());
+            }
+
+            let mut best_session: Option<(String, u64)> = None;
+            for val in sess_map.values() {
+                if let (Some(file), Some(updated)) = (val["sessionFile"].as_str(), val["updatedAt"].as_u64()) {
+                    if best_session.as_ref().map_or(true, |(_, t)| updated > *t) {
+                        best_session = Some((file.to_string(), updated));
+                    }
+                }
+            }
+
+            let session_file = match best_session {
+                Some((f, _)) => f,
+                None => return Ok(metrics),
+            };
+
+            let content = match ssh_read_file(sh, su, &session_file).await {
+                Ok(c) => c,
+                Err(_) => return Ok(metrics),
+            };
+
+            let mut tool_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let mut last_user_text: Option<String> = None;
+            let mut last_tool_name: Option<String> = None;
+            let mut last_timestamp: Option<String> = None;
+            let mut recent_actions: Vec<RecentAction> = vec![];
+            let mut current_msg_timestamp: Option<String> = None;
+
+            for line in content.lines() {
+                let val: serde_json::Value = match serde_json::from_str(line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let event_type = val["type"].as_str().unwrap_or("");
+                if let Some(ts) = val["timestamp"].as_str() {
+                    last_timestamp = Some(ts.to_string());
+                }
+                match event_type {
+                    "session" => { metrics.session_start = val["timestamp"].as_str().map(|s| s.to_string()); }
+                    "model_change" => { metrics.current_model = val["modelId"].as_str().map(|s| s.to_string()); }
+                    "thinking_level_change" => { metrics.thinking_level = val["thinkingLevel"].as_str().map(|s| s.to_string()); }
+                    "message" => {
+                        let msg = &val["message"];
+                        let role = msg["role"].as_str().unwrap_or("");
+                        current_msg_timestamp = val["timestamp"].as_str().map(|s| s.to_string());
+                        if role == "user" {
+                            if let Some(content_arr) = msg["content"].as_array() {
+                                for item in content_arr {
+                                    if item["type"].as_str() == Some("text") {
+                                        if let Some(text) = item["text"].as_str() {
+                                            last_user_text = extract_user_message(text);
+                                        }
+                                    }
+                                }
+                            }
+                            metrics.message_count += 1;
+                        } else if role == "assistant" {
+                            if let Some(usage) = msg["usage"].as_object() {
+                                metrics.input_tokens += usage.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
+                                metrics.output_tokens += usage.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
+                                metrics.cache_read_tokens += usage.get("cacheRead").and_then(|v| v.as_u64()).unwrap_or(0);
+                                metrics.cache_write_tokens += usage.get("cacheWrite").and_then(|v| v.as_u64()).unwrap_or(0);
+                                metrics.total_tokens += usage.get("totalTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                if let Some(cost) = usage.get("cost").and_then(|c| c["total"].as_f64()) {
+                                    metrics.total_cost += cost;
+                                }
+                            }
+                            if let Some(content_arr) = msg["content"].as_array() {
+                                for item in content_arr {
+                                    match item["type"].as_str() {
+                                        Some("toolCall") => {
+                                            if let Some(name) = item["name"].as_str() {
+                                                *tool_counts.entry(name.to_string()).or_insert(0) += 1;
+                                                last_tool_name = Some(name.to_string());
+                                                let detail = item["input"].as_object().map(|obj| {
+                                                    obj.iter().map(|(k, v)| {
+                                                        let val_str = match v.as_str() {
+                                                            Some(s) => truncate_str(s, 300),
+                                                            None => { let j = v.to_string(); truncate_str(&j, 100) }
+                                                        };
+                                                        format!("{}: {}", k, val_str)
+                                                    }).collect::<Vec<_>>().join("\n")
+                                                }).filter(|s| !s.is_empty());
+                                                recent_actions.push(RecentAction {
+                                                    action_type: "tool".to_string(),
+                                                    summary: name.to_string(),
+                                                    detail,
+                                                    timestamp: current_msg_timestamp.clone(),
+                                                });
+                                            }
+                                        }
+                                        Some("text") => {
+                                            if let Some(text) = item["text"].as_str() {
+                                                let trimmed = text.trim();
+                                                if !trimmed.is_empty() {
+                                                    let summary = truncate_str(trimmed, 60);
+                                                    let detail = if trimmed.len() > 60 {
+                                                        Some(truncate_str(trimmed, 500))
+                                                    } else { None };
+                                                    recent_actions.push(RecentAction {
+                                                        action_type: "text".to_string(),
+                                                        summary,
+                                                        detail,
+                                                        timestamp: current_msg_timestamp.clone(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            metrics.message_count += 1;
+                        }
+                    }
+                    "custom" => {
+                        if val["customType"].as_str().map_or(false, |t| t.contains("error")) {
+                            metrics.error_count += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            metrics.current_task = last_user_text;
+            metrics.current_tool = last_tool_name;
+            metrics.last_activity = last_timestamp;
+
+            let len = recent_actions.len();
+            if len > 3 { metrics.recent_actions = recent_actions[len - 3..].to_vec(); }
+            else { metrics.recent_actions = recent_actions; }
+            metrics.recent_actions.reverse();
+
+            let mut tool_vec: Vec<ToolCallStat> = tool_counts.into_iter()
+                .map(|(name, count)| ToolCallStat { name, count }).collect();
+            tool_vec.sort_by(|a, b| b.count.cmp(&a.count));
+            metrics.tool_calls = tool_vec;
+
+            return Ok(metrics);
+        }
+        // Gateway API fallback
         let url = url.as_deref().unwrap_or("");
         let tok = token.as_deref().unwrap_or("");
-        // Build metrics from sessions_list + session_status
         let result = invoke_tool(url, tok, "sessions_list", serde_json::json!({"agentId": agent_id, "activeMinutes": 60})).await?;
         let sessions = extract_sessions(&result);
         let active_count = sessions.iter().filter(|s| is_session_active(s)).count();
@@ -750,8 +1078,6 @@ async fn get_agent_metrics(agent_id: String, mode: Option<String>, url: Option<S
                 .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
                 .unwrap_or_default()
         });
-
-        // Get real-time status from session_status for the primary session
         let mut input_tokens: u64 = 0;
         let mut output_tokens: u64 = 0;
         let mut current_task: Option<String> = None;
@@ -763,10 +1089,8 @@ async fn get_agent_metrics(agent_id: String, mode: Option<String>, url: Option<S
             let sr = status_result.get("result").unwrap_or(&status_result);
             let det = sr.get("details").unwrap_or(sr);
             if let Some(text) = det["statusText"].as_str() {
-                // Parse statusText lines for tokens and queue info
                 for line in text.lines() {
                     if line.contains("Tokens:") {
-                        // e.g. "🧮 Tokens: 3 in / 65 out"
                         let parts: Vec<&str> = line.split_whitespace().collect();
                         for (i, p) in parts.iter().enumerate() {
                             if *p == "in" && i > 0 {
@@ -778,7 +1102,6 @@ async fn get_agent_metrics(agent_id: String, mode: Option<String>, url: Option<S
                         }
                     }
                     if line.contains("Queue:") {
-                        // e.g. "🦢 Queue: collect (depth 0)" or "🦢 Queue: running tool_name"
                         let queue_part = line.split("Queue:").nth(1).unwrap_or("").trim();
                         if queue_part.starts_with("running") || queue_part.starts_with("thinking") || queue_part.starts_with("streaming") {
                             current_task = Some(queue_part.to_string());
@@ -787,7 +1110,6 @@ async fn get_agent_metrics(agent_id: String, mode: Option<String>, url: Option<S
                 }
             }
         }
-
         let metrics = AgentMetrics {
             agent_id: agent_id.clone(),
             active: active_count > 0,
@@ -1169,7 +1491,67 @@ struct AgentExtraInfo {
 }
 
 #[tauri::command]
-async fn get_agent_extra_info(agent_id: String) -> Result<AgentExtraInfo, String> {
+async fn get_agent_extra_info(agent_id: String, mode: Option<String>, ssh_host: Option<String>, ssh_user: Option<String>) -> Result<AgentExtraInfo, String> {
+    if mode.as_deref() == Some("remote") {
+        let sh = ssh_host.as_deref().unwrap_or("");
+        let su = ssh_user.as_deref().unwrap_or("");
+        if !sh.is_empty() && !su.is_empty() {
+            let agent_dir = if agent_id.is_empty() { "main" } else { &agent_id };
+
+            // Skills from remote sessions.json
+            let sess_path = remote_sessions_json_path(&agent_id);
+            let skills: Vec<String> = if let Ok(content) = ssh_read_file(sh, su, &sess_path).await {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&content)
+                    .ok()
+                    .and_then(|map| {
+                        map.into_values()
+                            .max_by_key(|v| v["updatedAt"].as_u64().unwrap_or(0))
+                            .and_then(|v| v["skillsSnapshot"]["skills"].as_array().cloned())
+                            .map(|arr| arr.iter()
+                                .filter_map(|s| s["name"].as_str().map(|n| n.to_string()))
+                                .collect())
+                    })
+                    .unwrap_or_default()
+            } else { vec![] };
+
+            // Daily counts from remote .jsonl files
+            let mut daily_calls: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+            let mut daily_tokens: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+            let cat_cmd = format!("cat $HOME/.openclaw/agents/{}/sessions/*.jsonl 2>/dev/null", agent_dir);
+            if let Ok(content) = ssh_exec(sh, su, &cat_cmd).await {
+                let mut current_date: Option<String> = None;
+                for line in content.lines() {
+                    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(ts) = obj["timestamp"].as_str() {
+                            if ts.len() >= 10 {
+                                current_date = Some(ts[..10].to_string());
+                                *daily_calls.entry(ts[..10].to_string()).or_insert(0) += 1;
+                            }
+                        }
+                        if obj["type"].as_str() == Some("message") {
+                            if let Some(total) = obj["message"]["usage"]["totalTokens"].as_u64() {
+                                if let Some(ref date) = current_date {
+                                    *daily_tokens.entry(date.clone()).or_insert(0) += total;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            use chrono::{Local, Duration};
+            let today = Local::now().date_naive();
+            let daily_counts: Vec<DailyCount> = (0..14i64).rev().map(|i| {
+                let date = (today - Duration::days(i)).format("%Y-%m-%d").to_string();
+                let count = daily_calls.get(&date).copied().unwrap_or(0);
+                let tokens = daily_tokens.get(&date).copied().unwrap_or(0);
+                DailyCount { date, count, tokens }
+            }).collect();
+
+            return Ok(AgentExtraInfo { skills, cron_jobs: vec![], daily_counts });
+        }
+        return Ok(AgentExtraInfo { skills: vec![], cron_jobs: vec![], daily_counts: vec![] });
+    }
+
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let agent_dir = if agent_id.is_empty() { "main" } else { &agent_id };
 
@@ -1717,8 +2099,57 @@ fn extract_last_messages(content: &str) -> (Option<String>, Option<String>) {
 }
 
 #[tauri::command]
-async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<String>, token: Option<String>) -> Result<Vec<MiniSessionInfo>, String> {
+async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<String>, token: Option<String>, ssh_host: Option<String>, ssh_user: Option<String>) -> Result<Vec<MiniSessionInfo>, String> {
+    log::info!("[get_agent_sessions] agent_id={} mode={:?} ssh_host={:?}", agent_id, mode, ssh_host);
     if mode.as_deref() == Some("remote") {
+        let sh = ssh_host.as_deref().unwrap_or("");
+        let su = ssh_user.as_deref().unwrap_or("");
+        if !sh.is_empty() && !su.is_empty() {
+            // SSH-based: full local-like session list with messages
+            let sess_path = remote_sessions_json_path(&agent_id);
+            log::info!("[get_agent_sessions] SSH reading: {}", sess_path);
+            let content = match ssh_read_file(sh, su, &sess_path).await {
+                Ok(c) => { log::info!("[get_agent_sessions] SSH read OK, len={}", c.len()); c }
+                Err(e) => { log::error!("[get_agent_sessions] SSH read failed: {}", e); return Err(format!("read remote sessions.json: {}", e)); }
+            };
+            let map: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&content).map_err(|e| { log::error!("[get_agent_sessions] parse failed: {}", e); e.to_string() })?;
+            log::info!("[get_agent_sessions] sessions.json keys: {:?}", map.keys().collect::<Vec<_>>());
+
+            let mut sessions: Vec<MiniSessionInfo> = Vec::new();
+            for (key, val) in map.iter() {
+                let session_file = val["sessionFile"].as_str().unwrap_or("").to_string();
+                if session_file.is_empty() { log::info!("[get_agent_sessions] skip key={} no sessionFile", key); continue; }
+
+                let is_active = ssh_is_session_file_active(sh, su, &session_file).await;
+
+                let (last_user, last_assistant) = match ssh_read_file(sh, su, &session_file).await {
+                    Ok(c) => { log::info!("[get_agent_sessions] read session file OK, len={}", c.len()); extract_last_messages(&c) }
+                    Err(e) => { log::error!("[get_agent_sessions] read session file failed: {} path={}", e, session_file); (None, None) }
+                };
+
+                log::info!("[get_agent_sessions] key={} last_user={:?} last_assistant={:?}", key, last_user.is_some(), last_assistant.is_some());
+                if last_user.is_none() && last_assistant.is_none() { continue; }
+                if key.contains(":cron:") { continue; }
+
+                sessions.push(MiniSessionInfo {
+                    key: key.clone(),
+                    agent_id: agent_id.clone(),
+                    session_id: val["sessionId"].as_str().unwrap_or(key).to_string(),
+                    label: key.clone(),
+                    channel: val["lastChannel"].as_str().map(|s| s.to_string()),
+                    updated_at: val["updatedAt"].as_u64().unwrap_or(0),
+                    active: is_active,
+                    last_user_msg: last_user,
+                    last_assistant_msg: last_assistant,
+                });
+            }
+            log::info!("[get_agent_sessions] SSH result: {} sessions", sessions.len());
+            sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            sessions.truncate(20);
+            return Ok(sessions);
+        }
+        // Gateway API fallback
         let url = url.as_deref().unwrap_or("");
         let token = token.as_deref().unwrap_or("");
         let result = invoke_tool(url, token, "sessions_list", serde_json::json!({"agentId": agent_id, "activeMinutes": 60})).await?;
@@ -1824,8 +2255,60 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
 }
 
 #[tauri::command]
-async fn get_session_messages(agent_id: String, session_key: String, mode: Option<String>, url: Option<String>, token: Option<String>) -> Result<Vec<ChatMessage>, String> {
+async fn get_session_messages(agent_id: String, session_key: String, mode: Option<String>, url: Option<String>, token: Option<String>, ssh_host: Option<String>, ssh_user: Option<String>) -> Result<Vec<ChatMessage>, String> {
     if mode.as_deref() == Some("remote") {
+        let sh = ssh_host.as_deref().unwrap_or("");
+        let su = ssh_user.as_deref().unwrap_or("");
+        if !sh.is_empty() && !su.is_empty() {
+            // SSH-based: read .jsonl session file like local mode
+            let sess_path = remote_sessions_json_path(&agent_id);
+            let content = ssh_read_file(sh, su, &sess_path).await
+                .map_err(|e| format!("read remote sessions.json: {}", e))?;
+            let map: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&content).map_err(|e| e.to_string())?;
+            let session = map.get(&session_key).ok_or("session not found")?;
+            let file = session["sessionFile"].as_str().ok_or("no sessionFile")?;
+            let jsonl = ssh_read_file(sh, su, file).await
+                .map_err(|e| format!("read remote session file: {}", e))?;
+
+            let mut messages: Vec<ChatMessage> = vec![];
+            for line in jsonl.lines() {
+                let val: serde_json::Value = match serde_json::from_str(line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if val["type"].as_str() != Some("message") { continue; }
+                let msg = &val["message"];
+                let role = msg["role"].as_str().unwrap_or("");
+                if role != "user" && role != "assistant" { continue; }
+                let ts = val["timestamp"].as_str().map(|s| s.to_string());
+                let text = if let Some(arr) = msg["content"].as_array() {
+                    arr.iter()
+                        .filter(|item| item["type"].as_str() == Some("text"))
+                        .filter_map(|item| item["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else if let Some(s) = msg["content"].as_str() {
+                    s.to_string()
+                } else { continue };
+                if text.is_empty() { continue; }
+                let clean_text = if role == "user" {
+                    let cleaned = clean_user_message(&text);
+                    if cleaned.is_empty() { continue; }
+                    cleaned
+                } else {
+                    let cleaned = strip_brackets(&text);
+                    if cleaned.is_empty() { continue; }
+                    if cleaned.chars().count() > 500 {
+                        format!("{}...", cleaned.chars().take(500).collect::<String>())
+                    } else { cleaned }
+                };
+                messages.push(ChatMessage { role: role.to_string(), text: clean_text, timestamp: ts });
+            }
+            if messages.len() > 50 { messages = messages.split_off(messages.len() - 50); }
+            return Ok(messages);
+        }
+        // Gateway API fallback
         let url = url.as_deref().unwrap_or("");
         let token = token.as_deref().unwrap_or("");
         let result = invoke_tool(url, token, "sessions_history", serde_json::json!({
@@ -1859,11 +2342,7 @@ async fn get_session_messages(agent_id: String, session_key: String, mode: Optio
             let truncated = if content.chars().count() > 500 {
                 format!("{}...", content.chars().take(500).collect::<String>())
             } else { content };
-            messages.push(ChatMessage {
-                role: role.to_string(),
-                text: truncated,
-                timestamp: ts,
-            });
+            messages.push(ChatMessage { role: role.to_string(), text: truncated, timestamp: ts });
         }
         return Ok(messages);
     }
@@ -1942,8 +2421,29 @@ async fn get_session_messages(agent_id: String, session_key: String, mode: Optio
 /// Lightweight: returns set of "agentId:sessionKey" that are currently active.
 /// Only does lsof + reads sessions.json (no .jsonl content parsing).
 #[tauri::command]
-async fn get_active_sessions(mode: Option<String>, url: Option<String>, token: Option<String>) -> Result<Vec<String>, String> {
+async fn get_active_sessions(mode: Option<String>, url: Option<String>, token: Option<String>, ssh_host: Option<String>, ssh_user: Option<String>) -> Result<Vec<String>, String> {
     if mode.as_deref() == Some("remote") {
+        let sh = ssh_host.as_deref().unwrap_or("");
+        let su = ssh_user.as_deref().unwrap_or("");
+        if !sh.is_empty() && !su.is_empty() {
+            let dirs_output = ssh_exec(sh, su, "ls -1 $HOME/.openclaw/agents/ 2>/dev/null").await.unwrap_or_default();
+            let mut active_keys: Vec<String> = vec![];
+            for agent_id in dirs_output.lines().filter(|l| !l.trim().is_empty()) {
+                let agent_id = agent_id.trim();
+                let sess_path = remote_sessions_json_path(agent_id);
+                let Ok(content) = ssh_read_file(sh, su, &sess_path).await else { continue };
+                let Ok(map): Result<serde_json::Map<String, serde_json::Value>, _> = serde_json::from_str(&content) else { continue };
+                for (key, val) in map.iter() {
+                    let session_file = val["sessionFile"].as_str().unwrap_or("");
+                    if session_file.is_empty() { continue; }
+                    if ssh_is_session_file_active(sh, su, session_file).await {
+                        active_keys.push(format!("{}:{}", agent_id, key));
+                    }
+                }
+            }
+            return Ok(active_keys);
+        }
+        // Gateway API fallback
         let url = url.as_deref().unwrap_or("");
         let token = token.as_deref().unwrap_or("");
         let result = invoke_tool(url, token, "sessions_list", serde_json::json!({"activeMinutes": 5})).await?;

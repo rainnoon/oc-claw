@@ -320,13 +320,15 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
   )
 }
 
-async function getOcParams(): Promise<{ mode?: string; url?: string; token?: string }> {
+async function getOcParams(): Promise<{ mode?: string; url?: string; token?: string; sshHost?: string; sshUser?: string }> {
   const store = await load('settings.json', { defaults: {}, autoSave: true })
   const mode = ((await store.get('oc_mode')) as string) || 'local'
   if (mode !== 'remote') return {}
   const url = ((await store.get('gateway_url')) as string) || ''
   const token = ((await store.get('gateway_token')) as string) || ''
-  return { mode, url, token }
+  const sshHost = ((await store.get('ssh_host')) as string) || ''
+  const sshUser = ((await store.get('ssh_user')) as string) || ''
+  return { mode, url, token, ...(sshHost && sshUser ? { sshHost, sshUser } : {}) }
 }
 
 export default function Mini() {
@@ -596,8 +598,9 @@ export default function Mini() {
       } catch { if (!cancelled) setMetrics(null) }
     }
     const fetchExtra = async () => {
+      const oc = await getOcParams()
       try {
-        const e = (await invoke('get_agent_extra_info', { agentId: selectedAgentId })) as any
+        const e = (await invoke('get_agent_extra_info', { agentId: selectedAgentId, ...oc })) as any
         if (!cancelled) setExtraInfo(e)
       } catch { if (!cancelled) setExtraInfo(null) }
     }

@@ -23,6 +23,8 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
   const [ocMode, setOcMode] = useState<'local' | 'remote'>('local')
   const [url, setUrl] = useState('http://localhost:4446')
   const [token, setToken] = useState('')
+  const [sshHost, setSshHost] = useState('')
+  const [sshUser, setSshUser] = useState('')
   const [enableOpenClaw, setEnableOpenClaw] = useState(true)
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
@@ -40,6 +42,8 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
       if (m === 'remote') setOcMode('remote')
       setUrl(((await store.get('gateway_url')) as string) || 'http://localhost:4446')
       setToken(((await store.get('gateway_token')) as string) || '')
+      setSshHost(((await store.get('ssh_host')) as string) || '')
+      setSshUser(((await store.get('ssh_user')) as string) || '')
       const oc = await store.get('enable_openclaw')
       if (typeof oc === 'boolean') setEnableOpenClaw(oc)
       const cc = await store.get('enable_claudecode')
@@ -53,6 +57,8 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
     await store.set('oc_mode', ocMode)
     await store.set('gateway_url', url)
     await store.set('gateway_token', token)
+    await store.set('ssh_host', sshHost)
+    await store.set('ssh_user', sshUser)
     await store.save()
   }
 
@@ -179,6 +185,25 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
                       placeholder="输入访问 Token..."
                       className="bg-black/50 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
                     />
+                  </div>
+                  <div className="flex flex-col gap-2 pt-2 border-t border-white/5">
+                    <label className="text-sm text-white/60 font-medium">SSH (可选，用于读取远程文件)</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={sshHost}
+                        onChange={(e) => setSshHost(e.target.value)}
+                        placeholder="Host, e.g. xx.xx.xx.xx"
+                        className="flex-1 bg-black/50 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                      />
+                      <input
+                        type="text"
+                        value={sshUser}
+                        onChange={(e) => setSshUser(e.target.value)}
+                        placeholder="User, e.g. root"
+                        className="w-28 bg-black/50 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                      />
+                    </div>
                   </div>
                 </motion.div>
               )}
