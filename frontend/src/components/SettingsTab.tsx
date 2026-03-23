@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { Loader2, Check } from 'lucide-react'
+import { Loader2, Check, ChevronDown, Copy } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { getStore } from '../lib/store'
 
@@ -19,15 +19,29 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
   )
 }
 
+function CopyCode({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="flex items-center gap-1 bg-black/40 rounded overflow-hidden">
+      <code className="flex-1 px-2 py-1 text-[11px] text-white/60 font-mono select-all">{text}</code>
+      <button
+        onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
+        className="px-1.5 py-1 text-white/30 hover:text-white/60 transition-colors shrink-0"
+      >
+        {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+      </button>
+    </div>
+  )
+}
+
 export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDetail: boolean; onToggleWorkDetail: (v: boolean) => void }) {
   const [ocMode, setOcMode] = useState<'local' | 'remote'>('local')
-  const [url, setUrl] = useState('http://localhost:4446')
-  const [token, setToken] = useState('')
   const [sshHost, setSshHost] = useState('')
   const [sshUser, setSshUser] = useState('')
   const [enableOpenClaw, setEnableOpenClaw] = useState(true)
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
+  const [showGuide, setShowGuide] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
   const [testMsg, setTestMsg] = useState('')
@@ -40,8 +54,6 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
       const store = await getStore()
       const m = (await store.get('oc_mode')) as string
       if (m === 'remote') setOcMode('remote')
-      setUrl(((await store.get('gateway_url')) as string) || 'http://localhost:4446')
-      setToken(((await store.get('gateway_token')) as string) || '')
       setSshHost(((await store.get('ssh_host')) as string) || '')
       setSshUser(((await store.get('ssh_user')) as string) || '')
       const oc = await store.get('enable_openclaw')
@@ -55,8 +67,6 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
   const saveSettings = async () => {
     const store = await getStore()
     await store.set('oc_mode', ocMode)
-    await store.set('gateway_url', url)
-    await store.set('gateway_token', token)
     await store.set('ssh_host', sshHost)
     await store.set('ssh_user', sshUser)
     await store.save()
@@ -69,12 +79,12 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
     try {
       await saveSettings()
       if (ocMode === 'remote') {
-        const result: any = await invoke('get_agents', { mode: 'remote', url, token })
+        const result: any = await invoke('get_agents', { mode: 'remote', sshHost, sshUser })
         setTestMsg(`${result.length} 个 agent`)
       } else {
         const store = await getStore()
         const agentId = ((await store.get('tracked_agent')) as string) || 'main'
-        const result: any = await invoke('get_status', { gatewayUrl: url, token, agentId })
+        const result: any = await invoke('get_status', { gatewayUrl: 'http://localhost:4446', token: '', agentId })
         setTestMsg(`${result.sessions.length} 个 session`)
       }
       setTestResult('success')
@@ -155,7 +165,7 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
             <p className="text-xs text-white/40">
               {ocMode === 'local'
                 ? '读取本机 ~/.openclaw 目录，需要本地安装 OpenClaw'
-                : '连接到远程 OpenClaw Gateway 服务器'}
+                : '通过 SSH 连接远程服务器，读取 OpenClaw 数据'}
             </p>
 
             <AnimatePresence>
@@ -167,43 +177,56 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
                   className="flex flex-col gap-4 overflow-hidden"
                 >
                   <div className="flex flex-col gap-2 pt-2">
-                    <label className="text-sm text-white/80 font-medium">Gateway URL</label>
-                    <input
-                      type="text"
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                      placeholder="http://..."
-                      className="bg-black/50 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-white/80 font-medium">Token</label>
-                    <input
-                      type="password"
-                      value={token}
-                      onChange={(e) => setToken(e.target.value)}
-                      placeholder="输入访问 Token..."
-                      className="bg-black/50 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-2 pt-2 border-t border-white/5">
-                    <label className="text-sm text-white/60 font-medium">SSH (可选，用于读取远程文件)</label>
+                    <label className="text-sm text-white/80 font-medium">SSH 连接</label>
                     <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={sshHost}
-                        onChange={(e) => setSshHost(e.target.value)}
-                        placeholder="Host, e.g. xx.xx.xx.xx"
-                        className="flex-1 bg-black/50 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
-                      />
                       <input
                         type="text"
                         value={sshUser}
                         onChange={(e) => setSshUser(e.target.value)}
-                        placeholder="User, e.g. root"
+                        onBlur={saveSettings}
+                        placeholder="用户名，如 root"
                         className="w-28 bg-black/50 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
                       />
+                      <span className="self-center text-white/30 text-sm">@</span>
+                      <input
+                        type="text"
+                        value={sshHost}
+                        onChange={(e) => setSshHost(e.target.value)}
+                        onBlur={saveSettings}
+                        placeholder="服务器地址，如 xx.xx.xx.xx"
+                        className="flex-1 bg-black/50 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                      />
                     </div>
+                    <button
+                      onClick={() => setShowGuide(!showGuide)}
+                      className="flex items-center gap-1 text-xs text-white/40 hover:text-white/60 transition-colors w-fit"
+                    >
+                      <ChevronDown className={`w-3 h-3 transition-transform ${showGuide ? 'rotate-0' : '-rotate-90'}`} />
+                      如何连接远程服务器？
+                    </button>
+                    <AnimatePresence>
+                      {showGuide && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="bg-white/[0.03] border border-white/5 rounded-lg p-3 flex flex-col gap-2 text-xs text-white/50 leading-relaxed">
+                            <p className="text-white/70 font-medium">前置条件</p>
+                            <p>远程服务器需安装 OpenClaw 并运行 Gateway</p>
+                            <p className="text-white/70 font-medium pt-1">步骤</p>
+                            <p>1. 生成本地 SSH 密钥（如果没有）</p>
+                            <CopyCode text="ssh-keygen -t ed25519" />
+                            <p>2. 将公钥复制到远程服务器</p>
+                            <CopyCode text={`ssh-copy-id -i ~/.ssh/id_ed25519.pub ${sshUser || '用户名'}@${sshHost || '服务器地址'}`} />
+                            <p>3. 验证免密登录</p>
+                            <CopyCode text={`ssh ${sshUser || '用户名'}@${sshHost || '服务器地址'} "echo ok"`} />
+                            <p>4. 在上方填入用户名和服务器地址，点击「测试连接」</p>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                 </motion.div>
               )}
@@ -219,14 +242,6 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
               {isTesting && <Loader2 className="w-4 h-4 animate-spin" />}
               测试连接
             </button>
-            {ocMode === 'remote' && (
-              <button
-                onClick={saveSettings}
-                className="px-4 py-2 bg-white text-black hover:bg-white/90 rounded-lg text-sm font-medium transition-colors"
-              >
-                保存
-              </button>
-            )}
             {testResult === 'success' && (
               <span className="text-sm text-emerald-400 flex items-center gap-1 ml-2">
                 <Check className="w-4 h-4" /> 连接成功 {testMsg && `· ${testMsg}`}

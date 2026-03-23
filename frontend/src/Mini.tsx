@@ -326,11 +326,9 @@ async function getOcParams(): Promise<{ mode?: string; url?: string; token?: str
   const store = await load('settings.json', { defaults: {}, autoSave: true })
   const mode = ((await store.get('oc_mode')) as string) || 'local'
   if (mode !== 'remote') return {}
-  const url = ((await store.get('gateway_url')) as string) || ''
-  const token = ((await store.get('gateway_token')) as string) || ''
   const sshHost = ((await store.get('ssh_host')) as string) || ''
   const sshUser = ((await store.get('ssh_user')) as string) || ''
-  return { mode, url, token, ...(sshHost && sshUser ? { sshHost, sshUser } : {}) }
+  return { mode, ...(sshHost && sshUser ? { sshHost, sshUser } : {}) }
 }
 
 export default function Mini() {

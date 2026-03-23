@@ -659,14 +659,35 @@ async fn delete_character_gif(app: tauri::AppHandle, char_name: String, subfolde
 
 #[tauri::command]
 async fn get_agents(mode: Option<String>, url: Option<String>, token: Option<String>, ssh_host: Option<String>, ssh_user: Option<String>) -> Result<Vec<AgentInfo>, String> {
-    let _ = (&ssh_host, &ssh_user);
-    log::info!("[get_agents] mode={:?} url={:?}", mode, url);
+    log::info!("[get_agents] mode={:?} ssh_host={:?}", mode, ssh_host);
     if mode.as_deref() == Some("remote") {
+        let sh = ssh_host.as_deref().unwrap_or("");
+        let su = ssh_user.as_deref().unwrap_or("");
+        if !sh.is_empty() && !su.is_empty() {
+            let dirs = ssh_exec(sh, su, "ls -1 $HOME/.openclaw/agents/ 2>/dev/null").await.unwrap_or_default();
+            let mut agents: Vec<AgentInfo> = Vec::new();
+            for id in dirs.lines().filter(|l| !l.trim().is_empty()) {
+                let id = id.trim().to_string();
+                let config_path = format!("$HOME/.openclaw/agents/{}/agent.json", id);
+                let (name, emoji) = match ssh_read_file(sh, su, &config_path).await {
+                    Ok(c) => {
+                        let val: serde_json::Value = serde_json::from_str(&c).unwrap_or_default();
+                        (
+                            val.get("identityName").or_else(|| val.get("identity_name")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            val.get("identityEmoji").or_else(|| val.get("identity_emoji")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        )
+                    }
+                    Err(_) => (None, None),
+                };
+                agents.push(AgentInfo { id, identity_name: name, identity_emoji: emoji });
+            }
+            return Ok(agents);
+        }
+        // Gateway API fallback
         let url = url.as_deref().unwrap_or("");
         let token = token.as_deref().unwrap_or("");
         let result = invoke_tool(url, token, "agents_list", serde_json::json!({})).await?;
         let r = result.get("result").unwrap_or(&result);
-        // New MCP: result.details.agents is an array; Old: result is an array or map
         let agents_arr = r.pointer("/details/agents").and_then(|v| v.as_array())
             .or_else(|| r.as_array());
         let agents: Vec<AgentInfo> = if let Some(arr) = agents_arr {
