@@ -206,7 +206,6 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
               <span className="text-base font-medium text-white/90">{agent.identityName || agent.id}</span>
               {agent.identityEmoji && <span className="text-sm">{agent.identityEmoji}</span>}
             </div>
-            <div className="text-sm text-white/40 mt-0.5 font-mono">{agent.id}</div>
           </div>
         </div>
         <div className="flex items-center gap-2 text-sm text-white/50 group-hover:text-white/80 transition-colors pr-2">
@@ -1010,7 +1009,7 @@ export default function Mini() {
                           <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">System</h2>
                           <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
                             <AgentAccordionItem
-                              agent={{ id: '__mini__', identityName: '看板娘', identityEmoji: '💤' }}
+                              agent={{ id: '__mini__', identityName: '看板娘' }}
                               characters={characters}
                               currentChar={miniChar?.name || ''}
                               isOpen={openAccordionId === '__mini__'}
