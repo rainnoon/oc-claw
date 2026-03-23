@@ -1348,8 +1348,6 @@ export default function Mini() {
                 agent={selectedAgent}
                 metrics={metrics}
                 extraInfo={extraInfo}
-                onBack={() => setSelectedAgentId(null)}
-                onSettings={() => { setSettingsMode(true); setSelectedAgentId(null) }}
               />
             )}
           </div>

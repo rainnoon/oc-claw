@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { ChevronLeft, Bell, Settings, X } from 'lucide-react'
 import type { AgentMetrics } from '../lib/types'
 import { formatTokens, formatTime, formatDuration } from '../lib/agents'
 
@@ -7,9 +6,6 @@ interface AgentDetailViewProps {
   agent: { id: string; identityName?: string; identityEmoji?: string } | undefined
   metrics: AgentMetrics | null
   extraInfo: any
-  onBack: () => void
-  onSettings?: () => void
-  onClose?: () => void
 }
 
 type ChartMode = 'calls' | 'tokens'
@@ -70,7 +66,7 @@ function DailyChart({ extraInfo }: { extraInfo: { daily_counts: { date: string; 
   )
 }
 
-export function AgentDetailView({ agent, metrics, extraInfo, onBack, onSettings, onClose }: AgentDetailViewProps) {
+export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewProps) {
   if (!metrics) {
     return (
       <div className="flex items-center justify-center py-20 text-white/30 text-sm">
@@ -83,24 +79,7 @@ export function AgentDetailView({ agent, metrics, extraInfo, onBack, onSettings,
   const durationStr = metrics.sessionStart ? formatDuration(metrics.sessionStart) : ''
 
   return (
-    <div className="flex flex-col h-full text-white">
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 bg-white/[0.02] shrink-0">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1.5 text-white/50 hover:text-white transition-colors text-sm font-medium"
-        >
-          <ChevronLeft className="w-4 h-4" /> 返回
-        </button>
-        <div className="flex items-center gap-4 text-white/40">
-          <Bell className="w-4 h-4 hover:text-white cursor-pointer transition-colors" />
-          {onSettings && <Settings className="w-4 h-4 hover:text-white cursor-pointer transition-colors" onClick={onSettings} />}
-          {onClose && <X className="w-4 h-4 hover:text-white cursor-pointer transition-colors" onClick={onClose} />}
-        </div>
-      </div>
-
-      {/* Scrollable Content */}
-      <div className="px-5 py-5 flex flex-col gap-6 overflow-y-auto flex-1 min-h-0 custom-scrollbar scrollbar-thin">
+    <div className="px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin" style={{ maxHeight: 524 }}>
 
         {/* Hero Profile */}
         <div className="flex flex-col gap-4">
@@ -235,7 +214,6 @@ export function AgentDetailView({ agent, metrics, extraInfo, onBack, onSettings,
         {extraInfo?.daily_counts?.length > 0 && (
           <DailyChart extraInfo={extraInfo} />
         )}
-      </div>
     </div>
   )
 }
