@@ -219,9 +219,9 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail, disableSleepAn
                             <p>1. 生成本地 SSH 密钥（如果没有）</p>
                             <CopyCode text="ssh-keygen -t ed25519" />
                             <p>2. 将公钥复制到远程服务器</p>
-                            <CopyCode text={`ssh-copy-id -i ~/.ssh/id_ed25519.pub ${sshUser || '用户名'}@${sshHost || '服务器地址'}`} />
+                            <CopyCode text="ssh-copy-id -i ~/.ssh/id_ed25519.pub 用户名@xx.xx.xx.xx" />
                             <p>3. 验证免密登录</p>
-                            <CopyCode text={`ssh ${sshUser || '用户名'}@${sshHost || '服务器地址'} "echo ok"`} />
+                            <CopyCode text={`ssh 用户名@xx.xx.xx.xx "echo ok"`} />
                             <p>4. 在上方填入用户名和服务器地址，点击「测试连接」</p>
                           </div>
                         </motion.div>

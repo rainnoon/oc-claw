@@ -7,8 +7,8 @@ export async function getStore() {
   return load('settings.json', { defaults: {}, autoSave: true })
 }
 
-const ASSET_PREFIX = import.meta.env.DEV ? '/assets' : 'localasset://localhost'
-export const CUSTOM_ASSET_PREFIX = import.meta.env.DEV ? '/custom_assets' : 'customasset://localhost'
+const ASSET_PREFIX = import.meta.env.DEV ? '/assets/builtin' : 'localasset://localhost'
+export const CUSTOM_ASSET_PREFIX = import.meta.env.DEV ? '/assets/custom' : 'customasset://localhost'
 
 export const DEFAULT_CHAR: CharacterMeta = {
   name: 'default',

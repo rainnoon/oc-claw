@@ -489,9 +489,9 @@ fn builtin_assets_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         let project_root = exe
             .parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent())
             .ok_or("cannot resolve project root")?;
-        Ok(project_root.join("public").join("assets"))
+        Ok(project_root.join("public").join("assets").join("builtin"))
     } else {
-        app.path().resource_dir().map(|p| p.join("assets")).map_err(|e| e.to_string())
+        app.path().resource_dir().map(|p| p.join("assets").join("builtin")).map_err(|e| e.to_string())
     }
 }
 
@@ -502,7 +502,7 @@ fn custom_assets_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         let project_root = exe
             .parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent())
             .ok_or("cannot resolve project root")?;
-        Ok(project_root.join("public").join("custom_assets"))
+        Ok(project_root.join("public").join("assets").join("custom"))
     } else {
         app.path().app_data_dir().map(|p| p.join("characters")).map_err(|e| e.to_string())
     }
@@ -586,13 +586,13 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>
     }
 
     // Scan built-in assets
-    let builtin_prefix = if cfg!(debug_assertions) { "/assets" } else { "localasset://localhost" };
+    let builtin_prefix = if cfg!(debug_assertions) { "/assets/builtin" } else { "localasset://localhost" };
     if let Ok(builtin_dir) = builtin_assets_dir(&app) {
         scan_dir(&builtin_dir, builtin_prefix, true, &mut results);
     }
 
     // Scan custom assets
-    let custom_prefix = if cfg!(debug_assertions) { "/custom_assets" } else { "customasset://localhost" };
+    let custom_prefix = if cfg!(debug_assertions) { "/assets/custom" } else { "customasset://localhost" };
     if let Ok(custom_dir) = custom_assets_dir(&app) {
         scan_dir(&custom_dir, custom_prefix, false, &mut results);
     }
@@ -3256,7 +3256,7 @@ pub fn run() {
         .register_uri_scheme_protocol("localasset", |ctx, req| {
             let path = req.uri().path();
             let resource_dir = ctx.app_handle().path().resource_dir().unwrap_or_default();
-            let file_path = resource_dir.join("assets").join(path.trim_start_matches('/'));
+            let file_path = resource_dir.join("assets").join("builtin").join(path.trim_start_matches('/'));
             match std::fs::read(&file_path) {
                 Ok(data) => {
                     let mime = if path.ends_with(".gif") { "image/gif" }
