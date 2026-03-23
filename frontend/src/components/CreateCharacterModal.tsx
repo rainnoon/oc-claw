@@ -166,8 +166,8 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-[#141414] border border-white/10 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="bg-[#141414] border border-white/10 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]" onMouseDown={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-white/5 shrink-0">
           <h3 className="text-lg font-medium text-white">创建新角色</h3>
@@ -252,8 +252,8 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
                   <span className="text-xs text-white/40">如果自动切分有偏移，请调整 X/Y 坐标</span>
                 </div>
 
-                <div className={`grid gap-4 ${rows.length <= 3 ? `grid-cols-${rows.length}` : 'grid-cols-3'}`} style={{ gridTemplateColumns: `repeat(${Math.min(rows.length, 3)}, 1fr)` }}>
-                  {rows.map((row, ri) => (
+                <div className={`grid gap-4`} style={{ gridTemplateColumns: `repeat(${Math.min(rows.filter(r => r.label !== 'unused').length, 3)}, 1fr)` }}>
+                  {rows.filter(r => r.label !== 'unused').map((row) => { const ri = rows.indexOf(row); return (
                     <div key={ri} className="flex flex-col items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/5">
                       <span className="text-xs text-white/50 uppercase font-medium tracking-wider">
                         {row.label}
@@ -285,7 +285,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
                         </div>
                       </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
               </div>
 

@@ -763,6 +763,7 @@ export default function Mini() {
   }, [])
 
   const collapse = useCallback(async () => {
+    setIsCreateModalOpen(false)
     setShowPanel(false)
     setSelectedAgentId(null)
     setSelectedClaudeSession(null)
@@ -772,6 +773,8 @@ export default function Mini() {
       settingsModeRef.current = false
       setSettingsMode(false)
       setExpanded(false)
+      // Wait for React to render collapsed state before resizing window
+      await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
       if (wasSettings) {
         await invoke('set_mini_size', { restore: true })
       } else {

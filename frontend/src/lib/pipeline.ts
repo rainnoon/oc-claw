@@ -12,7 +12,7 @@ export const SUBFOLDER_OPTIONS = [
 ]
 
 export const PIPELINE_CHROMA: ChromaKeyOptions = {
-  keyColor: { r: 5, g: 249, b: 3 }, tolerance: 35, smoothness: 34, spill: 75, erosion: 40,
+  keyColor: { r: 5, g: 249, b: 3 }, tolerance: 38, smoothness: 38, spill: 85, erosion: 65,
 }
 
 let _pipelinesCache: PipelineConfig[] | null = null
