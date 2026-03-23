@@ -475,6 +475,7 @@ export default function Mini() {
   const [enableOpenClaw, setEnableOpenClaw] = useState(true)
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
+  const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
 
   // Settings mode: panel becomes wider, shows settings content
@@ -637,6 +638,8 @@ export default function Mini() {
       if (cc !== false) invoke('install_claude_hooks').catch(() => {})
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
+      const ns = await store.get('notify_sound') as string
+      if (ns === 'default' || ns === 'manbo') setNotifySound(ns)
       const dsa = await store.get('disable_sleep_anim')
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const ccChar = ((await store.get('claude_char')) as string) || 'default'
@@ -661,11 +664,17 @@ export default function Mini() {
   // Listen for Claude task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
   soundEnabledRef.current = soundEnabled
+  const notifySoundRef = useRef(notifySound)
+  notifySoundRef.current = notifySound
   useEffect(() => {
     if (!enableClaudeCode) return
     const unlisten = listen('claude-task-complete', () => {
       if (soundEnabledRef.current) {
-        invoke('play_sound', { name: 'Purr' }).catch(() => {})
+        if (notifySoundRef.current === 'manbo') {
+          new Audio('/audio/manbo.m4a').play().catch(() => {})
+        } else {
+          invoke('play_sound', { name: 'Purr' }).catch(() => {})
+        }
       }
     })
     return () => { unlisten.then((fn) => fn()) }
@@ -1035,7 +1044,10 @@ export default function Mini() {
                       const store = await load('settings.json', { defaults: {}, autoSave: true })
                       await store.set('sound_enabled', next)
                       await store.save()
-                      if (next) invoke('play_sound', { name: 'Purr' }).catch(() => {})
+                      if (next) {
+                        if (notifySound === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {})
+                        else invoke('play_sound', { name: 'Purr' }).catch(() => {})
+                      }
                     }}
                     style={{
                       background: 'none', border: 'none',
@@ -1167,7 +1179,7 @@ export default function Mini() {
                   )}
                   {settingsNav === 'settings' && (
                     <div className="h-full overflow-y-auto bg-[#151515] scrollbar-thin">
-                      <SettingsTab showWorkDetail={showWorkDetail} onToggleWorkDetail={toggleWorkDetail} disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} />
+                      <SettingsTab showWorkDetail={showWorkDetail} onToggleWorkDetail={toggleWorkDetail} disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} notifySound={notifySound} onChangeNotifySound={async (v) => { setNotifySound(v); const store = await getStore(); await store.set('notify_sound', v); await store.save(); if (v === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {}); else invoke('play_sound', { name: 'Purr' }).catch(() => {}) }} />
                     </div>
                   )}
                 </div>

@@ -34,7 +34,7 @@ function CopyCode({ text }: { text: string }) {
   )
 }
 
-export function SettingsTab({ showWorkDetail, onToggleWorkDetail, disableSleepAnim, onToggleSleepAnim }: { showWorkDetail: boolean; onToggleWorkDetail: (v: boolean) => void; disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void }) {
+export function SettingsTab({ showWorkDetail, onToggleWorkDetail, disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound }: { showWorkDetail: boolean; onToggleWorkDetail: (v: boolean) => void; disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void }) {
   const [ocMode, setOcMode] = useState<'local' | 'remote'>('local')
   const [sshHost, setSshHost] = useState('')
   const [sshUser, setSshUser] = useState('')
@@ -260,12 +260,29 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail, disableSleepAn
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">显示</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4">
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">关闭睡眠动画</span>
               <span className="text-xs text-white/40">看板娘空闲时显示静态画面</span>
             </div>
             <Toggle checked={disableSleepAnim} onChange={onToggleSleepAnim} />
+          </div>
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">提示音</span>
+              <span className="text-xs text-white/40">任务完成时播放的提示音</span>
+            </div>
+            <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
+              {(['default', 'manbo'] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => onChangeNotifySound(s)}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${notifySound === s ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
+                >
+                  {s === 'default' ? '默认' : 'Manbo'}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </section>
