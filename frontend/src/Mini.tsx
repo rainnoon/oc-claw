@@ -994,7 +994,7 @@ export default function Mini() {
           background: '#1a1a1a',
           borderRadius: showPanel ? (settingsMode ? '0 0 16px 16px' : '0 0 24px 24px') : '0 0 14px 14px',
           boxShadow: showPanel
-            ? '0 8px 32px rgba(0,0,0,0.7)'
+            ? '0 0 12px rgba(0,0,0,0.7)'
             : '0 2px 8px rgba(0,0,0,0.3)',
           transition: showPanel
             ? 'width 0.35s cubic-bezier(0.16, 1, 0.3, 1), max-height 0.35s cubic-bezier(0.16, 1, 0.3, 1), border-radius 0.35s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease'
