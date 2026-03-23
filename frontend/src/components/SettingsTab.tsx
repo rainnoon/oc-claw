@@ -140,7 +140,7 @@ export function SettingsTab({ showWorkDetail, onToggleWorkDetail }: { showWorkDe
             <span className="text-sm font-medium text-white/80">连接模式</span>
             <div className="flex bg-black/50 p-1 rounded-lg border border-white/5 w-fit">
               <button
-                onClick={async () => { setOcMode('local'); setTestResult(null); const store = await getStore(); await store.set('oc_mode', 'local'); await store.save() }}
+                onClick={async () => { setOcMode('local'); setTestResult(null); const store = await getStore(); await store.set('oc_mode', 'local'); await store.save(); invoke('close_ssh', {}).catch(() => {}) }}
                 className={`px-6 py-1.5 text-sm font-medium rounded-md transition-colors ${ocMode === 'local' ? 'bg-white/10 text-white shadow-sm' : 'text-white/50 hover:text-white/80'}`}
               >
                 本地

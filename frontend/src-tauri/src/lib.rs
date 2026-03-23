@@ -272,6 +272,44 @@ async fn ssh_exec(ssh_host: &str, ssh_user: &str, cmd: &str) -> Result<String, S
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Close an active SSH ControlMaster socket.
+async fn close_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
+    let control_path = format!("/tmp/oc-claw-ssh-{}@{}:22", ssh_user, ssh_host);
+    if !std::path::Path::new(&control_path).exists() { return Ok(()); }
+    let target = format!("{}@{}", ssh_user, ssh_host);
+    let cp = format!("ControlPath={}", control_path);
+    let _ = tokio::process::Command::new("ssh")
+        .args(["-o", &cp, "-O", "exit", &target])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await;
+    // Also remove stale socket file if it remains
+    let _ = tokio::fs::remove_file(&control_path).await;
+    log::info!("[close_ssh_master] closed socket for {}@{}", ssh_user, ssh_host);
+    Ok(())
+}
+
+#[tauri::command]
+async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result<(), String> {
+    let sh = ssh_host.unwrap_or_default();
+    let su = ssh_user.unwrap_or_default();
+    if sh.is_empty() || su.is_empty() {
+        // Try to close any oc-claw ssh sockets
+        if let Ok(mut entries) = tokio::fs::read_dir("/tmp").await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("oc-claw-ssh-") {
+                    let _ = tokio::fs::remove_file(entry.path()).await;
+                    log::info!("[close_ssh] removed stale socket: {}", name);
+                }
+            }
+        }
+        return Ok(());
+    }
+    close_ssh_master(&sh, &su).await
+}
+
 async fn ssh_read_file(ssh_host: &str, ssh_user: &str, path: &str) -> Result<String, String> {
     // Use double quotes so ~ expands, but escape any embedded double quotes
     let escaped = path.replace('"', r#"\""#);
@@ -3079,7 +3117,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, get_agent_sessions, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, open_url, check_for_update, run_update])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, get_agent_sessions, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, open_url, check_for_update, run_update, close_ssh])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

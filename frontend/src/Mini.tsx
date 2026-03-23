@@ -226,9 +226,9 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
             className="overflow-hidden bg-[#0a0a0a]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-4 border-t border-white/5">
-              {/* Action Buttons row */}
-              <div className="flex items-center justify-end gap-2 mb-3">
+            <div className="relative border-t border-white/5" style={{ height: 280 }}>
+              {/* Action Buttons - absolute top right */}
+              <div className="absolute top-3 right-3 flex items-center gap-2 z-10">
                 {onOpenCreate && (
                   <button
                     onClick={() => onOpenCreate()}
@@ -251,9 +251,11 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                 </button>
               </div>
 
-              {/* Character Grid */}
-              <div className="max-h-[260px] overflow-y-auto pr-2 pt-2 scrollbar-thin">
-                <div className="grid grid-cols-3 gap-3">
+              {/* Character Grid - vertically centered */}
+              <div className="h-full overflow-y-auto px-4 scrollbar-thin"
+                style={charsWithMini.length <= 6 ? { display: 'flex', flexDirection: 'column', justifyContent: 'center' } : { paddingTop: 16 }}
+              >
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8, width: '100%' }}>
                   {charsWithMini.map((c) => {
                     const isSelected = c.name === currentChar
                     const preview = getMiniGif(c, false)
@@ -269,7 +271,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                             onSelect(c.name)
                           }
                         }}
-                        className={`relative flex items-center gap-3 p-2.5 rounded-xl border transition-all ${
+                        className={`relative flex flex-col items-center gap-1 p-1.5 rounded-xl border transition-all ${
                           isEditing && !isDefault
                             ? 'cursor-pointer hover:bg-red-500/10 border-red-500/30'
                             : isEditing && isDefault
@@ -278,8 +280,9 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                             ? 'bg-white/10 border-white/20 cursor-default'
                             : 'bg-white/5 border-transparent hover:bg-white/10 cursor-pointer'
                         }`}
+                        title={c.name}
                       >
-                        <div className="relative w-9 h-9 shrink-0 rounded-lg overflow-hidden bg-black/50 border border-white/10">
+                        <div className="relative w-10 h-10 shrink-0 rounded-lg overflow-hidden bg-black/50 border border-white/10">
                           {preview ? (
                             <img
                               src={preview}
@@ -291,20 +294,19 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
                           )}
+                          {/* Selected Indicator */}
+                          {!isEditing && isSelected && (
+                            <div className="absolute bottom-0.5 right-0.5">
+                              <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
+                            </div>
+                          )}
                         </div>
-                        <span className="text-sm text-white/80 truncate flex-1">{c.name}</span>
+                        <span className="text-[10px] text-white/50 truncate w-full text-center">{c.name}</span>
 
                         {/* Delete Badge */}
                         {isEditing && !isDefault && (
                           <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center shadow-md z-10 hover:bg-red-600 transition-colors">
                             <X className="w-3 h-3 text-white" />
-                          </div>
-                        )}
-
-                        {/* Selected Indicator */}
-                        {!isEditing && isSelected && (
-                          <div className="absolute top-1/2 -translate-y-1/2 right-3">
-                            <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
                           </div>
                         )}
                       </div>
@@ -1077,17 +1079,24 @@ export default function Mini() {
                     </div>
                   )}
 
-                  {sessionSlots.map((slot, idx) => {
+                  {(() => {
+                    // Shuffle slots by seed for random x positions
+                    const shuffled = sessionSlots.map((slot, idx) => {
+                      const seed = (slot.agentId + slot.sessionIdx).split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0)
+                      return { slot, idx, seed }
+                    }).sort((a, b) => ((a.seed * 7 + 13) % 97) - ((b.seed * 7 + 13) % 97))
+
+                    return shuffled.map(({ slot, seed }, sortedIdx) => {
                     const gif = getMiniGif(slot.char, slot.petState ?? (slot.isWorking ? 'working' : 'idle'), true)
-                    const row = idx < 6 ? 0 : 1
-                    const col = row === 0 ? idx : idx - 6
+                    const singleRow = sessionSlots.length <= 6
+                    const row = sortedIdx < 6 ? 0 : 1
+                    const col = row === 0 ? sortedIdx : sortedIdx - 6
                     const cols = row === 0 ? Math.min(sessionSlots.length, 6) : Math.min(sessionSlots.length - 6, 4)
                     const slotW = 380 / Math.max(cols, 1)
                     const xBase = slotW * col + slotW / 2 - 22 + (row === 1 ? slotW * 0.4 : 0)
-                    const yBase = row === 0 ? 4 : 52
-                    const seed = (slot.agentId + slot.sessionIdx).split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+                    const yBase = row === 0 ? (singleRow ? 20 : 4) : 52
                     const jx = ((seed * 7) % 13) - 6
-                    const jy = ((seed * 11) % 9) - 4
+                    const jy = singleRow ? ((seed * 11) % 41) - 20 : ((seed * 11) % 9) - 4
                     const x = Math.max(2, Math.min(332, xBase + jx))
                     const y = yBase + jy
                     return (
@@ -1107,7 +1116,7 @@ export default function Mini() {
                           position: 'absolute', left: x, top: y,
                           display: 'flex', flexDirection: 'column', alignItems: 'center',
                           cursor: 'pointer', zIndex: 2,
-                          transform: `translateY(${Math.sin((bobPhase + idx * 400) / 800) * 2}px)`,
+                          transform: `translateY(${Math.sin((bobPhase + sortedIdx * 400) / 800) * 2}px)`,
                         }}
                       >
                         <div style={{ position: 'relative' }}>
@@ -1126,7 +1135,8 @@ export default function Mini() {
                         </div>
                       </div>
                     )
-                  })}
+                  })
+                  })()}
                 </div>
 
                 {/* Session bars */}
