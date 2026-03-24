@@ -895,7 +895,7 @@ export default function Mini() {
               ? 'clip-path 0.25s cubic-bezier(0.3, 0, 0, 1), box-shadow 0.15s ease'
               : 'clip-path 0.3s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.2s ease',
         }}>
-          {/* Grass background layer - independent from content opacity, visible during collapse */}
+          {/* Grass background layer - only visible during panel collapse animation */}
           {!settingsMode && (
             <div style={{
               position: 'absolute', top: 36, left: 0, right: 0,
@@ -907,10 +907,10 @@ export default function Mini() {
               pointerEvents: 'none',
               zIndex: 0,
               filter: showPanel ? 'blur(0px)' : 'blur(8px)',
-              opacity: showPanel ? 1 : 0.6,
+              opacity: showPanel ? 0 : 1,
               transition: showPanel
-                ? 'filter 0.3s ease, opacity 0.3s ease'
-                : 'filter 0.4s cubic-bezier(0.2, 0, 0, 1) 0.06s, opacity 0.4s cubic-bezier(0.2, 0, 0, 1) 0.06s',
+                ? 'filter 0.2s ease, opacity 0.15s ease'
+                : 'filter 0.4s cubic-bezier(0.2, 0, 0, 1), opacity 0.15s ease 0.05s',
             }} />
           )}
           <div style={{
@@ -1388,6 +1388,7 @@ export default function Mini() {
             ) : selectedSessionKey ? (
               /* ===== OpenClaw session chat ===== */
               <motion.div key="oc-chat"
+                style={{ background: '#1a1a1a' }}
                 initial={{ opacity: 0, x: 30 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -30 }}
@@ -1403,6 +1404,7 @@ export default function Mini() {
             ) : selectedClaudeSession ? (
               /* ===== Claude session chat ===== */
               <motion.div key="claude-chat"
+                style={{ background: '#1a1a1a' }}
                 initial={{ opacity: 0, x: 30 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -30 }}
@@ -1418,6 +1420,7 @@ export default function Mini() {
             ) : (
               /* ===== Agent detail panel (ui-2 style) ===== */
               <motion.div key="agent-detail"
+                style={{ background: '#1a1a1a' }}
                 initial={{ opacity: 0, x: 30 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -30 }}
