@@ -1604,31 +1604,77 @@ async fn get_agent_extra_info(agent_id: String, mode: Option<String>, ssh_host: 
             } else { vec![] };
 
             // Daily counts from remote .jsonl files
+            // Use find+exec to avoid ARG_MAX with many files, and process server-side
+            // to minimise SSH data transfer.
             let mut daily_calls: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
             let mut daily_tokens: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-            let cat_cmd = format!("cat $HOME/.openclaw/agents/{}/sessions/*.jsonl 2>/dev/null", agent_dir);
-            if let Ok(content) = ssh_exec(sh, su, &cat_cmd).await {
-                let mut current_date: Option<String> = None;
-                for line in content.lines() {
-                    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(ts) = obj["timestamp"].as_str() {
-                            if ts.len() >= 10 {
-                                current_date = Some(ts[..10].to_string());
-                                *daily_calls.entry(ts[..10].to_string()).or_insert(0) += 1;
-                            }
+
+            // Server-side: extract "date calls tokens" summary per day using awk
+            // Also output server's "today" to avoid timezone mismatch with local machine
+            let summary_cmd = format!(
+                concat!(
+                    "find ~/.openclaw/agents/{}/sessions -name '*.jsonl' -exec cat {{}} + 2>/dev/null | ",
+                    "awk '{{ ",
+                    "  if (match($0, /\"timestamp\":\"([0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})/, a)) {{ d=a[1]; c[d]++ }} ",
+                    "  if (match($0, /\"totalTokens\":([0-9]+)/, b) && d) t[d]+=b[1] ",
+                    "}} END {{ for (d in c) print d, c[d], t[d]+0 }}' && echo \"SERVER_TODAY:$(date +%Y-%m-%d)\""
+                ),
+                agent_dir
+            );
+            log::info!("[get_agent_extra_info] running daily summary cmd for agent={}", agent_dir);
+            let mut server_today: Option<String> = None;
+            match ssh_exec(sh, su, &summary_cmd).await {
+                Ok(summary) => {
+                    for line in summary.lines() {
+                        if let Some(date_str) = line.strip_prefix("SERVER_TODAY:") {
+                            server_today = Some(date_str.trim().to_string());
+                            continue;
                         }
-                        if obj["type"].as_str() == Some("message") {
-                            if let Some(total) = obj["message"]["usage"]["totalTokens"].as_u64() {
-                                if let Some(ref date) = current_date {
-                                    *daily_tokens.entry(date.clone()).or_insert(0) += total;
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 3 {
+                            let date = parts[0].to_string();
+                            let calls: u32 = parts[1].parse().unwrap_or(0);
+                            let tokens: u64 = parts[2].parse().unwrap_or(0);
+                            daily_calls.insert(date.clone(), calls);
+                            daily_tokens.insert(date, tokens);
+                        }
+                    }
+                    log::info!("[get_agent_extra_info] parsed {} daily entries, server_today={:?}", daily_calls.len(), server_today);
+                }
+                Err(e) => {
+                    log::warn!("[get_agent_extra_info] daily summary cmd failed: {}, trying fallback", e);
+                    // Fallback: cat with find (no glob), limited output
+                    let cat_cmd = format!(
+                        "find ~/.openclaw/agents/{}/sessions -name '*.jsonl' -exec cat {{}} + 2>/dev/null | tail -n 30000",
+                        agent_dir
+                    );
+                    if let Ok(content) = ssh_exec(sh, su, &cat_cmd).await {
+                        let mut current_date: Option<String> = None;
+                        for line in content.lines() {
+                            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) {
+                                if let Some(ts) = obj["timestamp"].as_str() {
+                                    if ts.len() >= 10 {
+                                        current_date = Some(ts[..10].to_string());
+                                        *daily_calls.entry(ts[..10].to_string()).or_insert(0) += 1;
+                                    }
+                                }
+                                if obj["type"].as_str() == Some("message") {
+                                    if let Some(total) = obj["message"]["usage"]["totalTokens"].as_u64() {
+                                        if let Some(ref date) = current_date {
+                                            *daily_tokens.entry(date.clone()).or_insert(0) += total;
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-            use chrono::{Local, Duration};
-            let today = Local::now().date_naive();
+            use chrono::{Local, NaiveDate, Duration};
+            let today = server_today
+                .as_deref()
+                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                .unwrap_or_else(|| Local::now().date_naive());
             let daily_counts: Vec<DailyCount> = (0..14i64).rev().map(|i| {
                 let date = (today - Duration::days(i)).format("%Y-%m-%d").to_string();
                 let count = daily_calls.get(&date).copied().unwrap_or(0);
