@@ -2022,6 +2022,7 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                         unsafe {
                             let _: () = msg_send![obj, setLevel: 27isize];
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                            let _: () = msg_send![obj, orderFrontRegardless];
                         }
                     } else {
                         // Expand to 3/4 screen, centered, no native animation (CSS handles visuals)

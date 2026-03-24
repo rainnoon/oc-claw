@@ -717,14 +717,15 @@ export default function Mini() {
       setHiding(true)
       setExpanded(false)
       // Use setTimeout instead of rAF (rAF may not fire when window is blurred)
-      await new Promise<void>((r) => setTimeout(r, 50))
-      if (wasSettings) {
-        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
-      } else {
-        await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current })
-      }
-      // Show mascot at new position
-      await new Promise<void>((r) => setTimeout(r, 50))
+      try {
+        await new Promise<void>((r) => setTimeout(r, 50))
+        if (wasSettings) {
+          await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
+        } else {
+          await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current })
+        }
+        await new Promise<void>((r) => setTimeout(r, 50))
+      } catch { /* ensure hiding is always cleared */ }
       setHiding(false)
       // Brief cooldown to prevent focus event from immediately re-expanding
       setTimeout(() => { collapsingRef.current = false }, 300)
@@ -783,11 +784,13 @@ export default function Mini() {
       if (el instanceof HTMLInputElement && el.type === 'file') {
         filePickerOpenRef.current = true
       }
+      if (el.closest('a[target="_blank"]')) {
+        filePickerOpenRef.current = true
+      }
     }
     const onFocus = () => { filePickerOpenRef.current = false }
     const onBlur = () => {
       if (filePickerOpenRef.current) return
-      if (isCreateModalOpenRef.current) return
       collapse()
     }
     window.addEventListener('click', onClickCapture, true)
