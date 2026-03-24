@@ -10,14 +10,16 @@ export async function getStore() {
 const ASSET_PREFIX = import.meta.env.DEV ? '/assets/builtin' : 'localasset://localhost'
 export const CUSTOM_ASSET_PREFIX = import.meta.env.DEV ? '/assets/custom' : 'customasset://localhost'
 
+export const DEFAULT_CHAR_NAME = '诗歌剧'
+
 export const DEFAULT_CHAR: CharacterMeta = {
-  name: 'default',
+  name: DEFAULT_CHAR_NAME,
   workGifs: [],
   restGifs: [],
   miniActions: {
     top: [
-      `${ASSET_PREFIX}/default/mini/top/sleep.gif`,
-      `${ASSET_PREFIX}/default/mini/top/work.gif`,
+      `${ASSET_PREFIX}/${DEFAULT_CHAR_NAME}/mini/top/sleeping.gif`,
+      `${ASSET_PREFIX}/${DEFAULT_CHAR_NAME}/mini/top/working.gif`,
     ],
   },
 }
@@ -28,16 +30,19 @@ export async function loadCharacters(): Promise<CharacterMeta[]> {
   const store = await getStore()
 
   let scanned: CharacterMeta[] = []
+  let configDefaults: Record<string, string> | null = null
   try {
-    scanned = (await invoke('scan_characters')) as CharacterMeta[]
+    const result = (await invoke('scan_characters')) as { characters: CharacterMeta[]; defaults?: Record<string, string> }
+    scanned = result.characters
+    configDefaults = result.defaults || null
   } catch (e) {
     console.warn('[loadCharacters] scan_characters failed:', e)
   }
 
-  const scannedDefault = scanned.find((sc) => sc.name === 'default')
+  const scannedDefault = scanned.find((sc) => sc.name === DEFAULT_CHAR_NAME)
   const merged: CharacterMeta[] = [scannedDefault ? { ...DEFAULT_CHAR, ...scannedDefault } : DEFAULT_CHAR]
   for (const sc of scanned) {
-    if (sc.name === 'default') continue
+    if (sc.name === DEFAULT_CHAR_NAME) continue
     merged.push(sc)
   }
 
@@ -48,15 +53,25 @@ export async function loadCharacters(): Promise<CharacterMeta[]> {
   const charMap = ((await store.get('agent_char_map')) as Record<string, string>) || {}
   let mapDirty = false
   for (const [k, v] of Object.entries(charMap)) {
-    if (v && !validNames.has(v)) { charMap[k] = 'default'; mapDirty = true }
+    if (v && !validNames.has(v)) { charMap[k] = DEFAULT_CHAR_NAME; mapDirty = true }
   }
   if (mapDirty) await store.set('agent_char_map', charMap)
 
   const claudeChar = (await store.get('claude_char')) as string
-  if (claudeChar && !validNames.has(claudeChar)) await store.set('claude_char', 'default')
+  if (claudeChar && !validNames.has(claudeChar)) await store.set('claude_char', DEFAULT_CHAR_NAME)
 
   const miniChar = (await store.get('mini_character')) as string
-  if (miniChar && !validNames.has(miniChar)) await store.set('mini_character', 'default')
+  if (miniChar && !validNames.has(miniChar)) await store.set('mini_character', DEFAULT_CHAR_NAME)
+
+  // Apply defaults from characters.json for unset values
+  if (configDefaults) {
+    if (!miniChar && configDefaults.mini_character && validNames.has(configDefaults.mini_character)) {
+      await store.set('mini_character', configDefaults.mini_character)
+    }
+    if (!claudeChar && configDefaults.claude_char && validNames.has(configDefaults.claude_char)) {
+      await store.set('claude_char', configDefaults.claude_char)
+    }
+  }
 
   await store.save()
 
@@ -72,7 +87,7 @@ export async function saveCharacters(chars: CharacterMeta[]) {
 
 export async function getActiveCharacter(): Promise<string> {
   const store = await getStore()
-  return ((await store.get('active_character')) as string) || 'default'
+  return ((await store.get('active_character')) as string) || DEFAULT_CHAR_NAME
 }
 
 export async function setActiveCharacter(name: string) {

@@ -128,6 +128,10 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
 
   const handleSave = useCallback(async () => {
     if (!name.trim() || !pipeline) return
+    if (existingNames.includes(name.trim())) {
+      setError('角色名已存在，请换一个名字')
+      return
+    }
     setSaving(true)
     setError('')
     try {
@@ -161,7 +165,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
       setError(err.message || String(err))
     }
     setSaving(false)
-  }, [name, rows, pipeline, fps, onSaved, onClose])
+  }, [name, rows, pipeline, fps, onSaved, onClose, existingNames])
 
   if (!isOpen) return null
 
@@ -187,16 +191,14 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
                   前往 Gemini 生成角色精灵图
                 </div>
                 <p className="text-xs text-white/50 pl-7">
-                  使用 Google Gemini 生成包含待机、行走、攻击等动作的 Sprite Sheet。
+                  使用 Google Gemini 生成角色精灵图。
                 </p>
-                <a
-                  href="https://gemini.google.com/"
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  onClick={() => invoke('open_url', { url: 'https://gemini.google.com/gem/f30e7b9be50d' })}
                   className="ml-7 inline-flex items-center gap-1.5 text-xs bg-white/10 hover:bg-white/20 text-white/80 w-fit px-3 py-1.5 rounded-lg transition-colors mt-1 border border-white/5"
                 >
                   打开 Gemini <ExternalLink className="w-3 h-3" />
-                </a>
+                </button>
               </div>
 
               {/* Step 2 */}

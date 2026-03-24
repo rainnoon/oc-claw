@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ChevronDown, Edit2, X, UploadCloud, Check } from 'lucide-react'
 import type { CharacterMeta, AgentInfo } from '../lib/types'
-import { getStore, loadCharacters, saveCharacters, getActiveCharacter, setActiveCharacter, fileToDataUrl, MINI_CATEGORIES, CUSTOM_ASSET_PREFIX } from '../lib/store'
+import { getStore, loadCharacters, saveCharacters, getActiveCharacter, setActiveCharacter, fileToDataUrl, MINI_CATEGORIES, CUSTOM_ASSET_PREFIX, DEFAULT_CHAR_NAME } from '../lib/store'
 
 export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
   const [characters, setCharacters] = useState<CharacterMeta[]>([])
@@ -64,8 +64,8 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
     const next = characters.filter((c) => c.name !== name)
     await saveCharacters(next)
     if (active === name) {
-      await setActiveCharacter('default')
-      setActive('default')
+      await setActiveCharacter(DEFAULT_CHAR_NAME)
+      setActive(DEFAULT_CHAR_NAME)
     }
     setCharacters(next)
     try { await invoke('delete_character_assets', { name }) } catch { /* ignore */ }

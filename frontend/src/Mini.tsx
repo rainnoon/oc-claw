@@ -8,12 +8,13 @@ import ReactMarkdown from 'react-markdown'
 import { SettingsTab } from './components/SettingsTab'
 import { AgentDetailView } from './components/AgentDetailView'
 import { CreateCharacterModal } from './components/CreateCharacterModal'
-import { getStore, DEFAULT_CHAR, loadCharacters } from './lib/store'
+import { getStore, DEFAULT_CHAR, DEFAULT_CHAR_NAME, loadCharacters } from './lib/store'
 import { saveAgentCharMap } from './lib/agents'
 import type { AgentMetrics } from './lib/types'
 
 interface CharacterMeta {
   name: string
+  ip?: string
   workGifs: string[]
   restGifs: string[]
   miniActions?: Record<string, string[]>
@@ -290,66 +291,80 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                 </button>
               </div>
 
-              {/* Character Grid */}
+              {/* Character Grid grouped by IP */}
               <div className="max-h-[260px] overflow-y-auto pr-2 pt-2 scrollbar-thin">
-                <div className="grid grid-cols-3 gap-3">
-                  {charsWithMini.map((c) => {
-                    const isSelected = c.name === currentChar
-                    const preview = getMiniGif(c, false)
-                    const isDefault = c.name === 'default' || c.name === 'keli'
-
-                    return (
-                      <div
-                        key={c.name}
-                        onClick={() => {
-                          if (isEditing && !isDefault) {
-                            // TODO: delete character
-                          } else if (!isEditing) {
-                            onSelect(c.name)
-                          }
-                        }}
-                        className={`relative flex items-center gap-3 p-2.5 rounded-xl border transition-all ${
-                          isEditing && !isDefault
-                            ? 'cursor-pointer hover:bg-red-500/10 border-red-500/30'
-                            : isEditing && isDefault
-                            ? 'opacity-40 cursor-not-allowed border-transparent'
-                            : isSelected
-                            ? 'bg-white/10 border-white/20 cursor-default'
-                            : 'bg-white/5 border-transparent hover:bg-white/10 cursor-pointer'
-                        }`}
-                      >
-                        <div className="relative w-9 h-9 shrink-0 rounded-lg overflow-hidden bg-black/50 border border-white/10">
-                          {preview ? (
-                            <img
-                              src={preview}
-                              alt={c.name}
-                              className={`w-full h-full object-contain transition-opacity ${isEditing && !isDefault ? 'opacity-50' : 'opacity-90'}`}
-                              style={{ imageRendering: 'pixelated' }}
-                              draggable={false}
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
-                          )}
-                        </div>
-                        <span className="text-sm text-white/80 truncate flex-1">{c.name}</span>
-
-                        {/* Delete Badge */}
-                        {isEditing && !isDefault && (
-                          <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center shadow-md z-10 hover:bg-red-600 transition-colors">
-                            <X className="w-3 h-3 text-white" />
-                          </div>
-                        )}
-
-                        {/* Selected Indicator */}
-                        {!isEditing && isSelected && (
-                          <div className="absolute top-1/2 -translate-y-1/2 right-3">
-                            <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
-                          </div>
-                        )}
+                {(() => {
+                  const groups: { ip: string; chars: typeof charsWithMini }[] = []
+                  const ipOrder: string[] = []
+                  for (const c of charsWithMini) {
+                    const ip = c.ip || '自定义'
+                    if (!ipOrder.includes(ip)) ipOrder.push(ip)
+                  }
+                  // 自定义 always first
+                  const customIdx = ipOrder.indexOf('自定义')
+                  if (customIdx > 0) { ipOrder.splice(customIdx, 1); ipOrder.unshift('自定义') }
+                  for (const ip of ipOrder) {
+                    groups.push({ ip, chars: charsWithMini.filter((c) => (c.ip || '自定义') === ip) })
+                  }
+                  return groups.map(({ ip, chars }) => (
+                    <div key={ip} className="mb-3 last:mb-0">
+                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">{ip}</div>
+                      <div className="grid grid-cols-3 gap-3">
+                        {chars.map((c) => {
+                          const isSelected = c.name === currentChar
+                          const preview = getMiniGif(c, false)
+                          const isDefault = !!c.builtin
+                          return (
+                            <div
+                              key={c.name}
+                              onClick={() => {
+                                if (isEditing && !isDefault) {
+                                  // TODO: delete character
+                                } else if (!isEditing) {
+                                  onSelect(c.name)
+                                }
+                              }}
+                              className={`relative flex items-center gap-3 p-2.5 rounded-xl border transition-all ${
+                                isEditing && !isDefault
+                                  ? 'cursor-pointer hover:bg-red-500/10 border-red-500/30'
+                                  : isEditing && isDefault
+                                  ? 'opacity-40 cursor-not-allowed border-transparent'
+                                  : isSelected
+                                  ? 'bg-white/10 border-white/20 cursor-default'
+                                  : 'bg-white/5 border-transparent hover:bg-white/10 cursor-pointer'
+                              }`}
+                            >
+                              <div className="relative w-9 h-9 shrink-0 rounded-lg overflow-hidden bg-black/50 border border-white/10">
+                                {preview ? (
+                                  <img
+                                    src={preview}
+                                    alt={c.name}
+                                    className={`w-full h-full object-contain transition-opacity ${isEditing && !isDefault ? 'opacity-50' : 'opacity-90'}`}
+                                    style={{ imageRendering: 'pixelated' }}
+                                    draggable={false}
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
+                                )}
+                              </div>
+                              <span className="text-sm text-white/80 truncate flex-1">{c.name}</span>
+                              {isEditing && !isDefault && (
+                                <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center shadow-md z-10 hover:bg-red-600 transition-colors">
+                                  <X className="w-3 h-3 text-white" />
+                                </div>
+                              )}
+                              {!isEditing && isSelected && (
+                                <div className="absolute top-1/2 -translate-y-1/2 right-3">
+                                  <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
-                    )
-                  })}
-                </div>
+                    </div>
+                  ))
+                })()}
               </div>
             </div>
           </motion.div>
@@ -392,7 +407,7 @@ export default function Mini() {
 
   // Claude Code
   const [claudeSessions, setClaudeSessions] = useState<any[]>([])
-  const [claudeCharName, setClaudeCharName] = useState('default')
+  const [claudeCharName, setClaudeCharName] = useState(DEFAULT_CHAR_NAME)
   const [selectedClaudeSession, setSelectedClaudeSession] = useState<string | null>(null)
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
 
@@ -574,7 +589,7 @@ export default function Mini() {
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const mp = await store.get('mascot_position') as string
       if (mp === 'left' || mp === 'right') { setMascotPosition(mp); mascotPositionRef.current = mp }
-      const ccChar = ((await store.get('claude_char')) as string) || 'default'
+      const ccChar = ((await store.get('claude_char')) as string) || DEFAULT_CHAR_NAME
       setClaudeCharName(ccChar)
     })()
   }, [])
@@ -1096,7 +1111,7 @@ export default function Mini() {
                                     key={agent.id}
                                     agent={agent}
                                     characters={characters}
-                                    currentChar={agentCharMap[agent.id] || 'default'}
+                                    currentChar={agentCharMap[agent.id] || DEFAULT_CHAR_NAME}
                                     isOpen={openAccordionId === agent.id}
                                     onToggle={() => setOpenAccordionId(openAccordionId === agent.id ? null : agent.id)}
                                     onOpenCreate={() => setIsCreateModalOpen(true)}
@@ -1150,17 +1165,21 @@ export default function Mini() {
                   )}
                 </div>
                 <div style={{
-                  background: '#1a1a1a', padding: '8px 14px',
+                  background: '#1a1a1a', padding: '10px 14px',
                   borderRadius: '0 0 12px 12px', flexShrink: 0,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
                   <span
                     onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
-                    style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, cursor: 'pointer' }}
-                    onMouseEnter={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.8)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.5)')}
+                    style={{
+                      color: 'rgba(255,255,255,0.35)', fontSize: 11, cursor: 'pointer',
+                      transition: 'color 0.25s, transform 0.25s, letter-spacing 0.25s',
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = '#f5c542'; e.currentTarget.style.transform = 'scale(1.04)'; e.currentTarget.style.letterSpacing = '0.3px' }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.35)'; e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.letterSpacing = '0px' }}
                   >
-                    GitHub · 项目地址
+                    如果觉得有用，给我们一个 <span style={{ fontSize: 13, lineHeight: 1 }}>⭐</span> 吧
                   </span>
                 </div>
               </div>

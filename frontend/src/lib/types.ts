@@ -13,6 +13,7 @@ export interface SessionInfo {
 export interface CharacterMeta {
   name: string
   builtin?: boolean
+  ip?: string
   workGifs: string[]
   restGifs: string[]
   crawlGifs?: string[]

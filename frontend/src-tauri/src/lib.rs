@@ -515,11 +515,37 @@ fn custom_assets_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-async fn scan_characters(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> {
+async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let mut results = vec![];
 
+    // Load characters.json for IP mapping and defaults
+    let mut ip_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut config_defaults: Option<serde_json::Map<String, serde_json::Value>> = None;
+    if let Ok(builtin_dir) = builtin_assets_dir(&app) {
+        let config_path = builtin_dir.join("characters.json");
+        if let Ok(data) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(ips) = config.get("ips").and_then(|v| v.as_array()) {
+                    for ip in ips {
+                        let ip_name = ip.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        if let Some(chars) = ip.get("characters").and_then(|c| c.as_array()) {
+                            for ch in chars {
+                                if let Some(ch_name) = ch.as_str() {
+                                    ip_map.insert(ch_name.to_string(), ip_name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(defaults) = config.get("defaults").and_then(|d| d.as_object()) {
+                    config_defaults = Some(defaults.clone());
+                }
+            }
+        }
+    }
+
     // Scan a directory and append characters to results
-    fn scan_dir(base: &std::path::Path, url_prefix: &str, builtin: bool, results: &mut Vec<serde_json::Value>) {
+    fn scan_dir(base: &std::path::Path, url_prefix: &str, builtin: bool, ip_map: &std::collections::HashMap<String, String>, results: &mut Vec<serde_json::Value>) {
         let entries = match std::fs::read_dir(base) {
             Ok(e) => e,
             Err(_) => return,
@@ -571,8 +597,11 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>
             }
 
             let mut char_obj = serde_json::Map::new();
-            char_obj.insert("name".into(), serde_json::Value::String(name));
             char_obj.insert("builtin".into(), serde_json::Value::Bool(builtin));
+            if let Some(ip_name) = ip_map.get(&name) {
+                char_obj.insert("ip".into(), serde_json::Value::String(ip_name.clone()));
+            }
+            char_obj.insert("name".into(), serde_json::Value::String(name));
             char_obj.insert("workGifs".into(), serde_json::Value::Array(work_gifs.into_iter().map(serde_json::Value::String).collect()));
             char_obj.insert("restGifs".into(), serde_json::Value::Array(rest_gifs.into_iter().map(serde_json::Value::String).collect()));
             if !crawl_gifs.is_empty() {
@@ -594,16 +623,21 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>
     // Scan built-in assets
     let builtin_prefix = if cfg!(debug_assertions) { "/assets/builtin" } else { "localasset://localhost" };
     if let Ok(builtin_dir) = builtin_assets_dir(&app) {
-        scan_dir(&builtin_dir, builtin_prefix, true, &mut results);
+        scan_dir(&builtin_dir, builtin_prefix, true, &ip_map, &mut results);
     }
 
     // Scan custom assets
     let custom_prefix = if cfg!(debug_assertions) { "/assets/custom" } else { "customasset://localhost" };
     if let Ok(custom_dir) = custom_assets_dir(&app) {
-        scan_dir(&custom_dir, custom_prefix, false, &mut results);
+        scan_dir(&custom_dir, custom_prefix, false, &ip_map, &mut results);
     }
 
-    Ok(results)
+    let mut response = serde_json::Map::new();
+    response.insert("characters".into(), serde_json::Value::Array(results));
+    if let Some(defaults) = config_defaults {
+        response.insert("defaults".into(), serde_json::Value::Object(defaults));
+    }
+    Ok(serde_json::Value::Object(response))
 }
 
 #[tauri::command]
