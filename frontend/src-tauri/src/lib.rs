@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use percent_encoding::percent_decode_str;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -3341,7 +3342,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .register_uri_scheme_protocol("localasset", |ctx, req| {
-            let path = req.uri().path();
+            let raw_path = req.uri().path();
+            let path = percent_decode_str(raw_path).decode_utf8_lossy();
             let resource_dir = ctx.app_handle().path().resource_dir().unwrap_or_default();
             let file_path = resource_dir.join("assets").join("builtin").join(path.trim_start_matches('/'));
             match std::fs::read(&file_path) {
