@@ -3506,7 +3506,8 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
                                     if tool == "AskUserQuestion" { "waiting".to_string() } else { "tool_running".to_string() }
                                 }
                                 "PostToolUse" => "processing".to_string(),
-                                "Stop" | "SubagentStop" => "stopped".to_string(),
+                                "Stop" => "stopped".to_string(),
+                                "SubagentStop" => "processing".to_string(),
                                 "SessionEnd" => "ended".to_string(),
                                 "PermissionRequest" => "waiting".to_string(),
                                 "SessionStart" => {
