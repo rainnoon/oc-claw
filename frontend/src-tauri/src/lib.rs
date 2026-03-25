@@ -2169,20 +2169,25 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
             if let Ok(ns_win) = win_clone.ns_window() {
                 let obj = unsafe { &*(ns_win as *mut AnyObject) };
 
+                // Use the screen the window is currently on (multi-monitor support)
                 let screen_info: Option<(f64, f64, f64, f64, f64)> = unsafe {
-                    let cls = match AnyClass::get(c"NSScreen") {
-                        Some(c) => c,
-                        None => return,
-                    };
-                    let screens: *mut AnyObject = msg_send![cls, screens];
-                    if screens.is_null() { return; }
-                    let count: usize = msg_send![&*screens, count];
-                    if count == 0 { return; }
-                    let screen: *mut AnyObject = msg_send![&*screens, objectAtIndex: 0usize];
-                    if screen.is_null() { return; }
-                    let sf: NSRect = msg_send![&*screen, frame];
-                    let notch_off = get_notch_offset(screen);
-                    Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height, notch_off))
+                    let screen: *mut AnyObject = msg_send![obj, screen];
+                    if screen.is_null() {
+                        // Fallback to main screen
+                        let cls = match AnyClass::get(c"NSScreen") {
+                            Some(c) => c,
+                            None => return,
+                        };
+                        let main_screen: *mut AnyObject = msg_send![cls, mainScreen];
+                        if main_screen.is_null() { return; }
+                        let sf: NSRect = msg_send![&*main_screen, frame];
+                        let notch_off = get_notch_offset(main_screen);
+                        Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height, notch_off))
+                    } else {
+                        let sf: NSRect = msg_send![&*screen, frame];
+                        let notch_off = get_notch_offset(screen);
+                        Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height, notch_off))
+                    }
                 };
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
@@ -2234,20 +2239,24 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
             if let Ok(ns_win) = win_clone.ns_window() {
                 let obj = unsafe { &*(ns_win as *mut AnyObject) };
 
+                // Use the screen the window is currently on (multi-monitor support)
                 let screen_info: Option<(f64, f64, f64, f64, f64)> = unsafe {
-                    let cls = match AnyClass::get(c"NSScreen") {
-                        Some(c) => c,
-                        None => return,
-                    };
-                    let screens: *mut AnyObject = msg_send![cls, screens];
-                    if screens.is_null() { return; }
-                    let count: usize = msg_send![&*screens, count];
-                    if count == 0 { return; }
-                    let screen: *mut AnyObject = msg_send![&*screens, objectAtIndex: 0usize];
-                    if screen.is_null() { return; }
-                    let sf: NSRect = msg_send![&*screen, frame];
-                    let notch_off = get_notch_offset(screen);
-                    Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height, notch_off))
+                    let screen: *mut AnyObject = msg_send![obj, screen];
+                    if screen.is_null() {
+                        let cls = match AnyClass::get(c"NSScreen") {
+                            Some(c) => c,
+                            None => return,
+                        };
+                        let main_screen: *mut AnyObject = msg_send![cls, mainScreen];
+                        if main_screen.is_null() { return; }
+                        let sf: NSRect = msg_send![&*main_screen, frame];
+                        let notch_off = get_notch_offset(main_screen);
+                        Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height, notch_off))
+                    } else {
+                        let sf: NSRect = msg_send![&*screen, frame];
+                        let notch_off = get_notch_offset(screen);
+                        Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height, notch_off))
+                    }
                 };
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
