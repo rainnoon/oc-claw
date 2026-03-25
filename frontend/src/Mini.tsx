@@ -1135,6 +1135,20 @@ export default function Mini() {
   // Panel dimensions depend on settingsMode
   const panelW = settingsMode ? '100vw' : 380
   const panelH = settingsMode ? '100vh' : 560
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  // Dynamically resize Tauri window to match panel height (max 400)
+  useEffect(() => {
+    if (!expanded || settingsMode) return
+    const el = panelRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height
+      if (h && h > 0) invoke('resize_mini_height', { height: Math.min(h, 400) }).catch(() => {})
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [expanded, settingsMode])
 
   return (
     <div style={{
@@ -1197,14 +1211,15 @@ export default function Mini() {
 
       {/* Expanded panel */}
       {expanded && (
-        <div id="mini-panel" style={{
+        <div id="mini-panel" ref={panelRef} style={{
           position: 'absolute', top: 0,
           left: '50%',
           transform: 'translateX(-50%)',
           width: panelW,
           height: settingsMode ? panelH : 'auto',
-          maxHeight: settingsMode ? undefined : panelH,
-          overflow: 'hidden',
+          maxHeight: settingsMode ? undefined : 400,
+          overflowY: settingsMode ? 'hidden' : 'auto',
+          overflowX: 'hidden',
           background: '#1a1a1a',
           clipPath: showPanel
             ? `inset(0 0 0 0 round 0 0 ${settingsMode ? '16px 16px' : '24px 24px'})`

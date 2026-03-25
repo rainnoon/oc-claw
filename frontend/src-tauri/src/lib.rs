@@ -2345,7 +2345,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                     }
                     if expanded {
                         let win_w = 400.0;
-                        let win_h = 560.0;
+                        let win_h = 400.0;
                         let x = sx + (sw - win_w) / 2.0;
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
@@ -2362,6 +2362,46 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
                         }
                     }
+                }
+            }
+        }).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Resize the expanded mini window height while keeping it bottom-aligned on the current screen.
+#[tauri::command]
+async fn resize_mini_height(app: tauri::AppHandle, height: f64) -> Result<(), String> {
+    let win = app.get_webview_window("mini").ok_or("mini window not found")?;
+    let h = height.max(45.0).min(400.0);
+
+    #[cfg(target_os = "macos")]
+    {
+        let win_clone = win.clone();
+        app.run_on_main_thread(move || {
+            use objc2::runtime::{AnyClass, AnyObject};
+            use objc2::msg_send;
+            use objc2_foundation::{NSRect, NSPoint, NSSize};
+
+            if let Ok(ns_win) = win_clone.ns_window() {
+                let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                let screen: *mut AnyObject = unsafe { msg_send![obj, screen] };
+                let screen_ptr = if screen.is_null() {
+                    let cls = match AnyClass::get(c"NSScreen") { Some(c) => c, None => return };
+                    let ms: *mut AnyObject = unsafe { msg_send![cls, mainScreen] };
+                    if ms.is_null() { return; }
+                    ms
+                } else { screen };
+                let sf: NSRect = unsafe { msg_send![&*screen_ptr, frame] };
+                let cur: NSRect = unsafe { msg_send![obj, frame] };
+                // Keep same center-x, adjust height from bottom of screen upward
+                let new_frame = NSRect::new(
+                    NSPoint::new(cur.origin.x, sf.origin.y + sf.size.height - h),
+                    NSSize::new(cur.size.width, h),
+                );
+                unsafe {
+                    let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: false];
                 }
             }
         }).map_err(|e| e.to_string())?;
@@ -4188,7 +4228,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
