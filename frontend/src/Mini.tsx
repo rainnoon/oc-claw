@@ -42,6 +42,13 @@ interface MiniSessionInfo {
   active: boolean
   lastUserMsg?: string
   lastAssistantMsg?: string
+  sessionFile?: string
+}
+
+interface SessionPreview {
+  active: boolean
+  lastUserMsg?: string
+  lastAssistantMsg?: string
 }
 
 interface SessionSlot {
@@ -498,8 +505,16 @@ export default function Mini() {
     } catch { /* ignore */ }
   }, [])
 
+  const previewCacheRef = useRef<Map<string, { active: boolean; lastUserMsg?: string; lastAssistantMsg?: string; fetchedAt: number }>>(new Map())
+  const previewQueueRef = useRef<string[]>([])
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sessionFileMapRef = useRef<Map<string, string>>(new Map())
+  const fetchingSessionsRef = useRef(false)
+
   const fetchAllSessions = useCallback(async () => {
     if (agents.length === 0) { setAllSessions([]); return }
+    if (fetchingSessionsRef.current) return
+    fetchingSessionsRef.current = true
     const oc = await getOcParams()
     const results: MiniSessionInfo[] = []
     await Promise.all(
@@ -510,6 +525,8 @@ export default function Mini() {
         } catch { /* ignore */ }
       })
     )
+    // Keep previous data if all fetches failed (SSH backoff etc.)
+    if (results.length === 0 && previewCacheRef.current.size > 0) { fetchingSessionsRef.current = false; return }
     const seen = new Set<string>()
     const deduped = results.filter(s => {
       const k = `${s.agentId}:${s.key}`
@@ -525,8 +542,38 @@ export default function Mini() {
       }
       return !dismissedSessionsRef.current.has(key)
     })
-    filtered.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
-    setAllSessions(filtered)
+    filtered.sort((a, b) => b.updatedAt - a.updatedAt)
+    const top = filtered.slice(0, MAX_SLOTS)
+
+    // Merge cached preview data into sessions
+    const merged = top.map(s => {
+      const k = `${s.agentId}:${s.key}`
+      const cached = previewCacheRef.current.get(k)
+      if (cached) {
+        return { ...s, active: cached.active, lastUserMsg: cached.lastUserMsg, lastAssistantMsg: cached.lastAssistantMsg }
+      }
+      return s
+    })
+    merged.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
+    setAllSessions(merged)
+
+    // Build session file lookup and queue preview fetches
+    const queue: string[] = []
+    for (const s of top) {
+      const k = `${s.agentId}:${s.key}`
+      if (s.sessionFile) sessionFileMapRef.current.set(k, s.sessionFile)
+      const cached = previewCacheRef.current.get(k)
+      const stale = !cached || (Date.now() - cached.fetchedAt > 15000)
+      if (stale) queue.push(k)
+    }
+    // Prioritize active sessions first
+    queue.sort((a, b) => {
+      const ca = previewCacheRef.current.get(a)
+      const cb = previewCacheRef.current.get(b)
+      return (cb?.active ? 1 : 0) - (ca?.active ? 1 : 0)
+    })
+    previewQueueRef.current = queue
+    fetchingSessionsRef.current = false
   }, [agents])
 
   useEffect(() => {
@@ -540,6 +587,12 @@ export default function Mini() {
   const pollActiveStatus = useCallback(async () => {
     try {
       const oc = await getOcParams()
+      // Skip heavy SSH polling in remote mode — active status comes from session previews
+      if (oc.mode === 'remote') {
+        const anyActive = Array.from(previewCacheRef.current.values()).some(c => c.active)
+        setAnySessionActive(anyActive)
+        return
+      }
       const activeKeys = (await invoke('get_active_sessions', oc)) as string[]
       setAnySessionActive(activeKeys.length > 0)
       const activeSet = new Set(activeKeys)
@@ -564,12 +617,51 @@ export default function Mini() {
     return () => clearInterval(t)
   }, [pollActiveStatus])
 
+  const drainPreviewQueue = useCallback(async () => {
+    if (previewTimerRef.current) { clearTimeout(previewTimerRef.current); previewTimerRef.current = null }
+    const queue = [...previewQueueRef.current]
+    if (queue.length === 0) return
+    const oc = await getOcParams()
+
+    const processNext = (idx: number) => {
+      if (idx >= queue.length) return
+      const k = queue[idx]
+      const sessionFile = sessionFileMapRef.current.get(k)
+      if (!sessionFile) {
+        console.warn('[drainPreview] no sessionFile for', k, 'map size:', sessionFileMapRef.current.size)
+        previewTimerRef.current = setTimeout(() => processNext(idx + 1), 200)
+        return
+      }
+      invoke('get_session_preview', { sessionFile, ...oc })
+        .then((preview) => {
+          const p = preview as SessionPreview
+          previewCacheRef.current.set(k, { ...p, fetchedAt: Date.now() })
+          setAllSessions(prev => prev.map(s => {
+            if (`${s.agentId}:${s.key}` === k) {
+              return { ...s, active: p.active, lastUserMsg: p.lastUserMsg, lastAssistantMsg: p.lastAssistantMsg }
+            }
+            return s
+          }))
+        })
+        .catch(() => { /* ignore */ })
+        .finally(() => {
+          if (idx + 1 < queue.length) {
+            previewTimerRef.current = setTimeout(() => processNext(idx + 1), 1500)
+          }
+        })
+    }
+    processNext(0)
+  }, [])
+
   useEffect(() => {
     if (!expanded) return
-    fetchAllSessions()
-    const t1 = setInterval(fetchAllSessions, 5000)
-    return () => clearInterval(t1)
-  }, [expanded, fetchAllSessions])
+    fetchAllSessions().then(() => drainPreviewQueue())
+    const t1 = setInterval(() => { fetchAllSessions().then(() => drainPreviewQueue()) }, 5000)
+    return () => {
+      clearInterval(t1)
+      if (previewTimerRef.current) { clearTimeout(previewTimerRef.current); previewTimerRef.current = null }
+    }
+  }, [expanded, fetchAllSessions, drainPreviewQueue])
 
   // Load feature toggles
   useEffect(() => {

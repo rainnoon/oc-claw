@@ -1,7 +1,35 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::SystemTime;
 use percent_encoding::percent_decode_str;
+
+static SSH_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
+static SSH_FAIL_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+fn ssh_backoff_remaining() -> Option<u64> {
+    let failures = SSH_FAIL_COUNT.load(Ordering::Relaxed);
+    if failures == 0 { return None; }
+    let fail_time = SSH_FAIL_EPOCH.load(Ordering::Relaxed);
+    let cooldown = std::cmp::min(15u64 * 2u64.pow(failures.saturating_sub(1)), 300);
+    let elapsed = unix_now().saturating_sub(fail_time);
+    if elapsed < cooldown { Some(cooldown - elapsed) } else { None }
+}
+
+fn ssh_backoff_record_failure() {
+    SSH_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+    SSH_FAIL_EPOCH.store(unix_now(), Ordering::Relaxed);
+}
+
+fn ssh_backoff_reset() {
+    SSH_FAIL_COUNT.store(0, Ordering::Relaxed);
+    SSH_FAIL_EPOCH.store(0, Ordering::Relaxed);
+}
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -208,8 +236,31 @@ async fn is_remote_session_active(url: &str, token: &str, session_key: &str, s: 
     is_session_active(s)
 }
 
+/// Parse tail lines of a session .jsonl to determine if an agent is active.
+/// Reuses the same logic as ssh_is_agent_active but without SSH.
+fn check_agent_active_from_lines(lines: &[String]) -> bool {
+    let mut last_role = "";
+    let mut has_usage = false;
+    for line in lines.iter().rev() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val["type"].as_str() == Some("message") {
+                last_role = if val["message"]["role"].as_str() == Some("user") { "user" } else { "assistant" };
+                has_usage = val["message"]["usage"].is_object();
+                break;
+            }
+        }
+    }
+    last_role == "user" || (last_role == "assistant" && !has_usage)
+}
+
 /// Ensure an SSH ControlMaster socket is established (called once, reused by all ssh_exec).
+/// Implements exponential backoff on connection failure (15s, 30s, 60s, … capped at 300s)
+/// to avoid flooding the server with reconnection attempts.
 async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
+    if let Some(remaining) = ssh_backoff_remaining() {
+        return Err(format!("SSH connection backing off, retry in {}s", remaining));
+    }
+
     use std::sync::OnceLock;
     use tokio::sync::Mutex as TokioMutex;
     static LOCK: OnceLock<TokioMutex<()>> = OnceLock::new();
@@ -242,8 +293,12 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         .map_err(|e| format!("ssh master: {}", e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        ssh_backoff_record_failure();
+        let count = SSH_FAIL_COUNT.load(Ordering::Relaxed);
+        log::warn!("[ssh] connection failed (attempt {}), entering backoff", count);
         return Err(format!("SSH connection failed (check key auth): {}", stderr));
     }
+    ssh_backoff_reset();
     Ok(())
 }
 
@@ -303,7 +358,10 @@ async fn ssh_exec(ssh_host: &str, ssh_user: &str, cmd: &str) -> Result<String, S
 /// Close an active SSH ControlMaster socket.
 async fn close_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
     let control_path = format!("/tmp/oc-claw-ssh-{}@{}:22", ssh_user, ssh_host);
-    if !std::path::Path::new(&control_path).exists() { return Ok(()); }
+    if !std::path::Path::new(&control_path).exists() {
+        ssh_backoff_reset();
+        return Ok(());
+    }
     let target = format!("{}@{}", ssh_user, ssh_host);
     let cp = format!("ControlPath={}", control_path);
     let _ = tokio::process::Command::new("ssh")
@@ -312,8 +370,8 @@ async fn close_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> 
         .stderr(std::process::Stdio::null())
         .output()
         .await;
-    // Also remove stale socket file if it remains
     let _ = tokio::fs::remove_file(&control_path).await;
+    ssh_backoff_reset();
     log::info!("[close_ssh_master] closed socket for {}@{}", ssh_user, ssh_host);
     Ok(())
 }
@@ -323,7 +381,6 @@ async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result
     let sh = ssh_host.unwrap_or_default();
     let su = ssh_user.unwrap_or_default();
     if sh.is_empty() || su.is_empty() {
-        // Try to close any oc-claw ssh sockets
         if let Ok(mut entries) = tokio::fs::read_dir("/tmp").await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name().to_string_lossy().to_string();
@@ -333,6 +390,7 @@ async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result
                 }
             }
         }
+        ssh_backoff_reset();
         return Ok(());
     }
     close_ssh_master(&sh, &su).await
@@ -826,15 +884,33 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
         let sh = ssh_host.as_deref().unwrap_or("");
         let su = ssh_user.as_deref().unwrap_or("");
         if !sh.is_empty() && !su.is_empty() {
-            let dirs_output = ssh_exec(sh, su, "ls -1 $HOME/.openclaw/agents/ 2>/dev/null").await.unwrap_or_default();
-            let agent_ids: Vec<String> = dirs_output.lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|id| id.trim().to_string())
-                .collect();
+            // Single SSH command: list agents and check each one's latest session tail
+            let cmd = r#"for d in $HOME/.openclaw/agents/*/; do id=$(basename "$d"); f=$(ls -t "$d"sessions/*.jsonl 2>/dev/null | head -1); echo "AGENT:$id"; [ -f "$f" ] && tail -5 "$f"; echo "END_AGENT"; done"#;
+            let output = ssh_exec(sh, su, cmd).await.unwrap_or_default();
             let mut agents = Vec::new();
-            for id in &agent_ids {
-                let active = ssh_is_agent_active(sh, su, id).await;
-                agents.push(AgentHealth { agent_id: id.clone(), active });
+            let mut current_id: Option<String> = None;
+            let mut lines_buf: Vec<String> = Vec::new();
+            for line in output.lines() {
+                if let Some(id) = line.strip_prefix("AGENT:") {
+                    if let Some(prev_id) = current_id.take() {
+                        let active = check_agent_active_from_lines(&lines_buf);
+                        agents.push(AgentHealth { agent_id: prev_id, active });
+                    }
+                    current_id = Some(id.to_string());
+                    lines_buf.clear();
+                } else if line == "END_AGENT" {
+                    if let Some(prev_id) = current_id.take() {
+                        let active = check_agent_active_from_lines(&lines_buf);
+                        agents.push(AgentHealth { agent_id: prev_id, active });
+                    }
+                    lines_buf.clear();
+                } else {
+                    lines_buf.push(line.to_string());
+                }
+            }
+            if let Some(prev_id) = current_id {
+                let active = check_agent_active_from_lines(&lines_buf);
+                agents.push(AgentHealth { agent_id: prev_id, active });
             }
             return Ok(HealthResult { agents });
         }
@@ -2116,6 +2192,8 @@ pub struct MiniSessionInfo {
     pub last_user_msg: Option<String>,
     #[serde(rename = "lastAssistantMsg")]
     pub last_assistant_msg: Option<String>,
+    #[serde(rename = "sessionFile", default, skip_serializing_if = "Option::is_none")]
+    pub session_file: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2308,48 +2386,37 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
         let sh = ssh_host.as_deref().unwrap_or("");
         let su = ssh_user.as_deref().unwrap_or("");
         if !sh.is_empty() && !su.is_empty() {
-            // SSH-based: full local-like session list with messages
+            // SSH: only read sessions.json metadata (1 SSH call).
+            // Session file content is loaded lazily via get_session_preview.
             let sess_path = remote_sessions_json_path(&agent_id);
-            log::info!("[get_agent_sessions] SSH reading: {}", sess_path);
+            log::info!("[get_agent_sessions] SSH reading metadata: {}", sess_path);
             let content = match ssh_read_file(sh, su, &sess_path).await {
                 Ok(c) => { log::info!("[get_agent_sessions] SSH read OK, len={}", c.len()); c }
                 Err(e) => { log::error!("[get_agent_sessions] SSH read failed: {}", e); return Err(format!("read remote sessions.json: {}", e)); }
             };
             let map: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_str(&content).map_err(|e| { log::error!("[get_agent_sessions] parse failed: {}", e); e.to_string() })?;
-            log::info!("[get_agent_sessions] sessions.json keys: {:?}", map.keys().collect::<Vec<_>>());
 
-            let mut sessions: Vec<MiniSessionInfo> = Vec::new();
-            for (key, val) in map.iter() {
-                let session_file = val["sessionFile"].as_str().unwrap_or("").to_string();
-                if session_file.is_empty() { log::info!("[get_agent_sessions] skip key={} no sessionFile", key); continue; }
-
-                let is_active = ssh_is_session_file_active(sh, su, &session_file).await;
-
-                let (last_user, last_assistant) = match ssh_read_file(sh, su, &session_file).await {
-                    Ok(c) => { log::info!("[get_agent_sessions] read session file OK, len={}", c.len()); extract_last_messages(&c) }
-                    Err(e) => { log::error!("[get_agent_sessions] read session file failed: {} path={}", e, session_file); (None, None) }
-                };
-
-                log::info!("[get_agent_sessions] key={} last_user={:?} last_assistant={:?}", key, last_user.is_some(), last_assistant.is_some());
-                if last_user.is_none() && last_assistant.is_none() { continue; }
-                if key.contains(":cron:") { continue; }
-
-                sessions.push(MiniSessionInfo {
+            let mut sessions: Vec<MiniSessionInfo> = map.iter()
+                .filter(|(key, val)| {
+                    !key.contains(":cron:") && !val["sessionFile"].as_str().unwrap_or("").is_empty()
+                })
+                .map(|(key, val)| MiniSessionInfo {
                     key: key.clone(),
                     agent_id: agent_id.clone(),
                     session_id: val["sessionId"].as_str().unwrap_or(key).to_string(),
                     label: key.clone(),
                     channel: val["lastChannel"].as_str().map(|s| s.to_string()),
                     updated_at: val["updatedAt"].as_u64().unwrap_or(0),
-                    active: is_active,
-                    last_user_msg: last_user,
-                    last_assistant_msg: last_assistant,
-                });
-            }
-            log::info!("[get_agent_sessions] SSH result: {} sessions", sessions.len());
+                    active: false,
+                    last_user_msg: None,
+                    last_assistant_msg: None,
+                    session_file: val["sessionFile"].as_str().map(|s| s.to_string()),
+                })
+                .collect();
             sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-            sessions.truncate(20);
+            sessions.truncate(5);
+            log::info!("[get_agent_sessions] SSH metadata result: {} sessions (of {} total)", sessions.len(), map.len());
             return Ok(sessions);
         }
         // Gateway API fallback
@@ -2372,6 +2439,7 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
                 active: is_session_active(s),
                 last_user_msg: s["lastUserMsg"].as_str().map(|s| s.to_string()),
                 last_assistant_msg: s["lastAssistantMsg"].as_str().map(|s| s.to_string()),
+                session_file: None,
             })
         }).collect();
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -2449,12 +2517,56 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
             active: is_active,
             last_user_msg: last_user,
             last_assistant_msg: last_assistant,
+            session_file: Some(session_file),
         });
     }
 
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     sessions.truncate(20);
     Ok(sessions)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SessionPreview {
+    pub active: bool,
+    #[serde(rename = "lastUserMsg")]
+    pub last_user_msg: Option<String>,
+    #[serde(rename = "lastAssistantMsg")]
+    pub last_assistant_msg: Option<String>,
+}
+
+#[tauri::command]
+async fn get_session_preview(session_file: String, mode: Option<String>, ssh_host: Option<String>, ssh_user: Option<String>) -> Result<SessionPreview, String> {
+    log::info!("[get_session_preview] file={} mode={:?}", session_file, mode);
+    if mode.as_deref() == Some("remote") {
+        let sh = ssh_host.as_deref().unwrap_or("");
+        let su = ssh_user.as_deref().unwrap_or("");
+        if !sh.is_empty() && !su.is_empty() {
+            let escaped = session_file.replace('"', r#"\""#);
+            let cmd = format!(
+                "tail -50 \"{}\" 2>/dev/null",
+                escaped
+            );
+            let output = ssh_exec(sh, su, &cmd).await
+                .map_err(|e| { log::error!("[get_session_preview] SSH failed: {}", e); format!("session preview: {}", e) })?;
+
+            let active = check_agent_active_from_lines(
+                &output.lines().map(|l| l.to_string()).collect::<Vec<_>>()
+            );
+            let (last_user, last_assistant) = extract_last_messages(&output);
+            log::info!("[get_session_preview] active={} has_user={} has_asst={}", active, last_user.is_some(), last_assistant.is_some());
+            return Ok(SessionPreview { active, last_user_msg: last_user, last_assistant_msg: last_assistant });
+        }
+    }
+
+    // Local mode
+    let content = tokio::fs::read_to_string(&session_file).await
+        .map_err(|e| format!("read session file: {}", e))?;
+    let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let tail: Vec<String> = lines.iter().rev().take(5).rev().cloned().collect();
+    let active = check_agent_active_from_lines(&tail);
+    let (last_user, last_assistant) = extract_last_messages(&content);
+    Ok(SessionPreview { active, last_user_msg: last_user, last_assistant_msg: last_assistant })
 }
 
 #[tauri::command]
@@ -3514,7 +3626,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, get_agent_sessions, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, open_url, check_for_update, run_update, close_ssh])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, open_url, check_for_update, run_update, close_ssh])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
