@@ -3155,6 +3155,197 @@ async fn remove_claude_session(session_id: String, state: tauri::State<'_, Claud
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ClaudeDailyStats {
+    date: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+    messages: u64,
+    sessions: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ClaudeStats {
+    #[serde(rename = "totalInputTokens")]
+    total_input_tokens: u64,
+    #[serde(rename = "totalOutputTokens")]
+    total_output_tokens: u64,
+    #[serde(rename = "totalCacheReadTokens")]
+    total_cache_read_tokens: u64,
+    #[serde(rename = "totalCacheWriteTokens")]
+    total_cache_write_tokens: u64,
+    #[serde(rename = "totalMessages")]
+    total_messages: u64,
+    #[serde(rename = "totalSessions")]
+    total_sessions: u64,
+    #[serde(rename = "dailyStats")]
+    daily_stats: Vec<ClaudeDailyStats>,
+    model: String,
+}
+
+#[tauri::command]
+async fn get_claude_stats() -> Result<ClaudeStats, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let claude_dir = home.join(".claude").join("projects");
+    if !claude_dir.exists() {
+        return Ok(ClaudeStats {
+            total_input_tokens: 0, total_output_tokens: 0,
+            total_cache_read_tokens: 0, total_cache_write_tokens: 0,
+            total_messages: 0, total_sessions: 0,
+            daily_stats: vec![], model: String::new(),
+        });
+    }
+
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_cache_write = 0u64;
+    let mut total_messages = 0u64;
+    let mut total_sessions = 0u64;
+    let mut model = String::new();
+
+    // Only count last 14 days
+    let now = chrono::Utc::now();
+    let cutoff = now - chrono::Duration::days(14);
+    let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+
+    if let Ok(project_dirs) = std::fs::read_dir(&claude_dir) {
+        for project_entry in project_dirs.flatten() {
+            if !project_entry.path().is_dir() { continue; }
+            if let Ok(files) = std::fs::read_dir(project_entry.path()) {
+                for file_entry in files.flatten() {
+                    let path = file_entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+
+                    // Use file modification time to skip old files quickly
+                    if let Ok(meta) = path.metadata() {
+                        if let Ok(modified) = meta.modified() {
+                            let mod_time: chrono::DateTime<chrono::Utc> = modified.into();
+                            if mod_time < cutoff { continue; }
+                        }
+                    }
+
+                    let content = match std::fs::read_to_string(&path) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+
+                    let mut session_counted = false;
+                    for line in content.lines() {
+                        if line.trim().is_empty() { continue; }
+                        let parsed: serde_json::Value = match serde_json::from_str(line) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+
+                        if parsed.get("type").and_then(|v| v.as_str()) != Some("assistant") { continue; }
+                        let msg = match parsed.get("message") {
+                            Some(m) => m,
+                            None => continue,
+                        };
+                        let usage = match msg.get("usage") {
+                            Some(u) => u,
+                            None => continue,
+                        };
+
+                        // Extract date from timestamp
+                        let date = parsed.get("timestamp")
+                            .and_then(|v| v.as_str())
+                            .and_then(|ts| ts.get(..10))
+                            .unwrap_or("")
+                            .to_string();
+
+                        if date < cutoff_str { continue; }
+
+                        let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let cache_write = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                        if model.is_empty() {
+                            if let Some(m) = msg.get("model").and_then(|v| v.as_str()) {
+                                model = m.to_string();
+                            }
+                        }
+
+                        total_input += input;
+                        total_output += output;
+                        total_cache_read += cache_read;
+                        total_cache_write += cache_write;
+                        total_messages += 1;
+
+                        if !session_counted {
+                            session_counted = true;
+                            total_sessions += 1;
+                        }
+
+                        if !date.is_empty() {
+                            let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                                date: date.clone(),
+                                input_tokens: 0, output_tokens: 0,
+                                cache_read_tokens: 0, cache_write_tokens: 0,
+                                messages: 0, sessions: 0,
+                            });
+                            entry.input_tokens += input;
+                            entry.output_tokens += output;
+                            entry.cache_read_tokens += cache_read;
+                            entry.cache_write_tokens += cache_write;
+                            entry.messages += 1;
+                        }
+                    }
+
+                    // Count session per day (use first message date)
+                    if session_counted {
+                        if let Some(first_day) = daily_map.keys().next().cloned() {
+                            // Actually count in the day the session was modified
+                            if let Ok(meta) = path.metadata() {
+                                if let Ok(modified) = meta.modified() {
+                                    let mod_time: chrono::DateTime<chrono::Utc> = modified.into();
+                                    let day = mod_time.format("%Y-%m-%d").to_string();
+                                    if let Some(entry) = daily_map.get_mut(&day) {
+                                        entry.sessions += 1;
+                                    } else if let Some(entry) = daily_map.get_mut(&first_day) {
+                                        entry.sessions += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fill in missing days in the 14-day range
+    let mut daily_stats: Vec<ClaudeDailyStats> = Vec::new();
+    for i in (0..14).rev() {
+        let day = (now - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        if let Some(entry) = daily_map.remove(&day) {
+            daily_stats.push(entry);
+        } else {
+            daily_stats.push(ClaudeDailyStats {
+                date: day, input_tokens: 0, output_tokens: 0,
+                cache_read_tokens: 0, cache_write_tokens: 0,
+                messages: 0, sessions: 0,
+            });
+        }
+    }
+
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
+        total_messages: total_messages,
+        total_sessions: total_sessions,
+        daily_stats,
+        model,
+    })
+}
+
 #[tauri::command]
 async fn open_url(url: String) -> Result<(), String> {
     std::process::Command::new("open")
@@ -3772,7 +3963,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, open_url, check_for_update, run_update, close_ssh])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

@@ -8,6 +8,7 @@ import ReactMarkdown from 'react-markdown'
 import { SettingsTab } from './components/SettingsTab'
 import { AgentDetailView } from './components/AgentDetailView'
 import { CreateCharacterModal } from './components/CreateCharacterModal'
+import { ClaudeStatsView } from './components/ClaudeStatsView'
 import { getStore, DEFAULT_CHAR, DEFAULT_CHAR_NAME, loadCharacters } from './lib/store'
 import { saveAgentCharMap } from './lib/agents'
 import type { AgentMetrics } from './lib/types'
@@ -422,6 +423,7 @@ export default function Mini() {
   const [claudeCharName, setClaudeCharName] = useState(DEFAULT_CHAR_NAME)
   const [selectedClaudeSession, setSelectedClaudeSession] = useState<string | null>(null)
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
+  const [showClaudeStats, setShowClaudeStats] = useState(false)
 
   // Feature toggles
   const [enableOpenClaw, setEnableOpenClaw] = useState(true)
@@ -1211,9 +1213,9 @@ export default function Mini() {
                       </button>
                     ))}
                   </div>
-                ) : (inAgentDetail || selectedClaudeSession || selectedSessionKey) ? (
+                ) : (inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) ? (
                   <button data-no-drag
-                    onClick={(e) => { e.stopPropagation(); setSelectedAgentId(null); setSelectedClaudeSession(null); setSelectedSessionKey(null) }}
+                    onClick={(e) => { e.stopPropagation(); setSelectedAgentId(null); setSelectedClaudeSession(null); setSelectedSessionKey(null); setShowClaudeStats(false) }}
                     style={{
                       background: 'rgba(255,255,255,0.06)', border: 'none',
                       color: 'rgba(255,255,255,0.6)', fontSize: 11,
@@ -1429,7 +1431,7 @@ export default function Mini() {
               </div>
             ) : (
               <AnimatePresence mode="wait">
-              {(!inAgentDetail && !selectedClaudeSession && !selectedSessionKey) ? (
+              {(!inAgentDetail && !selectedClaudeSession && !selectedSessionKey && !showClaudeStats) ? (
               /* ===== Normal: character island + sessions ===== */
               <motion.div key="main"
                 initial={{ opacity: 0 }}
@@ -1481,8 +1483,8 @@ export default function Mini() {
                         data-no-drag
                         onClick={() => {
                           if (slot.agentId.startsWith('claude:')) {
-                            setSelectedAgentId(null); setSelectedSessionKey(null)
-                            setSelectedClaudeSession(slot.agentId.replace('claude:', ''))
+                            setSelectedAgentId(null); setSelectedSessionKey(null); setSelectedClaudeSession(null)
+                            setShowClaudeStats(true)
                           } else {
                             setSelectedClaudeSession(null); setSelectedSessionKey(null)
                             setSelectedAgentId(slot.agentId)
@@ -1690,6 +1692,16 @@ export default function Mini() {
                 ) : (
                   <ChatList messages={claudeConversation} accentColor="#007AFF" />
                 )}
+              </motion.div>
+            ) : showClaudeStats ? (
+              /* ===== Claude Code stats ===== */
+              <motion.div key="claude-stats"
+                style={{ background: '#1a1a1a' }}
+                initial={{ opacity: 0, x: 30 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -30 }}
+                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}>
+                <ClaudeStatsView />
               </motion.div>
             ) : (
               /* ===== Agent detail panel (ui-2 style) ===== */
