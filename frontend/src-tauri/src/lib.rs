@@ -3328,11 +3328,10 @@ except:
     for (event, configs) in hook_configs {
         let event_hooks = hooks.entry(event).or_insert(serde_json::json!([]));
         let arr = event_hooks.as_array_mut().ok_or("not array")?;
-        let already = arr.iter().any(|h| has_our_hook(h));
-        if !already {
-            for config in configs {
-                arr.push(config.clone());
-            }
+        // Remove existing ooclaw entries so they get replaced with latest config
+        arr.retain(|h| !has_our_hook(h));
+        for config in configs {
+            arr.push(config.clone());
         }
     }
 
