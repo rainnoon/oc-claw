@@ -2462,9 +2462,9 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                             let _: () = msg_send![obj, orderFrontRegardless];
                         }
                     } else {
-                        // Expand to 3/4 screen, centered, no native animation (CSS handles visuals)
-                        let win_w = (sw * 0.75).round();
-                        let win_h = (sh * 0.75).round();
+                        // Expand to 85% screen, centered, no native animation (CSS handles visuals)
+                        let win_w = (sw * 0.85).round();
+                        let win_h = (sh * 0.85).round();
                         let x = sx + (sw - win_w) / 2.0;
                         let y = sy + sh - win_h; // top of screen (macOS y=0 is bottom)
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));

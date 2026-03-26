@@ -1139,7 +1139,7 @@ export default function Mini() {
 
   // Dynamically resize Tauri window to match panel height (max 400)
   useEffect(() => {
-    if (!expanded || settingsMode) return
+    if (!expanded || settingsMode || !showPanel) return
     const el = panelRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => {
@@ -1148,7 +1148,7 @@ export default function Mini() {
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [expanded, settingsMode])
+  }, [expanded, settingsMode, showPanel])
 
   return (
     <div style={{
