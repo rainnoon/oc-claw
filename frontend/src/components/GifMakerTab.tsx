@@ -51,7 +51,7 @@ export function GifMakerTab() {
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
   const refCacheRef = useRef<{ base64: string; mimeType: string } | null>(null)
-  const [fps, setFps] = useState(4)
+  const [fps, setFps] = useState(1)
   const [geminiKey, setGeminiKey] = useState('')
   const [geminiUrl, setGeminiUrl] = useState('')
   const [showKey, setShowKey] = useState(false)
@@ -355,17 +355,7 @@ export function GifMakerTab() {
                 </button>
               </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">FPS (1-30) <span className="text-xs text-gray-400 font-normal">数值越高，动作越快</span></label>
-              <div className="flex items-center gap-4">
-                <input
-                  type="range" min="1" max="30" value={fps}
-                  onChange={(e) => setFps(+e.target.value)}
-                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-900"
-                />
-                <span className="text-sm font-medium text-gray-900 w-8 text-right">{fps}</span>
-              </div>
-            </div>
+            {/* FPS slider hidden — default is 1 */}
           </div>
         </div>
 

@@ -314,7 +314,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
               </div>
 
               {/* Character Grid grouped by IP */}
-              <div className="max-h-[260px] overflow-y-auto pr-2 pt-2 scrollbar-thin">
+              <div className="max-h-[260px] overflow-y-auto pr-2 pt-2 scrollbar-white">
                 {(() => {
                   const groups: { ip: string; chars: typeof charsWithMini }[] = []
                   const ipOrder: string[] = []
@@ -1404,10 +1404,10 @@ export default function Mini() {
 
             {/* ===== Settings content ===== */}
             {settingsMode ? (
-              <div data-no-drag className="scrollbar-thin" style={{ flex: 1, overflow: 'hidden', margin: 8, marginTop: 0, borderRadius: 12, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                <div className="bg-[#151515] text-white font-sans antialiased scrollbar-thin" style={{ borderRadius: '12px 12px 0 0', overflow: 'auto', flex: 1, minHeight: 0 }}>
+              <div data-no-drag className="scrollbar-hidden" style={{ flex: 1, overflow: 'hidden', margin: 8, marginTop: 0, borderRadius: 12, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                <div className="bg-[#151515] text-white font-sans antialiased scrollbar-hidden" style={{ borderRadius: '12px 12px 0 0', overflow: 'auto', flex: 1, minHeight: 0 }}>
                   {settingsNav === 'pairing' && (
-                    <div className="h-full overflow-y-auto bg-[#151515] pt-6 px-6 pb-10 scrollbar-thin">
+                    <div className="h-full overflow-y-auto bg-[#151515] pt-6 px-6 pb-10 scrollbar-hidden">
                       <div className="max-w-3xl mx-auto">
                         <p className="text-sm text-white/50 mb-10">
                           将 Agent 与角色配对，配对后 Mini 中会显示对应角色的 GIF 动画。
@@ -1495,7 +1495,7 @@ export default function Mini() {
                     </div>
                   )}
                   {settingsNav === 'settings' && (
-                    <div className="h-full overflow-y-auto bg-[#151515] scrollbar-thin">
+                    <div className="h-full overflow-y-auto bg-[#151515] scrollbar-hidden">
                       <SettingsTab disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} notifySound={notifySound} onChangeNotifySound={async (v) => { setNotifySound(v); const store = await getStore(); await store.set('notify_sound', v); await store.save() }} waitingSound={waitingSound} onToggleWaitingSound={async (v) => { setWaitingSound(v); const store = await getStore(); await store.set('waiting_sound', v); await store.save() }} mascotPosition={mascotPosition} onChangeMascotPosition={async (v) => { setMascotPosition(v); mascotPositionRef.current = v; const store = await getStore(); await store.set('mascot_position', v); await store.save() }} />
                     </div>
                   )}

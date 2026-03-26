@@ -9,24 +9,18 @@ input, textarea, pre, [contenteditable], .selectable-text, .selectable-text * {
   user-select: text;
 }
 
-/* Thin subtle scrollbar */
-.scrollbar-thin {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.15) transparent;
-}
-.scrollbar-thin::-webkit-scrollbar {
-  width: 4px;
-}
-.scrollbar-thin::-webkit-scrollbar-track {
-  background: transparent;
-}
-.scrollbar-thin::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.15);
-  border-radius: 4px;
-}
-.scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.3);
-}
+/* Scrollbar styles — outside @layer for highest priority in Tauri WebKit */
+.scrollbar-thin::-webkit-scrollbar { width: 4px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+.scrollbar-thin::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+
+.scrollbar-hidden::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+.scrollbar-white::-webkit-scrollbar { width: 6px; }
+.scrollbar-white::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-white::-webkit-scrollbar-thumb { background: #1a1a1a; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; }
+.scrollbar-white::-webkit-scrollbar-thumb:hover { background: #222; border-color: rgba(255,255,255,0.35); }
 
 @keyframes movePulse {
   0%, 100% { outline-color: rgba(59,130,246,0.6); }
