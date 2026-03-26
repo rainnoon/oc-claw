@@ -449,6 +449,8 @@ export default function Mini() {
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
   const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
   const mascotPositionRef = useRef<'left' | 'right'>('right')
+  const [islandBg, setIslandBg] = useState('grass-island.png')
+  const [bgPos, setBgPos] = useState({ x: 50, y: 50 })
 
   // Settings mode: panel becomes wider, shows settings content
   const [settingsMode, setSettingsMode] = useState(false)
@@ -785,6 +787,10 @@ export default function Mini() {
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const mp = await store.get('mascot_position') as string
       if (mp === 'left' || mp === 'right') { setMascotPosition(mp); mascotPositionRef.current = mp }
+      const bg = await store.get('island_bg') as string
+      if (bg) setIslandBg(bg)
+      const bp = await store.get('island_bg_pos') as { x: number; y: number }
+      if (bp) setBgPos(bp)
       const ccChar = ((await store.get('claude_char')) as string) || DEFAULT_CHAR_NAME
       setClaudeCharName(ccChar)
     })()
@@ -1246,10 +1252,9 @@ export default function Mini() {
             <div style={{
               position: 'absolute', top: 36, left: 0, right: 0,
               height: 30,
-              backgroundImage: 'url(/assets/grass-island.png)',
-              backgroundSize: '80px 100%',
-              backgroundRepeat: 'repeat-x',
-              backgroundPosition: 'bottom',
+              backgroundImage: `url(/assets/backgrounds/${islandBg})`,
+              backgroundSize: 'cover',
+              backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
               pointerEvents: 'none',
               zIndex: 0,
               filter: showPanel ? 'blur(0px)' : 'blur(8px)',
@@ -1496,7 +1501,7 @@ export default function Mini() {
                   )}
                   {settingsNav === 'settings' && (
                     <div className="h-full overflow-y-auto bg-[#151515] scrollbar-hidden">
-                      <SettingsTab disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} notifySound={notifySound} onChangeNotifySound={async (v) => { setNotifySound(v); const store = await getStore(); await store.set('notify_sound', v); await store.save() }} waitingSound={waitingSound} onToggleWaitingSound={async (v) => { setWaitingSound(v); const store = await getStore(); await store.set('waiting_sound', v); await store.save() }} mascotPosition={mascotPosition} onChangeMascotPosition={async (v) => { setMascotPosition(v); mascotPositionRef.current = v; const store = await getStore(); await store.set('mascot_position', v); await store.save() }} />
+                      <SettingsTab disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} notifySound={notifySound} onChangeNotifySound={async (v) => { setNotifySound(v); const store = await getStore(); await store.set('notify_sound', v); await store.save() }} waitingSound={waitingSound} onToggleWaitingSound={async (v) => { setWaitingSound(v); const store = await getStore(); await store.set('waiting_sound', v); await store.save() }} mascotPosition={mascotPosition} onChangeMascotPosition={async (v) => { setMascotPosition(v); mascotPositionRef.current = v; const store = await getStore(); await store.set('mascot_position', v); await store.save() }} islandBg={islandBg} onChangeIslandBg={async (v) => { setIslandBg(v); const store = await getStore(); await store.set('island_bg', v); await store.save() }} bgPos={bgPos} onChangeBgPos={async (v) => { setBgPos(v); const store = await getStore(); await store.set('island_bg_pos', v); await store.save() }} />
                     </div>
                   )}
                 </div>
@@ -1532,9 +1537,9 @@ export default function Mini() {
                 {/* Character island */}
                 <div style={{
                   position: 'relative', height: 100,
-                  backgroundImage: 'url(/assets/grass-island.png)',
-                  backgroundSize: '80px 100%',
-                  backgroundRepeat: 'repeat-x',
+                  backgroundImage: `url(/assets/backgrounds/${islandBg})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
                   overflow: 'hidden',
                 }}>
                   {sessionSlots.length === 0 && (

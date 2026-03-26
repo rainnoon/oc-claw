@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Loader2, Check, ChevronDown, Copy, Plus, Trash2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
@@ -171,13 +171,18 @@ function ConnectionRow({ conn, onUpdate, onDelete }: { conn: OcConnection; onUpd
   )
 }
 
-export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, mascotPosition, onChangeMascotPosition }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void }) {
+export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void }) {
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
   const [updateChecking, setUpdateChecking] = useState(false)
   const [updating, setUpdating] = useState(false)
+  const [backgrounds, setBackgrounds] = useState<string[]>([])
+  const [bgPreviewUrl, setBgPreviewUrl] = useState<string | null>(null)
+  const [bgNaturalSize, setBgNaturalSize] = useState<{ w: number; h: number } | null>(null)
+  const cropContainerRef = useRef<HTMLDivElement>(null)
+  const draggingRef = useRef(false)
 
   useEffect(() => {
     ;(async () => {
@@ -188,7 +193,76 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
     })()
     invoke('check_for_update').then((info: any) => setUpdateInfo(info)).catch(() => {})
+    invoke('list_backgrounds').then((list: any) => setBackgrounds(list as string[])).catch(() => {})
   }, [])
+
+  // Load preview image for current background
+  useEffect(() => {
+    if (!islandBg) return
+    // Try public path first (bundled), fallback to Rust command (custom)
+    const img = new Image()
+    img.onload = () => { setBgPreviewUrl(img.src); setBgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight }) }
+    img.onerror = () => {
+      invoke('get_background_data', { fileName: islandBg }).then((dataUrl: any) => {
+        const img2 = new Image()
+        img2.onload = () => { setBgPreviewUrl(dataUrl as string); setBgNaturalSize({ w: img2.naturalWidth, h: img2.naturalHeight }) }
+        img2.src = dataUrl as string
+      }).catch(() => {})
+    }
+    img.src = `/assets/backgrounds/${islandBg}`
+  }, [islandBg])
+
+  // Handle file upload for custom background
+  const handleBgUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const dataUrl = reader.result as string
+      try {
+        const saved = await invoke('save_background', { fileName: file.name, dataUrl }) as string
+        // Refresh list and select
+        const list = await invoke('list_backgrounds') as string[]
+        setBackgrounds(list)
+        onChangeIslandBg(saved)
+      } catch (e: any) { console.error('save bg:', e) }
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }, [onChangeIslandBg])
+
+  // Drag handler for crop rectangle
+  const handleCropDrag = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault()
+    const container = cropContainerRef.current
+    if (!container || !bgNaturalSize) return
+    draggingRef.current = true
+    const rect = container.getBoundingClientRect()
+    const update = (clientX: number, clientY: number) => {
+      // The crop rect aspect ratio is ~7:1 (island width:height)
+      // Container shows full image, crop rect shows visible portion
+      const x = Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100))
+      const y = Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100))
+      onChangeBgPos({ x: Math.round(x), y: Math.round(y) })
+    }
+    const isTouch = 'touches' in e
+    if (isTouch) {
+      const t = (e as React.TouchEvent).touches[0]
+      update(t.clientX, t.clientY)
+    } else {
+      update((e as React.MouseEvent).clientX, (e as React.MouseEvent).clientY)
+    }
+    const onMove = (ev: MouseEvent | TouchEvent) => {
+      if (!draggingRef.current) return
+      const p = 'touches' in ev ? (ev as TouchEvent).touches[0] : (ev as MouseEvent)
+      update(p.clientX, p.clientY)
+    }
+    const onUp = () => { draggingRef.current = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); window.removeEventListener('touchmove', onMove); window.removeEventListener('touchend', onUp) }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('touchmove', onMove)
+    window.addEventListener('touchend', onUp)
+  }, [bgNaturalSize, onChangeBgPos])
 
   const updateConnection = (idx: number, conn: OcConnection) => {
     const updated = [...connections]
@@ -295,12 +369,98 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               ))}
             </div>
           </div>
-          <div className="flex items-center justify-between p-4">
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">关闭睡眠动画</span>
               <span className="text-xs text-white/40">看板娘空闲时显示静态画面</span>
             </div>
             <Toggle checked={disableSleepAnim} onChange={onToggleSleepAnim} />
+          </div>
+          {/* Background picker with crop preview */}
+          <div className="p-4">
+            <div className="flex flex-col gap-1 mb-3">
+              <span className="text-sm font-medium text-white/90">岛屿背景</span>
+              <span className="text-xs text-white/40">选择或上传背景图片，拖动选择裁剪区域</span>
+            </div>
+
+            {/* Background thumbnails */}
+            <div className="flex gap-2 flex-wrap mb-3">
+              {backgrounds.map((bg) => (
+                <button
+                  key={bg}
+                  onClick={() => onChangeIslandBg(bg)}
+                  className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === bg ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
+                >
+                  <div style={{ width: '100%', height: '100%', backgroundImage: `url(/assets/backgrounds/${bg})`, backgroundSize: 'cover' }} />
+                </button>
+              ))}
+              {/* Upload button */}
+              <label className="relative w-14 h-9 rounded-lg overflow-hidden border-2 border-dashed border-white/20 hover:border-white/40 transition-all cursor-pointer flex items-center justify-center">
+                <Plus className="w-4 h-4 text-white/40" />
+                <input type="file" accept="image/*" onChange={handleBgUpload} className="hidden" />
+              </label>
+            </div>
+
+            {/* Crop preview */}
+            {bgPreviewUrl && bgNaturalSize && (
+              <div className="flex flex-col items-center gap-2">
+                {/* Full image with crop overlay */}
+                <div
+                  ref={cropContainerRef}
+                  className="relative rounded-lg overflow-hidden cursor-crosshair select-none"
+                  style={{ width: '100%', maxWidth: 360, aspectRatio: `${bgNaturalSize.w} / ${bgNaturalSize.h}` }}
+                  onMouseDown={handleCropDrag}
+                  onTouchStart={handleCropDrag}
+                >
+                  {/* Full image dimmed */}
+                  <img src={bgPreviewUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.4 }} />
+                  {/* Crop rectangle — aspect ratio ~7:1 matching the island strip */}
+                  {(() => {
+                    // The crop rect represents what background-position + cover would show
+                    // Island area is roughly 7:1 aspect ratio
+                    const cropAspect = 7
+                    const imgAspect = bgNaturalSize.w / bgNaturalSize.h
+                    // With cover, the image fills the island. Determine crop rect size relative to full image.
+                    let cropW: number, cropH: number
+                    if (imgAspect > cropAspect) {
+                      // Image is wider than crop — full height used, crop width = subset
+                      cropH = 100
+                      cropW = (cropAspect / imgAspect) * 100
+                    } else {
+                      // Image is taller — full width used, crop height = subset
+                      cropW = 100
+                      cropH = (imgAspect / cropAspect) * 100
+                    }
+                    const maxX = 100 - cropW
+                    const maxY = 100 - cropH
+                    const left = (bgPos.x / 100) * maxX
+                    const top = (bgPos.y / 100) * maxY
+                    return (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: `${left}%`, top: `${top}%`,
+                          width: `${cropW}%`, height: `${cropH}%`,
+                          border: '2px solid white',
+                          borderRadius: 4,
+                          boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
+                          pointerEvents: 'none',
+                        }}
+                      />
+                    )
+                  })()}
+                </div>
+                {/* Live preview strip */}
+                <div className="rounded-lg overflow-hidden border border-white/10" style={{ width: '100%', maxWidth: 360, height: 50 }}>
+                  <div style={{
+                    width: '100%', height: '100%',
+                    backgroundImage: `url(${bgPreviewUrl})`,
+                    backgroundSize: 'cover',
+                    backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
+                  }} />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </section>

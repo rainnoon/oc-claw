@@ -494,6 +494,82 @@ async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result
     close_ssh_master(&sh, &su).await
 }
 
+/// Resolve the backgrounds directory — dev: public/assets/backgrounds, prod: app_data/backgrounds
+fn backgrounds_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if cfg!(debug_assertions) {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let project_root = exe
+            .parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent())
+            .ok_or("cannot resolve project root")?;
+        Ok(project_root.join("public").join("assets").join("backgrounds"))
+    } else {
+        app.path().app_data_dir().map(|p| p.join("backgrounds")).map_err(|e| e.to_string())
+    }
+}
+
+/// List available background image filenames.
+#[tauri::command]
+async fn list_backgrounds(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    // In dev mode, backgrounds_dir already points to public/assets/backgrounds/ which has everything.
+    // In prod, scan both bundled (read-only) and custom (app_data) directories.
+    let bg_dir = backgrounds_dir(&app)?;
+    let mut dirs_to_scan: Vec<PathBuf> = vec![bg_dir];
+    if !cfg!(debug_assertions) {
+        if let Ok(rd) = app.path().resource_dir() {
+            dirs_to_scan.push(rd.join("assets").join("backgrounds"));
+        }
+    }
+    for dir in &dirs_to_scan {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if (name.ends_with(".png") || name.ends_with(".jpg") || name.ends_with(".webp"))
+                        && !names.contains(&name.to_string())
+                    {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Save a user-uploaded background image. Returns the saved filename.
+#[tauri::command]
+async fn save_background(app: tauri::AppHandle, file_name: String, data_url: String) -> Result<String, String> {
+    use base64::Engine;
+    if file_name.contains("..") || file_name.contains('/') || file_name.contains('\\') {
+        return Err("invalid file name".into());
+    }
+    let dir = backgrounds_dir(&app)?;
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| format!("create dir: {e}"))?;
+    let b64 = data_url.find(",").map(|i| &data_url[i + 1..]).unwrap_or(&data_url);
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("base64: {e}"))?;
+    tokio::fs::write(dir.join(&file_name), &bytes).await.map_err(|e| format!("write: {e}"))?;
+    Ok(file_name)
+}
+
+/// Serve a background image as base64 data URL (for custom backgrounds not in public/).
+#[tauri::command]
+async fn get_background_data(app: tauri::AppHandle, file_name: String) -> Result<String, String> {
+    use base64::Engine;
+    if file_name.contains("..") || file_name.contains('/') || file_name.contains('\\') {
+        return Err("invalid file name".into());
+    }
+    // Try bundled first, then custom dir
+    let bundled = app.path().resource_dir().map_err(|e| e.to_string())?
+        .join("assets").join("backgrounds").join(&file_name);
+    let custom = backgrounds_dir(&app)?.join(&file_name);
+    let path = if bundled.exists() { bundled } else { custom };
+    let data = tokio::fs::read(&path).await.map_err(|e| format!("read: {e}"))?;
+    let ext = file_name.rsplit('.').next().unwrap_or("png");
+    let mime = match ext { "jpg" | "jpeg" => "image/jpeg", "webp" => "image/webp", _ => "image/png" };
+    Ok(format!("data:{};base64,{}", mime, base64::engine::general_purpose::STANDARD.encode(&data)))
+}
+
 #[tauri::command]
 async fn read_local_file(path: String) -> Result<String, String> {
     use base64::Engine;
@@ -4257,7 +4333,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
