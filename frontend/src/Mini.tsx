@@ -425,6 +425,10 @@ export default function Mini() {
   // Snapshot of connection config to detect changes across settings edits
   const lastConnSnapshotRef = useRef<string>('')
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Monotonically increasing ID to discard stale fetchAgents responses.
+  // Each call increments this; if the value has changed by the time the async
+  // work finishes, another call has started and this result is stale.
+  const fetchIdRef = useRef(0)
   const dismissedSessionsRef = useRef<Map<string, number>>(new Map())
 
   // Agent detail
@@ -511,13 +515,26 @@ export default function Mini() {
   }, [loadMiniChar])
 
   const fetchAgents = useCallback(async () => {
+    // Skip polling while settings page is open — snapshot comparison would
+    // detect the config change prematurely, consuming it before the user exits
+    // settings, which means exitSettings' call wouldn't show the loading overlay.
+    if (settingsModeRef.current) return
+
+    // Increment fetch ID so we can discard stale responses. If a slow SSH
+    // request (e.g. from a previous remote connection) finishes after a newer
+    // fetchAgents call has already started, we drop the old result.
+    const myFetchId = ++fetchIdRef.current
+
     try {
       const chars = await loadCharacters()
+      if (fetchIdRef.current !== myFetchId) return // stale
       setCharacters(chars)
     } catch (e) { console.warn('[fetchAgents] loadCharacters failed:', e) }
     try {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const connections = await loadOcConnections()
+
+      if (fetchIdRef.current !== myFetchId) return // stale
 
       // Detect connection config changes — show loading overlay if changed
       const snapshot = JSON.stringify(connections.map(c => ({ id: c.id, type: c.type, host: c.host, user: c.user })))
@@ -554,6 +571,9 @@ export default function Mini() {
           }
         } catch (e) { console.warn('[fetchAgents] connection failed:', conn.id, e) }
       }))
+
+      if (fetchIdRef.current !== myFetchId) return // stale — a newer fetch has started
+
       agentConnMapRef.current = newConnMap
       agentRealIdMapRef.current = newRealIdMap
       setAgentSourceLabels(newSourceLabels)
@@ -566,6 +586,7 @@ export default function Mini() {
       }
     } catch (e) {
       console.warn('[fetchAgents] get_agents failed:', e)
+      if (fetchIdRef.current !== myFetchId) return // stale
       setRefreshingAgents(false)
       if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
     }
@@ -602,7 +623,18 @@ export default function Mini() {
         const prefix = connections.length > 1 ? `${conn.id.slice(0, 8)}:` : ''
         try {
           const oc = connToOcParams(conn)
-          if (!oc) return // skip incomplete remote connections
+          if (!oc) {
+            // Incomplete remote connection — still clear stale health data for
+            // this prefix so the mascot/status doesn't stay "busy" from the
+            // previous (now-removed) connection's data.
+            for (const k of Object.keys(hMap)) {
+              if (prefix === '' || k.startsWith(prefix)) delete hMap[k]
+            }
+            for (const k of Object.keys(sMap)) {
+              if (prefix === '' || k.startsWith(prefix)) delete sMap[k]
+            }
+            return
+          }
           const health = (await invoke('get_health', oc)) as { agents: AgentHealth[] }
           // Clear old entries for this connection, then fill fresh data
           for (const k of Object.keys(hMap)) {
