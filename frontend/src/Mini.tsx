@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, Check, Pen, Plus, X } from 'lucide-react'
+import { ChevronDown, Check, Loader2, Pen, Plus, X } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { SettingsTab } from './components/SettingsTab'
@@ -418,6 +418,9 @@ export default function Mini() {
   const [bobPhase, setBobPhase] = useState(0)
   const [allSessions, setAllSessions] = useState<MiniSessionInfo[]>([])
   const [anySessionActive, setAnySessionActive] = useState(false)
+  const [refreshingAgents, setRefreshingAgents] = useState(false)
+  // Snapshot of connection config to detect changes across settings edits
+  const lastConnSnapshotRef = useRef<string>('')
   const dismissedSessionsRef = useRef<Map<string, number>>(new Map())
 
   // Agent detail
@@ -511,6 +514,19 @@ export default function Mini() {
     try {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const connections = await loadOcConnections()
+
+      // Detect connection config changes — show loading overlay if changed
+      const snapshot = JSON.stringify(connections.map(c => ({ id: c.id, type: c.type, host: c.host, user: c.user })))
+      const configChanged = lastConnSnapshotRef.current !== '' && snapshot !== lastConnSnapshotRef.current
+      lastConnSnapshotRef.current = snapshot
+      if (configChanged) {
+        setAgents([])
+        setAllSessions([])
+        setRefreshingAgents(true)
+        // Safety timeout: force clear loading after 45s in case connection hangs
+        setTimeout(() => setRefreshingAgents(false), 45000)
+      }
+
       const newConnMap = new Map<string, OcParams>()
       const newRealIdMap = new Map<string, string>()
       const newSourceLabels: Record<string, string> = {}
@@ -537,7 +553,11 @@ export default function Mini() {
       const charMap = (await store.get('agent_char_map')) as Record<string, string> | null
       setAgents(allAgents)
       setAgentCharMap(charMap || {})
-    } catch (e) { console.warn('[fetchAgents] get_agents failed:', e) }
+      if (configChanged) setRefreshingAgents(false)
+    } catch (e) {
+      console.warn('[fetchAgents] get_agents failed:', e)
+      setRefreshingAgents(false)
+    }
   }, [])
 
   const lastOcSoundRef = useRef(0)
@@ -1061,12 +1081,15 @@ export default function Mini() {
       settingsModeRef.current = false
       setSettingsMode(false)
       setSettingsNav('pairing')
+      // Trigger immediate refresh — fetchAgents detects config changes via
+      // snapshot comparison and shows loading overlay automatically
+      fetchAgents()
       try { await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current }) } catch {}
       requestAnimationFrame(() => {
         requestAnimationFrame(() => setShowPanel(true))
       })
     }, 300)
-  }, [])
+  }, [fetchAgents])
 
   // Click outside to collapse (only when not pinned)
   useEffect(() => {
@@ -1533,7 +1556,28 @@ export default function Mini() {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.15 }}
+                style={{ position: 'relative' }}
               >
+                {/* Loading overlay while refreshing connections */}
+                <AnimatePresence>
+                  {refreshingAgents && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                      style={{
+                        position: 'absolute', inset: 0, zIndex: 10,
+                        background: 'rgba(26,26,26,0.85)',
+                        display: 'flex', flexDirection: 'column',
+                        alignItems: 'center', justifyContent: 'center', gap: 8,
+                      }}
+                    >
+                      <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'rgba(255,255,255,0.4)' }} />
+                      <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11 }}>connecting...</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 {/* Character island */}
                 <div style={{
                   position: 'relative', height: 100,
@@ -1542,15 +1586,33 @@ export default function Mini() {
                   backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
                   overflow: 'hidden',
                 }}>
-                  {sessionSlots.length === 0 && (
-                    <div style={{
-                      position: 'absolute', inset: 0,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      color: 'rgba(255,255,255,0.3)', fontSize: 11, zIndex: 2,
-                    }}>
-                      waiting for agents...
-                    </div>
-                  )}
+                  {sessionSlots.length === 0 && (() => {
+                    // Show mascot idle GIF when no sessions, fall back to text
+                    const emptyGif = getMiniGif(miniChar ?? undefined, 'idle', true)
+                    return (
+                      <div style={{
+                        position: 'absolute', inset: 0,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        zIndex: 2,
+                      }}>
+                        {emptyGif ? (
+                          <img
+                            src={emptyGif}
+                            style={{
+                              width: 56, height: 56, objectFit: 'contain',
+                              animation: 'bob 2s ease-in-out infinite',
+                              opacity: 0.8,
+                            }}
+                            draggable={false}
+                          />
+                        ) : (
+                          <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11 }}>
+                            waiting for agents...
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })()}
 
                   {(() => {
                     // Shuffle slots by seed for random x positions
@@ -1614,11 +1676,22 @@ export default function Mini() {
 
                 {/* Session bars */}
                 <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', background: '#1a1a1a' }}>
-                  {allSessions.length === 0 && claudeSessions.length === 0 && (
+                  {allSessions.length === 0 && claudeSessions.length === 0 && !refreshingAgents && (
                     <div style={{
-                      color: 'rgba(255,255,255,0.2)', fontSize: 10,
-                      textAlign: 'center', padding: '24px 0',
-                    }}>no sessions</div>
+                      color: 'rgba(255,255,255,0.25)', fontSize: 11,
+                      textAlign: 'center', padding: '20px 16px',
+                      display: 'flex', flexDirection: 'column', gap: 6,
+                      alignItems: 'center',
+                    }}>
+                      {enableClaudeCode && <span>Send a message in Claude Code to start tracking</span>}
+                      <span
+                        data-no-drag
+                        onClick={(e) => { e.stopPropagation(); enterSettings() }}
+                        style={{ color: 'rgba(255,255,255,0.4)', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 2 }}
+                      >
+                        Go to Settings to connect OpenClaw
+                      </span>
+                    </div>
                   )}
 
                   <div className="scrollbar-thin" style={{ maxHeight: 4 * 56, overflowY: 'auto' }}>

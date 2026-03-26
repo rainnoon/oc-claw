@@ -35,7 +35,7 @@ function CopyCode({ text }: { text: string }) {
   )
 }
 
-function ConnectionRow({ conn, onUpdate, onDelete }: { conn: OcConnection; onUpdate: (c: OcConnection) => void; onDelete: () => void }) {
+function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcConnection; onUpdate: (c: OcConnection) => void; onDelete: () => void; disableLocal?: boolean }) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
   const [testMsg, setTestMsg] = useState('')
@@ -69,15 +69,19 @@ function ConnectionRow({ conn, onUpdate, onDelete }: { conn: OcConnection; onUpd
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
-            {(['local', 'remote'] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => onUpdate({ ...conn, type: t })}
-                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
-              >
-                {t === 'local' ? '本地' : '远程'}
-              </button>
-            ))}
+            {(['local', 'remote'] as const).map((t) => {
+              // Only one local connection allowed across all connections
+              const disabled = t === 'local' && disableLocal && conn.type !== 'local'
+              return (
+                <button
+                  key={t}
+                  onClick={() => !disabled && onUpdate({ ...conn, type: t })}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === t ? 'bg-white/10 text-white' : disabled ? 'text-white/15 cursor-not-allowed' : 'text-white/40 hover:text-white/60'}`}
+                >
+                  {t === 'local' ? '本地' : '远程'}
+                </button>
+              )
+            })}
           </div>
           <span className="text-xs text-white/30">
             {conn.type === 'local' ? '~/.openclaw' : conn.host ? `${conn.user || 'root'}@${conn.host}` : '未配置'}
@@ -285,7 +289,9 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
   }
 
   const addConnection = () => {
-    const updated = [...connections, { id: crypto.randomUUID(), type: 'local' as const }]
+    // Default to remote if a local connection already exists (only one local allowed)
+    const hasLocal = connections.some(c => c.type === 'local')
+    const updated = [...connections, { id: crypto.randomUUID(), type: (hasLocal ? 'remote' : 'local') as OcConnection['type'] }]
     setConnections(updated)
     saveOcConnections(updated)
   }
@@ -330,6 +336,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                 conn={conn}
                 onUpdate={(c) => updateConnection(idx, c)}
                 onDelete={() => deleteConnection(idx)}
+                disableLocal={connections.some((c, i) => i !== idx && c.type === 'local')}
               />
             ))
           )}
