@@ -588,9 +588,12 @@ export default function Mini() {
       }))
 
       // Detect session active→inactive transitions (only for fresh data)
+      // Skip sub-agent sessions — their key contains ":subagent:" (from OpenClaw session key format)
       const prev = prevSessionHealthRef.current
       if (freshKeys.size > 0) {
-        const anyBecameInactive = Array.from(freshKeys).some(k => prev[k] === true && sMap[k] === false)
+        const anyBecameInactive = Array.from(freshKeys).some(k =>
+          prev[k] === true && sMap[k] === false && !k.includes(':subagent:')
+        )
         if (anyBecameInactive) {
           console.log('[pollHealth] session became inactive, prev:', prev, 'curr:', sMap)
           playOcCompletionSound('pollHealth')
@@ -658,6 +661,8 @@ export default function Mini() {
       }
       return s
     })
+    // Filter out OpenClaw sub-agent sessions (key contains ":subagent:")
+    .filter(s => !s.key.includes(':subagent:'))
     merged.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
     setAllSessions(merged)
 
