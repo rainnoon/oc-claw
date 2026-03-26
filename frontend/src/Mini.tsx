@@ -580,10 +580,12 @@ export default function Mini() {
       const charMap = (await store.get('agent_char_map')) as Record<string, string> | null
       setAgents(allAgents)
       setAgentCharMap(charMap || {})
-      if (configChanged) {
-        setRefreshingAgents(false)
-        if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
-      }
+      // Always clear loading overlay on success — even if this call didn't
+      // detect configChanged itself, the data is now fresh, so the overlay
+      // should go away. This prevents the 45s stuck overlay when the original
+      // configChanged call gets discarded as stale by fetchIdRef.
+      setRefreshingAgents(false)
+      if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
     } catch (e) {
       console.warn('[fetchAgents] get_agents failed:', e)
       if (fetchIdRef.current !== myFetchId) return // stale
