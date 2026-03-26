@@ -79,7 +79,6 @@ npx tauri dev
 ## クレジット
 
 - [Notchi](https://github.com/sk-ruban/notchi) — ノッチコンパニオンコンセプトと草地島のデザインインスピレーション
-- [OpenClaw](https://github.com/nicepkg/openclaw) — 本アプリが監視する AI エージェントプラットフォーム
 
 ## ライセンス
 

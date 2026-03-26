@@ -79,7 +79,6 @@ npx tauri dev
 ## 크레딧
 
 - [Notchi](https://github.com/sk-ruban/notchi) — 노치 컴패니언 컨셉과 잔디 섬의 디자인 영감
-- [OpenClaw](https://github.com/nicepkg/openclaw) — 이 앱이 모니터링하는 AI 에이전트 플랫폼
 
 ## 라이선스
 

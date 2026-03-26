@@ -79,7 +79,6 @@ npx tauri dev
 ## 致谢
 
 - [Notchi](https://github.com/sk-ruban/notchi) — 刘海伴侣概念和草地岛屿的设计灵感
-- [OpenClaw](https://github.com/nicepkg/openclaw) — 本应用监控的 AI agent 平台
 
 ## 许可证
 

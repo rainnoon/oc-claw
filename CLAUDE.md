@@ -44,6 +44,15 @@ When modifying anything related to OpenClaw session activity detection, health p
 5. **Sub-agent sessions**: OpenClaw sub-agent session keys contain `:subagent:` (e.g. `agent:main:subagent:uuid`). Use this to identify and filter them — do NOT rely on message content like `[Subagent Context]` which requires preview data that may not be loaded yet. Sub-agent sessions should be hidden from the UI session list and should NOT trigger completion sounds.
 6. **OpenClaw source code** is installed at `~/Library/pnpm/global/5/.pnpm/openclaw@*/node_modules/openclaw/`. Check `dist/session-key-*.js` for session key format, `dist/health-*.js` for health endpoint logic. Always verify assumptions against real data at `~/.openclaw/` and the source code.
 
+# Polling & Remote SSH
+
+Mini.tsx has multiple polling loops (`fetchAgents` 5s, `pollHealth` 1s, `fetchAllSessions` 5s, Claude Code 2s). When modifying polling logic:
+
+1. **Never use request-ID / stale-discard patterns on polling functions.** Remote SSH calls routinely take > 5s. If a stale check discards any call that's been superseded by a newer one, and calls consistently take longer than the interval, *every* call gets discarded and state never updates. The `settingsModeRef` guard (pause polling during settings) is sufficient to prevent old-config results from overwriting new-config results.
+2. **Async polling functions need a busy lock** (e.g. `pollHealthBusyRef`). Without it, the 1s interval stacks SSH requests, overwhelming the multiplexed socket and causing cascading "stale socket" failures. If the previous call hasn't returned, skip the current tick.
+3. **Both `exitSettings()` and `collapse()` must trigger `fetchAgents()` immediately.** Users can close settings via the back button (`exitSettings`) OR by clicking outside (`collapse`). If only `exitSettings` calls `fetchAgents`, clicking outside causes a 5-8s delay before config changes are detected.
+4. **`settingsModeRef.current` must be set to `false` BEFORE calling `fetchAgents()`**, otherwise the settings-mode guard inside `fetchAgents` will skip the call.
+
 # Comments
 
 Write thorough comments for any non-trivial logic, especially:

@@ -425,10 +425,6 @@ export default function Mini() {
   // Snapshot of connection config to detect changes across settings edits
   const lastConnSnapshotRef = useRef<string>('')
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Monotonically increasing ID to discard stale fetchAgents responses.
-  // Each call increments this; if the value has changed by the time the async
-  // work finishes, another call has started and this result is stale.
-  const fetchIdRef = useRef(0)
   const dismissedSessionsRef = useRef<Map<string, number>>(new Map())
 
   // Agent detail
@@ -520,21 +516,13 @@ export default function Mini() {
     // settings, which means exitSettings' call wouldn't show the loading overlay.
     if (settingsModeRef.current) return
 
-    // Increment fetch ID so we can discard stale responses. If a slow SSH
-    // request (e.g. from a previous remote connection) finishes after a newer
-    // fetchAgents call has already started, we drop the old result.
-    const myFetchId = ++fetchIdRef.current
-
     try {
       const chars = await loadCharacters()
-      if (fetchIdRef.current !== myFetchId) return // stale
       setCharacters(chars)
     } catch (e) { console.warn('[fetchAgents] loadCharacters failed:', e) }
     try {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const connections = await loadOcConnections()
-
-      if (fetchIdRef.current !== myFetchId) return // stale
 
       // Detect connection config changes — show loading overlay if changed
       const snapshot = JSON.stringify(connections.map(c => ({ id: c.id, type: c.type, host: c.host, user: c.user })))
@@ -544,8 +532,6 @@ export default function Mini() {
         setAgents([])
         setAllSessions([])
         setRefreshingAgents(true)
-        // Clear previous timeout to avoid race condition when config changes
-        // multiple times quickly — only the latest refresh's timer should be active
         if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current)
         refreshTimeoutRef.current = setTimeout(() => setRefreshingAgents(false), 45000)
       }
@@ -572,23 +558,17 @@ export default function Mini() {
         } catch (e) { console.warn('[fetchAgents] connection failed:', conn.id, e) }
       }))
 
-      if (fetchIdRef.current !== myFetchId) return // stale — a newer fetch has started
-
       agentConnMapRef.current = newConnMap
       agentRealIdMapRef.current = newRealIdMap
       setAgentSourceLabels(newSourceLabels)
       const charMap = (await store.get('agent_char_map')) as Record<string, string> | null
       setAgents(allAgents)
       setAgentCharMap(charMap || {})
-      // Always clear loading overlay on success — even if this call didn't
-      // detect configChanged itself, the data is now fresh, so the overlay
-      // should go away. This prevents the 45s stuck overlay when the original
-      // configChanged call gets discarded as stale by fetchIdRef.
+      // Clear loading overlay — data is now fresh
       setRefreshingAgents(false)
       if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
     } catch (e) {
       console.warn('[fetchAgents] get_agents failed:', e)
-      if (fetchIdRef.current !== myFetchId) return // stale
       setRefreshingAgents(false)
       if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
     }
@@ -614,7 +594,13 @@ export default function Mini() {
 
   const prevHealthRef = useRef<Record<string, boolean>>({})
   const prevSessionHealthRef = useRef<Record<string, boolean>>({})
+  // Prevent concurrent pollHealth calls — if a remote SSH call takes > 1s,
+  // the 1s interval would stack requests, overwhelming the SSH socket and
+  // causing repeated "stale socket" failures.
+  const pollHealthBusyRef = useRef(false)
   const pollHealth = useCallback(async () => {
+    if (pollHealthBusyRef.current) return
+    pollHealthBusyRef.current = true
     try {
       const connections = await loadOcConnections()
       // Start with previous data — only overwrite for connections that succeed
@@ -678,6 +664,7 @@ export default function Mini() {
       prevHealthRef.current = hMap
       setHealthMap(hMap)
     } catch { /* ignore */ }
+    pollHealthBusyRef.current = false
   }, [playOcCompletionSound])
 
   const previewCacheRef = useRef<Map<string, { active: boolean; lastUserMsg?: string; lastAssistantMsg?: string; fetchedAt: number }>>(new Map())
@@ -1080,6 +1067,9 @@ export default function Mini() {
     setTimeout(async () => {
       settingsModeRef.current = false
       setSettingsMode(false)
+      // If exiting settings via collapse (click outside), trigger immediate
+      // refresh so config changes are detected right away, not after 5s poll.
+      if (wasSettings) fetchAgents()
       // Hide mascot first to avoid flicker at old position
       setHiding(true)
       setExpanded(false)
@@ -1101,7 +1091,7 @@ export default function Mini() {
       // Brief cooldown to prevent focus event from immediately re-expanding
       setTimeout(() => { collapsingRef.current = false }, 300)
     }, delay)
-  }, [])
+  }, [fetchAgents])
 
   const enterSettings = useCallback(async () => {
     // 1. Collapse current panel

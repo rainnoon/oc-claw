@@ -79,7 +79,6 @@ Bug reports, feature suggestions, and pull requests are welcome.
 ## Credits
 
 - [Notchi](https://github.com/sk-ruban/notchi) — design inspiration for notch companion concept and grass island
-- [OpenClaw](https://github.com/nicepkg/openclaw) — the AI agent platform this app monitors
 
 ## License
 

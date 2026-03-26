@@ -79,7 +79,6 @@ Les rapports de bugs, suggestions de fonctionnalités et pull requests sont les 
 ## Crédits
 
 - [Notchi](https://github.com/sk-ruban/notchi) — inspiration de design pour le concept de compagnon d'encoche et l'île herbeuse
-- [OpenClaw](https://github.com/nicepkg/openclaw) — la plateforme d'agents IA que cette app surveille
 
 ## Licence
 

@@ -79,7 +79,6 @@ Se aceptan reportes de errores, sugerencias de funciones y pull requests.
 ## Créditos
 
 - [Notchi](https://github.com/sk-ruban/notchi) — inspiración de diseño para el concepto de compañero del notch y la isla de césped
-- [OpenClaw](https://github.com/nicepkg/openclaw) — la plataforma de agentes IA que esta app monitorea
 
 ## Licencia
 
