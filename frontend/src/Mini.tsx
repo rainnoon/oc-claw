@@ -588,12 +588,28 @@ export default function Mini() {
       }))
 
       // Detect session active→inactive transitions (only for fresh data)
+      // Verify via session content (JSONL) to avoid false triggers between tool calls
       const prev = prevSessionHealthRef.current
       if (freshKeys.size > 0) {
-        const anyBecameInactive = Array.from(freshKeys).some(k => prev[k] === true && sMap[k] === false)
-        if (anyBecameInactive) {
-          console.log('[pollHealth] session became inactive, prev:', prev, 'curr:', sMap)
-          playOcCompletionSound('pollHealth')
+        const becameInactive = Array.from(freshKeys).filter(k => prev[k] === true && sMap[k] === false)
+        if (becameInactive.length > 0) {
+          // Verify at least one session is truly done by checking JSONL content
+          for (const k of becameInactive) {
+            const sessionFile = sessionFileMapRef.current.get(k)
+            if (!sessionFile) continue
+            const agentId = sessionAgentMapRef.current.get(k) || k.split(':')[0]
+            const oc = agentConnMapRef.current.get(agentId) || {}
+            try {
+              const preview = await invoke('get_session_preview', { sessionFile, ...oc }) as { active: boolean }
+              if (!preview.active) {
+                console.log('[pollHealth] session truly completed (verified via JSONL):', k)
+                playOcCompletionSound('pollHealth')
+                break
+              } else {
+                console.log('[pollHealth] session idle between tool calls (JSONL still active):', k)
+              }
+            } catch { /* ignore */ }
+          }
         }
       }
       prevSessionHealthRef.current = sMap
