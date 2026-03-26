@@ -400,11 +400,14 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
 
 type OcParams = { mode?: string; url?: string; token?: string; sshHost?: string; sshUser?: string }
 
-function connToOcParams(conn: OcConnection): OcParams {
-  if (conn.type === 'remote' && conn.host && conn.user) {
-    return { mode: 'remote', sshHost: conn.host, sshUser: conn.user }
+// Returns null for incomplete remote connections (missing host/user)
+// so callers can skip them instead of accidentally treating them as local.
+function connToOcParams(conn: OcConnection): OcParams | null {
+  if (conn.type === 'remote') {
+    if (conn.host && conn.user) return { mode: 'remote', sshHost: conn.host, sshUser: conn.user }
+    return null // incomplete remote — skip
   }
-  return {}
+  return {} // local
 }
 
 export default function Mini() {
@@ -421,6 +424,7 @@ export default function Mini() {
   const [refreshingAgents, setRefreshingAgents] = useState(false)
   // Snapshot of connection config to detect changes across settings edits
   const lastConnSnapshotRef = useRef<string>('')
+  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dismissedSessionsRef = useRef<Map<string, number>>(new Map())
 
   // Agent detail
@@ -523,8 +527,10 @@ export default function Mini() {
         setAgents([])
         setAllSessions([])
         setRefreshingAgents(true)
-        // Safety timeout: force clear loading after 45s in case connection hangs
-        setTimeout(() => setRefreshingAgents(false), 45000)
+        // Clear previous timeout to avoid race condition when config changes
+        // multiple times quickly — only the latest refresh's timer should be active
+        if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current)
+        refreshTimeoutRef.current = setTimeout(() => setRefreshingAgents(false), 45000)
       }
 
       const newConnMap = new Map<string, OcParams>()
@@ -535,6 +541,7 @@ export default function Mini() {
       await Promise.all(connections.map(async (conn) => {
         try {
           const oc = connToOcParams(conn)
+          if (!oc) return // skip incomplete remote connections
           const agents = (await invoke('get_agents', oc)) as AgentInfo[]
           const prefix = multi ? `${conn.id.slice(0, 8)}:` : ''
           const label = conn.type === 'local' ? '本地' : (conn.host || '远程')
@@ -553,10 +560,14 @@ export default function Mini() {
       const charMap = (await store.get('agent_char_map')) as Record<string, string> | null
       setAgents(allAgents)
       setAgentCharMap(charMap || {})
-      if (configChanged) setRefreshingAgents(false)
+      if (configChanged) {
+        setRefreshingAgents(false)
+        if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
+      }
     } catch (e) {
       console.warn('[fetchAgents] get_agents failed:', e)
       setRefreshingAgents(false)
+      if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
     }
   }, [])
 
@@ -591,6 +602,7 @@ export default function Mini() {
         const prefix = connections.length > 1 ? `${conn.id.slice(0, 8)}:` : ''
         try {
           const oc = connToOcParams(conn)
+          if (!oc) return // skip incomplete remote connections
           const health = (await invoke('get_health', oc)) as { agents: AgentHealth[] }
           // Clear old entries for this connection, then fill fresh data
           for (const k of Object.keys(hMap)) {
