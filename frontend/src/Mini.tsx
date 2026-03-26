@@ -217,9 +217,12 @@ function getMiniGif(char: CharacterMeta | undefined, petState: PetState | boolea
     const eatGifs = allGifs.filter((g) => g.includes('eat') || g.includes('compact') || g.includes('power'))
     if (eatGifs.length > 0) return eatGifs[0]
   }
-  const idleGifs = allGifs.filter((g) => g.includes('idle'))
-  const actionGifs = allGifs.filter((g) => !g.includes('idle'))
-  if ((state === 'working' || state === 'compacting' || state === 'waiting') && actionGifs.length > 0) return actionGifs[0]
+  const idleGifs = allGifs.filter((g) => /idle|sleep|rest/.test(g))
+  const workGifs = allGifs.filter((g) => g.includes('work'))
+  const actionGifs = allGifs.filter((g) => !/idle|sleep|rest/.test(g))
+  if ((state === 'working' || state === 'compacting' || state === 'waiting') && actionGifs.length > 0) {
+    return workGifs[0] || actionGifs[0]
+  }
   return idleGifs[0] || allGifs[0]
 }
 
@@ -1144,7 +1147,7 @@ export default function Mini() {
 
   // Dynamically resize Tauri window to match panel height (max 400)
   useEffect(() => {
-    if (!expanded || settingsMode) return
+    if (!expanded || settingsMode || !showPanel) return
     const el = panelRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => {
@@ -1153,7 +1156,7 @@ export default function Mini() {
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [expanded, settingsMode])
+  }, [expanded, settingsMode, showPanel])
 
   return (
     <div style={{

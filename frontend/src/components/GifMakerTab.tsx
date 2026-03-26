@@ -16,6 +16,8 @@ function AnimPreview({ frames, offsets, fps, size = 80 }: {
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameIdx = useRef(0)
+  const offsetsRef = useRef(offsets)
+  offsetsRef.current = offsets
 
   useEffect(() => {
     const c = canvasRef.current
@@ -25,13 +27,13 @@ function AnimPreview({ frames, offsets, fps, size = 80 }: {
     const draw = () => {
       const idx = frameIdx.current % frames.length
       const ctx = c.getContext('2d')!
-      const off = offsets[idx] || { dx: 0, dy: 0 }
+      const off = offsetsRef.current[idx] || { dx: 0, dy: 0 }
       drawFrameWithOffset(ctx, frames[idx], off, c.width, c.height)
     }
     draw()
     const interval = setInterval(() => { frameIdx.current++; draw() }, 1000 / fps)
     return () => clearInterval(interval)
-  }, [frames, offsets, fps])
+  }, [frames, fps])
 
   if (frames.length === 0) return null
   return <canvas ref={canvasRef} style={{ width: size, height: size, imageRendering: 'pixelated', borderRadius: 6, background: 'repeating-conic-gradient(#eee 0% 25%, #fff 0% 50%) 0 0 / 12px 12px' }} />

@@ -494,6 +494,13 @@ async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result
     close_ssh_master(&sh, &su).await
 }
 
+#[tauri::command]
+async fn read_local_file(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let data = tokio::fs::read(&path).await.map_err(|e| format!("read failed: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&data))
+}
+
 async fn ssh_read_file(ssh_host: &str, ssh_user: &str, path: &str) -> Result<String, String> {
     // Use double quotes so ~ expands, but escape any embedded double quotes
     let escaped = path.replace('"', r#"\""#);
@@ -2484,9 +2491,9 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                             let _: () = msg_send![obj, orderFrontRegardless];
                         }
                     } else {
-                        // Expand to 3/4 screen, centered, no native animation (CSS handles visuals)
-                        let win_w = (sw * 0.75).round();
-                        let win_h = (sh * 0.75).round();
+                        // Expand to 85% screen, centered, no native animation (CSS handles visuals)
+                        let win_w = (sw * 0.85).round();
+                        let win_h = (sh * 0.85).round();
                         let x = sx + (sw - win_w) / 2.0;
                         let y = sy + sh - win_h; // top of screen (macOS y=0 is bottom)
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
@@ -4250,7 +4257,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
