@@ -1285,6 +1285,7 @@ export default function Mini() {
               height: 36, padding: '0 14px', flexShrink: 0,
               background: '#1a1a1a',
               borderBottom: '1px solid rgba(255,255,255,0.06)',
+              position: 'sticky', top: 0, zIndex: 10,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
                 {settingsMode ? (
