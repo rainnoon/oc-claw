@@ -185,9 +185,24 @@ nav {
 
 .btn-wrap {
   position: relative;
-  display: inline-block;
+  display: inline-flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
   opacity: 0;
   animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.35s both;
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: none;
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: none;
+  filter: none;
 }
 
 .btn {
