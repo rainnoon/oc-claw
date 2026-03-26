@@ -102,6 +102,9 @@ function ConnectionRow({ conn, onUpdate, onDelete }: { conn: OcConnection; onUpd
                 value={conn.user || ''}
                 onChange={(e) => onUpdate({ ...conn, user: e.target.value })}
                 placeholder="用户名"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 className="w-24 bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
               />
               <span className="self-center text-white/30 text-sm">@</span>

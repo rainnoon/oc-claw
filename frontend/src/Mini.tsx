@@ -1225,7 +1225,7 @@ export default function Mini() {
 
       {/* Expanded panel */}
       {expanded && (
-        <div id="mini-panel" ref={panelRef} style={{
+        <div id="mini-panel" ref={panelRef} className={settingsMode ? '' : 'scrollbar-hidden'} style={{
           position: 'absolute', top: 0,
           left: '50%',
           transform: 'translateX(-50%)',
