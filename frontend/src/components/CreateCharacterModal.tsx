@@ -54,7 +54,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
   const [name, setName] = useState('')
   const [rows, setRows] = useState<RowData[]>([])
   const [pipeline, setPipeline] = useState<PipelineConfig | null>(null)
-  const [fps, setFps] = useState(4)
+  const [fps, setFps] = useState(2)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [existingNames, setExistingNames] = useState<string[]>([])
