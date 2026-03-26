@@ -51,7 +51,7 @@ export function GifMakerTab() {
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
   const refCacheRef = useRef<{ base64: string; mimeType: string } | null>(null)
-  const [fps, setFps] = useState(1)
+  const [fps] = useState(1)
   const [geminiKey, setGeminiKey] = useState('')
   const [geminiUrl, setGeminiUrl] = useState('')
   const [showKey, setShowKey] = useState(false)

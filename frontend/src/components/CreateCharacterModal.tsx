@@ -56,7 +56,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
   const [name, setName] = useState('')
   const [rows, setRows] = useState<RowData[]>([])
   const [pipeline, setPipeline] = useState<PipelineConfig | null>(null)
-  const [fps, setFps] = useState(1)
+  const [fps] = useState(1)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [existingNames, setExistingNames] = useState<string[]>([])
@@ -179,7 +179,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
         const unlisten = await getCurrentWebview().onDragDropEvent((event) => {
           if (cancelled) return
           if (event.payload.type === 'over') setIsDragging(true)
-          if (event.payload.type === 'leave' || event.payload.type === 'cancel') setIsDragging(false)
+          if (event.payload.type === 'leave') setIsDragging(false)
           if (event.payload.type === 'drop') {
             setIsDragging(false)
             const paths = event.payload.paths
