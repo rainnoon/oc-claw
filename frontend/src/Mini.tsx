@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, Check, Pen, Plus, X } from 'lucide-react'
+import { ChevronDown, Check, Loader2, Pen, Plus, X } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { SettingsTab } from './components/SettingsTab'
@@ -400,11 +400,14 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
 
 type OcParams = { mode?: string; url?: string; token?: string; sshHost?: string; sshUser?: string }
 
-function connToOcParams(conn: OcConnection): OcParams {
-  if (conn.type === 'remote' && conn.host && conn.user) {
-    return { mode: 'remote', sshHost: conn.host, sshUser: conn.user }
+// Returns null for incomplete remote connections (missing host/user)
+// so callers can skip them instead of accidentally treating them as local.
+function connToOcParams(conn: OcConnection): OcParams | null {
+  if (conn.type === 'remote') {
+    if (conn.host && conn.user) return { mode: 'remote', sshHost: conn.host, sshUser: conn.user }
+    return null // incomplete remote — skip
   }
-  return {}
+  return {} // local
 }
 
 export default function Mini() {
@@ -418,6 +421,14 @@ export default function Mini() {
   const [bobPhase, setBobPhase] = useState(0)
   const [allSessions, setAllSessions] = useState<MiniSessionInfo[]>([])
   const [anySessionActive, setAnySessionActive] = useState(false)
+  const [refreshingAgents, setRefreshingAgents] = useState(false)
+  // Snapshot of connection config to detect changes across settings edits
+  const lastConnSnapshotRef = useRef<string>('')
+  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Monotonically increasing ID to discard stale fetchAgents responses.
+  // Each call increments this; if the value has changed by the time the async
+  // work finishes, another call has started and this result is stale.
+  const fetchIdRef = useRef(0)
   const dismissedSessionsRef = useRef<Map<string, number>>(new Map())
 
   // Agent detail
@@ -504,13 +515,41 @@ export default function Mini() {
   }, [loadMiniChar])
 
   const fetchAgents = useCallback(async () => {
+    // Skip polling while settings page is open — snapshot comparison would
+    // detect the config change prematurely, consuming it before the user exits
+    // settings, which means exitSettings' call wouldn't show the loading overlay.
+    if (settingsModeRef.current) return
+
+    // Increment fetch ID so we can discard stale responses. If a slow SSH
+    // request (e.g. from a previous remote connection) finishes after a newer
+    // fetchAgents call has already started, we drop the old result.
+    const myFetchId = ++fetchIdRef.current
+
     try {
       const chars = await loadCharacters()
+      if (fetchIdRef.current !== myFetchId) return // stale
       setCharacters(chars)
     } catch (e) { console.warn('[fetchAgents] loadCharacters failed:', e) }
     try {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const connections = await loadOcConnections()
+
+      if (fetchIdRef.current !== myFetchId) return // stale
+
+      // Detect connection config changes — show loading overlay if changed
+      const snapshot = JSON.stringify(connections.map(c => ({ id: c.id, type: c.type, host: c.host, user: c.user })))
+      const configChanged = lastConnSnapshotRef.current !== '' && snapshot !== lastConnSnapshotRef.current
+      lastConnSnapshotRef.current = snapshot
+      if (configChanged) {
+        setAgents([])
+        setAllSessions([])
+        setRefreshingAgents(true)
+        // Clear previous timeout to avoid race condition when config changes
+        // multiple times quickly — only the latest refresh's timer should be active
+        if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current)
+        refreshTimeoutRef.current = setTimeout(() => setRefreshingAgents(false), 45000)
+      }
+
       const newConnMap = new Map<string, OcParams>()
       const newRealIdMap = new Map<string, string>()
       const newSourceLabels: Record<string, string> = {}
@@ -519,6 +558,7 @@ export default function Mini() {
       await Promise.all(connections.map(async (conn) => {
         try {
           const oc = connToOcParams(conn)
+          if (!oc) return // skip incomplete remote connections
           const agents = (await invoke('get_agents', oc)) as AgentInfo[]
           const prefix = multi ? `${conn.id.slice(0, 8)}:` : ''
           const label = conn.type === 'local' ? '本地' : (conn.host || '远程')
@@ -531,13 +571,27 @@ export default function Mini() {
           }
         } catch (e) { console.warn('[fetchAgents] connection failed:', conn.id, e) }
       }))
+
+      if (fetchIdRef.current !== myFetchId) return // stale — a newer fetch has started
+
       agentConnMapRef.current = newConnMap
       agentRealIdMapRef.current = newRealIdMap
       setAgentSourceLabels(newSourceLabels)
       const charMap = (await store.get('agent_char_map')) as Record<string, string> | null
       setAgents(allAgents)
       setAgentCharMap(charMap || {})
-    } catch (e) { console.warn('[fetchAgents] get_agents failed:', e) }
+      // Always clear loading overlay on success — even if this call didn't
+      // detect configChanged itself, the data is now fresh, so the overlay
+      // should go away. This prevents the 45s stuck overlay when the original
+      // configChanged call gets discarded as stale by fetchIdRef.
+      setRefreshingAgents(false)
+      if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
+    } catch (e) {
+      console.warn('[fetchAgents] get_agents failed:', e)
+      if (fetchIdRef.current !== myFetchId) return // stale
+      setRefreshingAgents(false)
+      if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
+    }
   }, [])
 
   const lastOcSoundRef = useRef(0)
@@ -571,6 +625,18 @@ export default function Mini() {
         const prefix = connections.length > 1 ? `${conn.id.slice(0, 8)}:` : ''
         try {
           const oc = connToOcParams(conn)
+          if (!oc) {
+            // Incomplete remote connection — still clear stale health data for
+            // this prefix so the mascot/status doesn't stay "busy" from the
+            // previous (now-removed) connection's data.
+            for (const k of Object.keys(hMap)) {
+              if (prefix === '' || k.startsWith(prefix)) delete hMap[k]
+            }
+            for (const k of Object.keys(sMap)) {
+              if (prefix === '' || k.startsWith(prefix)) delete sMap[k]
+            }
+            return
+          }
           const health = (await invoke('get_health', oc)) as { agents: AgentHealth[] }
           // Clear old entries for this connection, then fill fresh data
           for (const k of Object.keys(hMap)) {
@@ -1061,12 +1127,15 @@ export default function Mini() {
       settingsModeRef.current = false
       setSettingsMode(false)
       setSettingsNav('pairing')
+      // Trigger immediate refresh — fetchAgents detects config changes via
+      // snapshot comparison and shows loading overlay automatically
+      fetchAgents()
       try { await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current }) } catch {}
       requestAnimationFrame(() => {
         requestAnimationFrame(() => setShowPanel(true))
       })
     }, 300)
-  }, [])
+  }, [fetchAgents])
 
   // Click outside to collapse (only when not pinned)
   useEffect(() => {
@@ -1225,7 +1294,7 @@ export default function Mini() {
 
       {/* Expanded panel */}
       {expanded && (
-        <div id="mini-panel" ref={panelRef} style={{
+        <div id="mini-panel" ref={panelRef} className={settingsMode ? '' : 'scrollbar-hidden'} style={{
           position: 'absolute', top: 0,
           left: '50%',
           transform: 'translateX(-50%)',
@@ -1533,7 +1602,28 @@ export default function Mini() {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.15 }}
+                style={{ position: 'relative' }}
               >
+                {/* Loading overlay while refreshing connections */}
+                <AnimatePresence>
+                  {refreshingAgents && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                      style={{
+                        position: 'absolute', inset: 0, zIndex: 10,
+                        background: 'rgba(26,26,26,0.85)',
+                        display: 'flex', flexDirection: 'column',
+                        alignItems: 'center', justifyContent: 'center', gap: 8,
+                      }}
+                    >
+                      <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'rgba(255,255,255,0.4)' }} />
+                      <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11 }}>connecting...</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 {/* Character island */}
                 <div style={{
                   position: 'relative', height: 100,
@@ -1542,15 +1632,33 @@ export default function Mini() {
                   backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
                   overflow: 'hidden',
                 }}>
-                  {sessionSlots.length === 0 && (
-                    <div style={{
-                      position: 'absolute', inset: 0,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      color: 'rgba(255,255,255,0.3)', fontSize: 11, zIndex: 2,
-                    }}>
-                      waiting for agents...
-                    </div>
-                  )}
+                  {sessionSlots.length === 0 && (() => {
+                    // Show mascot idle GIF when no sessions, fall back to text
+                    const emptyGif = getMiniGif(miniChar ?? undefined, 'idle', true)
+                    return (
+                      <div style={{
+                        position: 'absolute', inset: 0,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        zIndex: 2,
+                      }}>
+                        {emptyGif ? (
+                          <img
+                            src={emptyGif}
+                            style={{
+                              width: 56, height: 56, objectFit: 'contain',
+                              animation: 'bob 2s ease-in-out infinite',
+                              opacity: 0.8,
+                            }}
+                            draggable={false}
+                          />
+                        ) : (
+                          <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11 }}>
+                            waiting for agents...
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })()}
 
                   {(() => {
                     // Shuffle slots by seed for random x positions
@@ -1614,11 +1722,22 @@ export default function Mini() {
 
                 {/* Session bars */}
                 <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', background: '#1a1a1a' }}>
-                  {allSessions.length === 0 && claudeSessions.length === 0 && (
+                  {allSessions.length === 0 && claudeSessions.length === 0 && !refreshingAgents && (
                     <div style={{
-                      color: 'rgba(255,255,255,0.2)', fontSize: 10,
-                      textAlign: 'center', padding: '24px 0',
-                    }}>no sessions</div>
+                      color: 'rgba(255,255,255,0.25)', fontSize: 11,
+                      textAlign: 'center', padding: '20px 16px',
+                      display: 'flex', flexDirection: 'column', gap: 6,
+                      alignItems: 'center',
+                    }}>
+                      {enableClaudeCode && <span>Send a message in Claude Code to start tracking</span>}
+                      <span
+                        data-no-drag
+                        onClick={(e) => { e.stopPropagation(); enterSettings() }}
+                        style={{ color: 'rgba(255,255,255,0.4)', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 2 }}
+                      >
+                        Go to Settings to connect OpenClaw
+                      </span>
+                    </div>
                   )}
 
                   <div className="scrollbar-thin" style={{ maxHeight: 4 * 56, overflowY: 'auto' }}>

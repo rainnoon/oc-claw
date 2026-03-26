@@ -35,33 +35,51 @@ function CopyCode({ text }: { text: string }) {
   )
 }
 
-function ConnectionRow({ conn, onUpdate, onDelete }: { conn: OcConnection; onUpdate: (c: OcConnection) => void; onDelete: () => void }) {
+function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcConnection; onUpdate: (c: OcConnection) => void; onDelete: () => void; disableLocal?: boolean }) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
   const [testMsg, setTestMsg] = useState('')
   const [showGuide, setShowGuide] = useState(false)
+  // Used to discard results from a cancelled test — the Tauri invoke can't
+  // be aborted, but we stop the UI from acting on stale results.
+  const cancelledRef = useRef(false)
 
   const testConnection = async () => {
+    cancelledRef.current = false
     setTesting(true)
     setTestResult(null)
     setTestMsg('')
     try {
       if (conn.type === 'remote') {
         const result: any = await invoke('get_agents', { mode: 'remote', sshHost: conn.host, sshUser: conn.user })
+        if (cancelledRef.current) return
         setTestMsg(`${result.length} 个 agent`)
       } else {
         const store = await getStore()
         const agentId = ((await store.get('tracked_agent')) as string) || 'main'
         const result: any = await invoke('get_status', { gatewayUrl: 'http://localhost:4446', token: '', agentId })
+        if (cancelledRef.current) return
         setTestMsg(`${result.sessions.length} 个 session`)
       }
       setTestResult('success')
       setTimeout(() => setTestResult(null), 3000)
     } catch (e: any) {
+      if (cancelledRef.current) return
       setTestResult('error')
       setTestMsg(String(e))
     }
     setTesting(false)
+  }
+
+  const cancelTest = () => {
+    cancelledRef.current = true
+    setTesting(false)
+    setTestResult(null)
+    setTestMsg('')
+    // Kill the SSH connection so it doesn't hang in the background
+    if (conn.type === 'remote' && conn.host && conn.user) {
+      invoke('close_ssh', { sshHost: conn.host, sshUser: conn.user }).catch(() => {})
+    }
   }
 
   return (
@@ -69,15 +87,19 @@ function ConnectionRow({ conn, onUpdate, onDelete }: { conn: OcConnection; onUpd
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
-            {(['local', 'remote'] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => onUpdate({ ...conn, type: t })}
-                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
-              >
-                {t === 'local' ? '本地' : '远程'}
-              </button>
-            ))}
+            {(['local', 'remote'] as const).map((t) => {
+              // Only one local connection allowed across all connections
+              const disabled = t === 'local' && disableLocal && conn.type !== 'local'
+              return (
+                <button
+                  key={t}
+                  onClick={() => !disabled && onUpdate({ ...conn, type: t })}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === t ? 'bg-white/10 text-white' : disabled ? 'text-white/15 cursor-not-allowed' : 'text-white/40 hover:text-white/60'}`}
+                >
+                  {t === 'local' ? '本地' : '远程'}
+                </button>
+              )
+            })}
           </div>
           <span className="text-xs text-white/30">
             {conn.type === 'local' ? '~/.openclaw' : conn.host ? `${conn.user || 'root'}@${conn.host}` : '未配置'}
@@ -102,6 +124,9 @@ function ConnectionRow({ conn, onUpdate, onDelete }: { conn: OcConnection; onUpd
                 value={conn.user || ''}
                 onChange={(e) => onUpdate({ ...conn, user: e.target.value })}
                 placeholder="用户名"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 className="w-24 bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
               />
               <span className="self-center text-white/30 text-sm">@</span>
@@ -156,6 +181,14 @@ function ConnectionRow({ conn, onUpdate, onDelete }: { conn: OcConnection; onUpd
           {testing && <Loader2 className="w-3 h-3 animate-spin" />}
           测试
         </button>
+        {testing && (
+          <button
+            onClick={cancelTest}
+            className="px-3 py-1.5 bg-white/5 hover:bg-red-500/20 border border-white/10 rounded-lg text-xs font-medium text-white/50 hover:text-red-400 transition-colors"
+          >
+            取消
+          </button>
+        )}
         {testResult === 'success' && (
           <span className="text-xs text-emerald-400 flex items-center gap-1">
             <Check className="w-3 h-3" /> 成功 {testMsg && `· ${testMsg}`}
@@ -282,7 +315,9 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
   }
 
   const addConnection = () => {
-    const updated = [...connections, { id: crypto.randomUUID(), type: 'local' as const }]
+    // Default to remote if a local connection already exists (only one local allowed)
+    const hasLocal = connections.some(c => c.type === 'local')
+    const updated = [...connections, { id: crypto.randomUUID(), type: (hasLocal ? 'remote' : 'local') as OcConnection['type'] }]
     setConnections(updated)
     saveOcConnections(updated)
   }
@@ -327,6 +362,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                 conn={conn}
                 onUpdate={(c) => updateConnection(idx, c)}
                 onDelete={() => deleteConnection(idx)}
+                disableLocal={connections.some((c, i) => i !== idx && c.type === 'local')}
               />
             ))
           )}
