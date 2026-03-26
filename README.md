@@ -9,17 +9,25 @@
   <b>English</b> | <a href="./README.zh.md">中文</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.es.md">Español</a> | <a href="./README.fr.md">Français</a>
 </p>
 <p align="center">
-  A macOS menu bar desktop pet that monitors your AI coding agents in real time.
+  A macOS notch companion that monitors your AI coding agents in real time.
 </p>
 
-## Features
+## What it does
 
-- **Notch Pet** — A character lives beside the MacBook notch, animating when agents are working and sleeping when idle
-- **OpenClaw Monitoring** — Auto-discovers local OpenClaw agents, displays session lists, chat history, and daily calls/tokens charts
-- **Claude Code Monitoring** — Listens to local Claude Code sessions via hooks, view live conversations
-- **Remote Mode** — Connect to OpenClaw instances running on remote servers
-- **Character System** — Custom GIF animations, pair different agents with different characters
-- **Menu Bar Only** — No dock icon, runs as a status bar tray app
+- Reacts to OpenClaw / Claude Code agent activity in real time (working, idle, waiting)
+- Character lives beside the MacBook notch, animating when agents work and sleeping when idle
+- Auto-discovers local OpenClaw agents with session lists, chat history, and daily calls/tokens charts
+- Listens to local Claude Code sessions via hooks, view live conversations
+- Connect to remote OpenClaw instances running on servers via SSH
+- Custom GIF character animations, pair different agents with different characters
+- Customizable island backgrounds with crop tool
+- Completion & waiting sound effects
+- Menu bar only — no dock icon
+
+## Requirements
+
+- macOS (MacBook with notch recommended)
+- [OpenClaw](https://github.com/nicepkg/openclaw) and/or [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 
 ## Install
 
@@ -39,10 +47,21 @@
 >
 > You can also download the DMG from [Releases](https://github.com/rainnoon/oc-claw/releases). After installing, run `xattr -cr /Applications/oc-claw.app` to bypass macOS Gatekeeper.
 
+## How it works
+
+```
+OpenClaw Agents ──→ JSONL session files ──→ Health polling ──→ Activity state
+Claude Code     ──→ Hooks (SessionStart/Stop) ──→ Event parser ──→ Activity state
+                                                                        ↓
+                                        Animated sprites ← State machine ← Sound effects
+```
+
+OC-Claw polls OpenClaw session files to detect agent activity, and listens to Claude Code via installed hooks. Activity states drive character animations on the notch island, with an expandable panel for session details, chat history, and metrics.
+
 ## Tech Stack
 
-- **Tauri v2** + **React** + **TypeScript**
-- **Rust** backend for system interaction and API communication
+- **Tauri v2** + **React** + **TypeScript** — frontend
+- **Rust** — backend for system interaction, SSH tunneling, and API communication
 - macOS native APIs for notch positioning and window management
 
 ## Development
@@ -52,6 +71,15 @@ cd frontend
 npm install
 npx tauri dev
 ```
+
+## Contributing
+
+Bug reports, feature suggestions, and pull requests are welcome.
+
+## Credits
+
+- [Notchi](https://github.com/sk-ruban/notchi) — design inspiration for notch companion concept and grass island
+- [OpenClaw](https://github.com/nicepkg/openclaw) — the AI agent platform this app monitors
 
 ## License
 
