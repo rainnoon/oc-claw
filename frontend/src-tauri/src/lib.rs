@@ -256,20 +256,53 @@ async fn is_remote_session_active(url: &str, token: &str, session_key: &str, s: 
 }
 
 /// Parse tail lines of a session .jsonl to determine if an agent is active.
-/// Reuses the same logic as ssh_is_agent_active but without SSH.
+///
+/// OpenClaw JSONL format: each line is `{"type":"message","message":{...}}`
+/// Key fields on `message`:
+///   - `role`: "user" | "assistant" | "toolResult"
+///   - `usage`: present (object) when an API call is complete
+///   - `content`: array of `{type: "text"|"toolCall"|"thinking"|"image", ...}`
+///   - NOTE: stop_reason is NOT present in OpenClaw JSONL
+///
+/// A single turn may involve multiple API calls (tool use loop):
+///   1. user message          content=['text']           ← user prompt
+///   2. assistant message     content=['toolCall']       ← calls a tool, NOT done
+///   3. toolResult message    content=['text']           ← tool output
+///   4. assistant message     content=['toolCall']       ← calls another tool, still NOT done
+///   5. toolResult message    content=['text']           ← tool output
+///   6. assistant message     content=['text']           ← final reply, turn done
+///
+/// Between steps 2→3 and 4→5 the queue briefly goes idle, but the turn is NOT over.
+/// We check: if the last assistant message has "toolCall" content, the turn continues.
+/// Also: if the last message is "toolResult", the agent is about to process it → active.
+/// This affects: pet working/idle animation, completion sound, session active indicator.
 fn check_agent_active_from_lines(lines: &[String]) -> bool {
-    let mut last_role = "";
+    let mut last_role = String::new();
     let mut has_usage = false;
+    let mut has_tool_call = false;
     for line in lines.iter().rev() {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
             if val["type"].as_str() == Some("message") {
-                last_role = if val["message"]["role"].as_str() == Some("user") { "user" } else { "assistant" };
+                last_role = val["message"]["role"].as_str().unwrap_or("").to_string();
                 has_usage = val["message"]["usage"].is_object();
+                // Check if assistant message contains a toolCall content block
+                if let Some(content) = val["message"]["content"].as_array() {
+                    has_tool_call = content.iter().any(|c| c["type"].as_str() == Some("toolCall"));
+                }
                 break;
             }
         }
     }
-    last_role == "user" || (last_role == "assistant" && !has_usage)
+    // Active when:
+    //   - last msg is "user" → waiting for assistant response
+    //   - last msg is "toolResult" → agent will process tool output next
+    //   - last msg is "assistant" without usage → still streaming
+    //   - last msg is "assistant" with toolCall content → called a tool, turn continues
+    // Inactive when:
+    //   - last msg is "assistant" with usage, no toolCall → turn truly ended
+    last_role == "user"
+        || last_role == "toolResult"
+        || (last_role == "assistant" && (!has_usage || has_tool_call))
 }
 
 /// Build AgentHealth with session-level data from sessions.json + tail outputs.
@@ -481,19 +514,8 @@ async fn ssh_is_agent_active(ssh_host: &str, ssh_user: &str, agent_id: &str) -> 
         Err(_) => return false,
     };
     // Walk backwards through lines to find the last message entry
-    let mut last_role = "";
-    let mut has_usage = false;
-    for line in output.lines().rev() {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-            if val["type"].as_str() == Some("message") {
-                last_role = if val["message"]["role"].as_str() == Some("user") { "user" } else { "assistant" };
-                has_usage = val["message"]["usage"].is_object();
-                break;
-            }
-        }
-    }
-    // user message at the end = agent is processing; assistant with usage = done
-    last_role == "user" || (last_role == "assistant" && !has_usage)
+    let lines: Vec<String> = output.lines().map(|l| l.to_string()).collect();
+    check_agent_active_from_lines(&lines)
 }
 
 /// Check if a specific session file is active by reading its tail.

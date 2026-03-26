@@ -29,6 +29,29 @@ When the user references a UI element or component by name (e.g. "the little cha
 - List the candidate files/components that match the description.
 - Ask the user to confirm the correct target before making any changes.
 
+# OpenClaw Data Format
+
+When modifying anything related to OpenClaw session activity detection, health polling, or JSONL parsing:
+
+1. **Do NOT assume data formats.** Always check real data first at `~/.openclaw/agents/*/sessions/*.jsonl`.
+2. OpenClaw JSONL is NOT standard Claude API format. Key differences:
+   - `role` has three values: `"user"`, `"assistant"`, `"toolResult"` (NOT `"tool_use"`)
+   - Tool calls use content type `"toolCall"` (NOT `"tool_use"`)
+   - `stop_reason` does NOT exist in the JSONL
+   - `usage` is present on every completed API call, including intermediate tool calls
+3. A single turn has a tool loop: `user → assistant(toolCall) → toolResult → assistant(toolCall) → toolResult → ... → assistant(text)`. The queue goes idle between each step, but the turn is NOT over until the final `assistant` message with only `text` content (no `toolCall`).
+4. `check_agent_active_from_lines()` in `lib.rs` is the single source of truth for session activity. All health, preview, and animation states depend on it. Modify with extreme care.
+
+# Comments
+
+Write thorough comments for any non-trivial logic, especially:
+- Data format assumptions (JSONL structure, field names, role values)
+- State transition logic (active/inactive, working/idle)
+- Why a particular approach was chosen over alternatives
+- Known pitfalls and edge cases
+
+This prevents re-introducing bugs when context from previous conversations is lost.
+
 # Code Style
 
 - Prefer simple, minimal fixes.
