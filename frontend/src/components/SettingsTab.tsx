@@ -40,28 +40,46 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
   const [testMsg, setTestMsg] = useState('')
   const [showGuide, setShowGuide] = useState(false)
+  // Used to discard results from a cancelled test — the Tauri invoke can't
+  // be aborted, but we stop the UI from acting on stale results.
+  const cancelledRef = useRef(false)
 
   const testConnection = async () => {
+    cancelledRef.current = false
     setTesting(true)
     setTestResult(null)
     setTestMsg('')
     try {
       if (conn.type === 'remote') {
         const result: any = await invoke('get_agents', { mode: 'remote', sshHost: conn.host, sshUser: conn.user })
+        if (cancelledRef.current) return
         setTestMsg(`${result.length} 个 agent`)
       } else {
         const store = await getStore()
         const agentId = ((await store.get('tracked_agent')) as string) || 'main'
         const result: any = await invoke('get_status', { gatewayUrl: 'http://localhost:4446', token: '', agentId })
+        if (cancelledRef.current) return
         setTestMsg(`${result.sessions.length} 个 session`)
       }
       setTestResult('success')
       setTimeout(() => setTestResult(null), 3000)
     } catch (e: any) {
+      if (cancelledRef.current) return
       setTestResult('error')
       setTestMsg(String(e))
     }
     setTesting(false)
+  }
+
+  const cancelTest = () => {
+    cancelledRef.current = true
+    setTesting(false)
+    setTestResult(null)
+    setTestMsg('')
+    // Kill the SSH connection so it doesn't hang in the background
+    if (conn.type === 'remote' && conn.host && conn.user) {
+      invoke('close_ssh', { sshHost: conn.host, sshUser: conn.user }).catch(() => {})
+    }
   }
 
   return (
@@ -163,6 +181,14 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
           {testing && <Loader2 className="w-3 h-3 animate-spin" />}
           测试
         </button>
+        {testing && (
+          <button
+            onClick={cancelTest}
+            className="px-3 py-1.5 bg-white/5 hover:bg-red-500/20 border border-white/10 rounded-lg text-xs font-medium text-white/50 hover:text-red-400 transition-colors"
+          >
+            取消
+          </button>
+        )}
         {testResult === 'success' && (
           <span className="text-xs text-emerald-400 flex items-center gap-1">
             <Check className="w-3 h-3" /> 成功 {testMsg && `· ${testMsg}`}
