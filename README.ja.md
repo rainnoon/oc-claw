@@ -3,6 +3,9 @@
 </p>
 <h1 align="center">OC-Claw</h1>
 <p align="center">
+  <img src="assets/powered-by-kaon.png" height="28" />
+</p>
+<p align="center">
   <a href="./README.md">English</a> | <a href="./README.zh.md">中文</a> | <b>日本語</b> | <a href="./README.ko.md">한국어</a> | <a href="./README.es.md">Español</a> | <a href="./README.fr.md">Français</a>
 </p>
 <p align="center">
@@ -56,9 +59,6 @@ MIT
 
 ---
 
-<p align="center">
-  <img src="assets/powered-by-kaon.png" height="32" />
-</p>
 <p align="center">
   <sub>KAON Hackathon にて誕生</sub>
 </p>
