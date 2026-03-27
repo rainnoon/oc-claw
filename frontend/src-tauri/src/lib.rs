@@ -361,7 +361,15 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         return Err(format!("SSH connection to {} backing off, retry in {}s", host_key, remaining));
     }
 
-    // Per-host lock so different hosts can establish masters in parallel
+    let control_path = format!("/tmp/oc-claw-ssh-{}:22", host_key);
+    // Fast path: socket already exists, reuse the master connection.
+    if std::path::Path::new(&control_path).exists() { return Ok(()); }
+
+    // Per-host lock so only one task establishes the master at a time.
+    // Other tasks wait, then hit the re-check and return immediately once
+    // the socket is created. The socket existence check ABOVE the lock is
+    // the fast path — most polling requests return there without touching
+    // the lock at all.
     use std::sync::OnceLock;
     use tokio::sync::Mutex as TokioMutex;
     static LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Arc<TokioMutex<()>>>>> = OnceLock::new();
@@ -370,17 +378,17 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         locks.entry(host_key.clone()).or_insert_with(|| Arc::new(TokioMutex::new(()))).clone()
     };
     let _guard = lock.lock().await;
-
-    let control_path = format!("/tmp/oc-claw-ssh-{}:22", host_key);
+    // Re-check after acquiring the lock — the task ahead of us may have
+    // already established the master while we were waiting.
     if std::path::Path::new(&control_path).exists() { return Ok(()); }
 
     let cp = format!("ControlPath={}", control_path);
     // No `-i` flag — let ssh resolve the key from ~/.ssh/config and default
-    // search order (id_rsa, id_ecdsa, id_ed25519, etc.). Use `-v` to capture
-    // which key was actually accepted so we can show it in the UI.
-    let output = tokio::process::Command::new("ssh")
+    // search order. No `-v` either — verbose output on a piped stderr can
+    // cause `.output()` to block when combined with `-fN` (the forked master
+    // keeps the pipe open, preventing the parent from exiting cleanly).
+    let child = tokio::process::Command::new("ssh")
         .args([
-            "-v",
             "-o", "StrictHostKeyChecking=no",
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=10",
@@ -394,30 +402,77 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("ssh master: {}", e))?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+        .spawn()
+        .map_err(|e| format!("ssh master spawn: {}", e))?;
+
+    let child_id = child.id();
+
+    // ssh -fN should fork to background within seconds. If it doesn't
+    // finish in 15s, something is wrong — kill it to avoid blocking forever.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        child.wait_with_output(),
+    ).await;
+
+    let output = match result {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            ssh_backoff_record_failure(&host_key);
+            return Err(format!("ssh master wait: {}", e));
+        }
+        Err(_) => {
+            if let Some(pid) = child_id {
+                unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+            }
+            ssh_backoff_record_failure(&host_key);
+            return Err(format!("ssh master to {} timed out after 15s", host_key));
+        }
+    };
+
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         ssh_backoff_record_failure(&host_key);
         let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
         let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
         log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
         return Err(format!("SSH master failed [exit {}]: {}", code, stderr));
     }
-    // Parse `ssh -v` output for the accepted key.
-    // OpenSSH 8+ prints: "debug1: Server accepts key: /path/to/key TYPE SHA256:..."
-    for line in stderr.lines() {
-        if line.contains("Server accepts key:") {
-            if let Some(rest) = line.split("Server accepts key: ").nth(1) {
-                // rest = "/path/to/key TYPE SHA256:..."
-                let key_path = rest.split_whitespace().next().unwrap_or(rest).to_string();
-                log::info!("[ssh] {} authenticated with key: {}", host_key, key_path);
-                ssh_key_map().lock().unwrap().insert(host_key.clone(), key_path);
+
+    // ssh -fN forks to background — the foreground process exits before the
+    // master socket is fully ready. Wait for the socket file to appear before
+    // declaring success, otherwise ssh_exec will immediately fail with a
+    // "connection refused" on the not-yet-ready socket.
+    for _ in 0..30 {
+        if std::path::Path::new(&control_path).exists() { break; }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    if !std::path::Path::new(&control_path).exists() {
+        ssh_backoff_record_failure(&host_key);
+        return Err(format!("ssh master socket for {} never appeared", host_key));
+    }
+
+    // Detect which key was used by querying ssh config for this host.
+    // `ssh -G` prints the resolved config (including IdentityFile) without connecting.
+    if let Ok(cfg_output) = tokio::process::Command::new("ssh")
+        .args(["-G", &host_key])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+    {
+        let cfg = String::from_utf8_lossy(&cfg_output.stdout);
+        for line in cfg.lines() {
+            if let Some(path) = line.strip_prefix("identityfile ") {
+                let expanded = path.replace("~", &std::env::var("HOME").unwrap_or_default());
+                if std::path::Path::new(&expanded).exists() {
+                    log::info!("[ssh] {} will use key: {}", host_key, expanded);
+                    ssh_key_map().lock().unwrap().insert(host_key.clone(), expanded);
+                    break;
+                }
             }
-            break;
         }
     }
+
     ssh_backoff_reset(&host_key);
     Ok(())
 }
@@ -451,8 +506,23 @@ async fn ssh_exec(ssh_host: &str, ssh_user: &str, cmd: &str) -> Result<String, S
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).to_string());
     }
-    // First attempt failed — likely stale socket. Remove it and retry once.
-    log::warn!("[ssh] command failed, removing stale socket and retrying");
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    // Exit 255 = SSH transport error (connection refused, auth failure, broken
+    // socket, etc.). Any other non-zero exit code comes from the remote command
+    // itself (e.g. file not found) and should be returned as-is — do NOT destroy
+    // a healthy master connection just because `cat` failed.
+    if exit_code != 255 {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut msg = format!("ssh cmd failed [exit {}]", exit_code);
+        if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
+        if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
+        return Err(msg);
+    }
+
+    // SSH transport failure — remove the stale socket and retry once.
+    log::warn!("[ssh] transport error (exit 255), removing stale socket and retrying");
     let _ = tokio::fs::remove_file(&control_path).await;
     ensure_ssh_master(ssh_host, ssh_user).await?;
     let output = tokio::process::Command::new("ssh")
@@ -514,19 +584,21 @@ fn get_ssh_key_info(ssh_host: String, ssh_user: String) -> Option<String> {
     ssh_key_map().lock().unwrap().get(&key).cloned()
 }
 
-/// Reset backoff + remove stale socket for a host, so the next connection
-/// attempt starts fresh. Called before user-initiated "test connection" to
-/// avoid making the user wait out a backoff timer from a previous failure.
+/// Reset backoff, gracefully close the existing SSH master process, and
+/// remove the socket — so the next connection starts completely fresh.
+/// Called before user-initiated "test connection" to avoid making the user
+/// wait out a backoff timer or fight a stale/conflicting master process.
 #[tauri::command]
 async fn reset_ssh(ssh_host: String, ssh_user: String) {
     let host_key = format!("{}@{}", ssh_user, ssh_host);
     ssh_backoff_reset(&host_key);
-    // Also remove stale socket so ensure_ssh_master re-establishes from scratch
-    let control_path = format!("/tmp/oc-claw-ssh-{}:22", host_key);
-    let _ = tokio::fs::remove_file(&control_path).await;
+    // Gracefully shut down the existing master process via `-O exit`,
+    // then remove the socket file. This prevents orphaned ssh processes
+    // from piling up and conflicting with the new master.
+    let _ = close_ssh_master(&ssh_host, &ssh_user).await;
     // Clear cached key info since we're starting fresh
     ssh_key_map().lock().unwrap().remove(&host_key);
-    log::info!("[reset_ssh] cleared backoff and socket for {}", host_key);
+    log::info!("[reset_ssh] cleared backoff, killed master, and reset for {}", host_key);
 }
 
 #[tauri::command]
