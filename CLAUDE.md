@@ -53,6 +53,20 @@ Mini.tsx has multiple polling loops (`fetchAgents` 5s, `pollHealth` 1s, `fetchAl
 3. **Both `exitSettings()` and `collapse()` must trigger `fetchAgents()` immediately.** Users can close settings via the back button (`exitSettings`) OR by clicking outside (`collapse`). If only `exitSettings` calls `fetchAgents`, clicking outside causes a 5-8s delay before config changes are detected.
 4. **`settingsModeRef.current` must be set to `false` BEFORE calling `fetchAgents()`**, otherwise the settings-mode guard inside `fetchAgents` will skip the call.
 
+# App Updates & Releases
+
+When modifying the macOS update flow, keep these rules in mind:
+
+1. **The app no longer checks GitHub Releases directly.** `check_for_update()` in `frontend/src-tauri/src/lib.rs` reads a website-managed manifest instead. In dev it uses `http://[::1]:4321/update/latest.json`; in production it uses `https://www.oc-claw.ai/update/latest.json`.
+2. **The website manifest is the release gate.** `website/public/update/latest.json` controls which version the app sees and which DMG it downloads. Do not assume the latest GitHub Release should automatically be offered to users.
+3. **The website download button is a separate lever.** `website/src/components/Hero.astro` can intentionally stay on an older DMG while `latest.json` points somewhere else during staged rollouts or updater testing. Do not silently “sync” them unless the user explicitly wants that.
+4. **Dev update checks must bypass system proxies.** On macOS, localhost requests can be forwarded through the system proxy and return `502`. The dev update client in Rust must keep using `no_proxy()` for local manifest checks.
+5. **The UI can only show progress during the download phase.** The app downloads the DMG first, emits `update-progress` events, then spawns a detached helper script, exits, and lets the helper replace `/Applications/oc-claw.app` and relaunch. After the app exits there is no in-app UI, so that behavior is expected.
+6. **The helper installer is the source of truth for the swap flow.** It mounts the downloaded DMG, finds the `.app` bundle inside, copies it into `/Applications`, clears extended attributes, and relaunches the app. If update installation breaks, inspect the helper flow before changing the UI.
+7. **Helper logs live in the system temp directory.** The updater writes files under `oc-claw-update-*` in the temp dir, including `install.log`. When debugging install failures, look there first.
+8. **Every real user-facing macOS release still needs signing and notarization.** The helper-based installer does not replace Apple signing/notarization requirements. `xattr -cr` is only cleanup, not a substitute for notarization.
+9. **Version bumps and public rollout are intentionally decoupled.** The app source version can move to the next release (for example `1.5.2`) while the website manifest and download button stay on the previous public build (for example `1.5.1`) until rollout is ready.
+
 # Comments
 
 Write thorough comments for any non-trivial logic, especially:
