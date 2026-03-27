@@ -195,9 +195,12 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
           </span>
         )}
         {testResult === 'error' && (
-          <span className="text-xs text-red-400 truncate max-w-[200px]" title={testMsg}>
-            失败: {testMsg}
-          </span>
+          <div className="text-xs text-red-400 w-full">
+            <span>失败</span>
+            <pre className="mt-1 p-2 bg-red-500/10 border border-red-500/20 rounded-lg whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto font-mono text-[11px] leading-relaxed select-text">
+              {testMsg}
+            </pre>
+          </div>
         )}
       </div>
     </div>

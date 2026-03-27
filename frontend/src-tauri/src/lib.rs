@@ -392,8 +392,9 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         let stderr = String::from_utf8_lossy(&output.stderr);
         ssh_backoff_record_failure(&host_key);
         let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
+        let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
         log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
-        return Err(format!("SSH connection failed (check key auth): {}", stderr));
+        return Err(format!("SSH master failed [exit {}]: {}", code, stderr));
     }
     ssh_backoff_reset(&host_key);
     Ok(())
@@ -447,7 +448,12 @@ async fn ssh_exec(ssh_host: &str, ssh_user: &str, cmd: &str) -> Result<String, S
         .map_err(|e| format!("ssh: {}", e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ssh cmd failed: {}", stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+        let mut msg = format!("ssh cmd failed [exit {}]", code);
+        if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
+        if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
+        return Err(msg);
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
