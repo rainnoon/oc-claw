@@ -3853,26 +3853,54 @@ async fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Check for updates by fetching the version manifest from the official website.
+/// The manifest is a static JSON file hosted on Vercel at /update/latest.json,
+/// which is manually updated on each release — giving us full control over
+/// when users see an update prompt (independent of GitHub Releases).
+///
+/// Expected manifest format:
+///   { "version": "1.6.0", "url": "https://github.com/.../oc-claw_1.6.0_aarch64.dmg", "notes": "..." }
 #[tauri::command]
 async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let current = app.config().version.clone().unwrap_or_default();
-    let client = reqwest::Client::builder()
-        .user_agent("oc-claw")
+
+    let update_url = if cfg!(debug_assertions) {
+        "http://[::1]:4321/update/latest.json"
+    } else {
+        "https://www.oc-claw.ai/update/latest.json"
+    };
+    log::info!("[update] checking {} (current={})", update_url, current);
+    // On macOS, reqwest can inherit system proxies. That breaks local update checks
+    // in dev because localhost requests may be forwarded to the proxy and return 502.
+    let mut client_builder = reqwest::Client::builder()
+        .user_agent("oc-claw");
+    if cfg!(debug_assertions) {
+        client_builder = client_builder.no_proxy();
+    }
+    let client = client_builder
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("client build error: {e}"))?;
     let resp = client
-        .get("https://api.github.com/repos/rainnoon/oc-claw/releases/latest")
+        .get(update_url)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
-    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let latest = json["tag_name"].as_str().unwrap_or("").trim_start_matches('v');
+        .map_err(|e| { log::warn!("[update] fetch error: {e}"); format!("fetch error: {e}") })?;
+    if !resp.status().is_success() {
+        let msg = format!("update check failed: HTTP {}", resp.status());
+        log::warn!("[update] {msg}");
+        return Err(msg);
+    }
+    let json: serde_json::Value = resp.json().await
+        .map_err(|e| { log::warn!("[update] json parse error: {e}"); format!("json parse error: {e}") })?;
+    log::info!("[update] latest={} hasUpdate={}", json["version"], version_cmp(json["version"].as_str().unwrap_or(""), &current));
+    let latest = json["version"].as_str().unwrap_or("");
     let has_update = version_cmp(latest, &current);
     Ok(serde_json::json!({
         "current": current,
         "latest": latest,
         "hasUpdate": has_update,
-        "url": json["html_url"].as_str().unwrap_or(""),
+        // The DMG download URL from the manifest (points to GitHub Release asset)
+        "url": json["url"].as_str().unwrap_or(""),
     }))
 }
 
@@ -3891,33 +3919,221 @@ fn version_cmp(latest: &str, current: &str) -> bool {
     false
 }
 
+fn format_update_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit_idx = 0usize;
+    while value >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_idx += 1;
+    }
+    if unit_idx == 0 {
+        format!("{} {}", bytes, UNITS[unit_idx])
+    } else {
+        format!("{value:.1} {}", UNITS[unit_idx])
+    }
+}
+
+fn emit_update_progress(
+    app: &tauri::AppHandle,
+    stage: &str,
+    progress: Option<u64>,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    message: &str,
+) {
+    let _ = app.emit(
+        "update-progress",
+        serde_json::json!({
+            "stage": stage,
+            "progress": progress,
+            "downloadedBytes": downloaded_bytes,
+            "totalBytes": total_bytes,
+            "message": message,
+        }),
+    );
+}
+
+/// Run the actual update: download DMG, replace the app, and relaunch.
+/// The `dmg_url` is passed from the frontend (originally from the website manifest),
+/// so we no longer need to query GitHub API at update time.
 #[tauri::command]
-async fn run_update() -> Result<(), String> {
-    let script = r#"
-        set -e
-        REPO="rainnoon/oc-claw"
-        APP_NAME="oc-claw"
-        INSTALL_DIR="/Applications"
-        DMG_URL=$(curl -sL "https://api.github.com/repos/${REPO}/releases/latest" \
-          | grep "browser_download_url.*\.dmg" \
-          | head -1 \
-          | cut -d '"' -f 4)
-        [ -z "$DMG_URL" ] && exit 1
-        TMPDIR=$(mktemp -d)
-        DMG_PATH="${TMPDIR}/${APP_NAME}.dmg"
-        curl -sL "$DMG_URL" -o "$DMG_PATH"
-        MOUNT_POINT=$(hdiutil attach "$DMG_PATH" -nobrowse -quiet | tail -1 | sed 's/.*\(\/Volumes\/.*\)/\1/' | xargs)
-        rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
-        cp -R "${MOUNT_POINT}/${APP_NAME}.app" "${INSTALL_DIR}/"
-        hdiutil detach "$MOUNT_POINT" -quiet
-        xattr -cr "${INSTALL_DIR}/${APP_NAME}.app"
-        rm -rf "$TMPDIR"
-        open "${INSTALL_DIR}/${APP_NAME}.app"
-    "#;
-    tokio::process::Command::new("bash")
-        .args(["-c", script])
+async fn run_update(app: tauri::AppHandle, dmg_url: String) -> Result<(), String> {
+    if dmg_url.is_empty() {
+        return Err("No download URL provided".to_string());
+    }
+    // Download the DMG while the app is still alive so the UI can show progress.
+    let client = reqwest::Client::builder()
+        .user_agent("oc-claw-updater")
+        .build()
+        .map_err(|e| format!("client build error: {e}"))?;
+    emit_update_progress(&app, "preparing", Some(0), 0, None, "准备下载更新");
+    let mut resp = client
+        .get(&dmg_url)
+        .send()
+        .await
+        .map_err(|e| format!("download request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("download failed: HTTP {}", resp.status()));
+    }
+
+    let total_bytes = resp.content_length();
+    let stamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let work_dir = std::env::temp_dir().join(format!("oc-claw-update-{stamp}"));
+    std::fs::create_dir_all(&work_dir).map_err(|e| format!("failed to create temp dir: {e}"))?;
+    let dmg_path = work_dir.join("oc-claw-update.dmg");
+    let helper_path = work_dir.join("install-update.sh");
+    let log_path = work_dir.join("install.log");
+
+    let mut file = tokio::fs::File::create(&dmg_path)
+        .await
+        .map_err(|e| format!("failed to create temp file: {e}"))?;
+    let mut downloaded_bytes = 0u64;
+    let mut last_progress: Option<u64> = None;
+
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("download stream failed: {e}"))?
+    {
+        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+            .await
+            .map_err(|e| format!("failed to write temp file: {e}"))?;
+        downloaded_bytes += chunk.len() as u64;
+        let progress = total_bytes.map(|total| ((downloaded_bytes.saturating_mul(100)) / total.max(1)).min(100));
+        if progress != last_progress {
+            let message = if let Some(total) = total_bytes {
+                format!(
+                    "正在下载更新 {} / {}",
+                    format_update_bytes(downloaded_bytes),
+                    format_update_bytes(total)
+                )
+            } else {
+                format!("正在下载更新 {}", format_update_bytes(downloaded_bytes))
+            };
+            emit_update_progress(&app, "downloading", progress, downloaded_bytes, total_bytes, &message);
+            last_progress = progress;
+        }
+    }
+    tokio::io::AsyncWriteExt::flush(&mut file)
+        .await
+        .map_err(|e| format!("failed to flush temp file: {e}"))?;
+
+    emit_update_progress(
+        &app,
+        "downloaded",
+        Some(100),
+        downloaded_bytes,
+        total_bytes,
+        "下载完成，准备安装更新",
+    );
+
+    // Spawn a detached helper that waits for the app to quit, then swaps the bundle.
+    let script = format!(r#"#!/bin/bash
+set -euo pipefail
+PID="{pid}"
+APP_BUNDLE="/Applications/oc-claw.app"
+DMG_PATH="{dmg_path}"
+LOG_PATH="{log_path}"
+MOUNT_POINT=""
+
+log() {{
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_PATH"
+}}
+
+cleanup() {{
+  if [ -n "$MOUNT_POINT" ]; then
+    hdiutil detach "$MOUNT_POINT" -quiet >/dev/null 2>&1 || true
+  fi
+}}
+
+trap cleanup EXIT
+
+log "Waiting for app pid $PID to exit"
+for _ in $(seq 1 120); do
+  if ! kill -0 "$PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+
+if kill -0 "$PID" 2>/dev/null; then
+  log "Timed out waiting for app to exit"
+  exit 1
+fi
+
+if ! ATTACH_OUTPUT=$(hdiutil attach "$DMG_PATH" -nobrowse -readonly 2>&1); then
+  log "$ATTACH_OUTPUT"
+  exit 1
+fi
+
+MOUNT_POINT=$(printf '%s\n' "$ATTACH_OUTPUT" | awk 'match($0, /\/Volumes\/.*/) {{ print substr($0, RSTART); exit }}')
+if [ -z "$MOUNT_POINT" ]; then
+  log "Failed to determine DMG mount point"
+  log "$ATTACH_OUTPUT"
+  exit 1
+fi
+
+APP_PATH=""
+for candidate in "$MOUNT_POINT"/*.app; do
+  if [ -d "$candidate" ]; then
+    APP_PATH="$candidate"
+    break
+  fi
+done
+
+if [ -z "$APP_PATH" ]; then
+  log "No app bundle found in $MOUNT_POINT"
+  /bin/ls -la "$MOUNT_POINT" >> "$LOG_PATH" 2>&1 || true
+  exit 1
+fi
+
+log "Installing $APP_PATH"
+rm -rf "$APP_BUNDLE"
+ditto "$APP_PATH" "$APP_BUNDLE"
+xattr -cr "$APP_BUNDLE" || true
+
+log "Launching updated app"
+open -n "$APP_BUNDLE"
+"#,
+        pid = std::process::id(),
+        dmg_path = dmg_path.display(),
+        log_path = log_path.display(),
+    );
+    std::fs::write(&helper_path, script).map_err(|e| format!("failed to write helper script: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&helper_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("failed to chmod helper script: {e}"))?;
+    }
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("failed to open helper log: {e}"))?;
+    let log_file_err = log_file
+        .try_clone()
+        .map_err(|e| format!("failed to clone helper log: {e}"))?;
+    std::process::Command::new("bash")
+        .arg(&helper_path)
+        .stdout(std::process::Stdio::from(log_file))
+        .stderr(std::process::Stdio::from(log_file_err))
         .spawn()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("failed to start installer helper: {e}"))?;
+
+    emit_update_progress(
+        &app,
+        "ready_to_restart",
+        Some(100),
+        downloaded_bytes,
+        total_bytes,
+        "下载完成，即将退出应用并安装更新",
+    );
     Ok(())
 }
 

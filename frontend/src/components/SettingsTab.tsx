@@ -1,9 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { Loader2, Check, ChevronDown, Copy, Plus, Trash2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { getStore, loadOcConnections, saveOcConnections } from '../lib/store'
 import type { OcConnection } from '../lib/types'
+
+type UpdateProgressPayload = {
+  stage: string
+  progress?: number | null
+  downloadedBytes?: number
+  totalBytes?: number | null
+  message?: string
+}
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -221,12 +230,41 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
   const [hookStatus, setHookStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
   const [updateChecking, setUpdateChecking] = useState(false)
+  const [updateCheckResult, setUpdateCheckResult] = useState<'success' | 'error' | null>(null)
+  const [updateCheckMsg, setUpdateCheckMsg] = useState('')
   const [updating, setUpdating] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null)
+  const [updateProgressMsg, setUpdateProgressMsg] = useState('')
+  const [updateRunResult, setUpdateRunResult] = useState<'success' | 'error' | null>(null)
+  const [updateRunMsg, setUpdateRunMsg] = useState('')
   const [backgrounds, setBackgrounds] = useState<string[]>([])
   const [bgPreviewUrl, setBgPreviewUrl] = useState<string | null>(null)
   const [bgNaturalSize, setBgNaturalSize] = useState<{ w: number; h: number } | null>(null)
   const cropContainerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+
+  const checkForUpdate = useCallback(async (showFeedback = false) => {
+    setUpdateChecking(true)
+    if (showFeedback) {
+      setUpdateCheckResult(null)
+      setUpdateCheckMsg('')
+    }
+    try {
+      const info = await invoke('check_for_update') as { current: string; latest: string; hasUpdate: boolean; url: string }
+      setUpdateInfo(info)
+      if (showFeedback) {
+        setUpdateCheckResult('success')
+        setUpdateCheckMsg(info.hasUpdate ? `发现新版本 v${info.latest}` : '当前已是最新版本')
+      }
+    } catch (e: any) {
+      if (showFeedback) {
+        setUpdateCheckResult('error')
+        setUpdateCheckMsg(`检查失败：${String(e)}`)
+      }
+    } finally {
+      setUpdateChecking(false)
+    }
+  }, [])
 
   useEffect(() => {
     ;(async () => {
@@ -236,8 +274,17 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
     })()
-    invoke('check_for_update').then((info: any) => setUpdateInfo(info)).catch(() => {})
+    void checkForUpdate()
     invoke('list_backgrounds').then((list: any) => setBackgrounds(list as string[])).catch(() => {})
+  }, [checkForUpdate])
+
+  useEffect(() => {
+    const unlisten = listen<UpdateProgressPayload>('update-progress', (event) => {
+      const payload = event.payload
+      setUpdateProgress(typeof payload.progress === 'number' ? payload.progress : null)
+      setUpdateProgressMsg(payload.message || '')
+    })
+    return () => { unlisten.then((fn) => fn()) }
   }, [])
 
   // Load preview image for current background
@@ -557,13 +604,62 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                   <span className="ml-2 text-emerald-400">v{updateInfo.latest} 可用</span>
                 )}
               </span>
+              {updateCheckResult === 'success' && updateCheckMsg && (
+                <span className="text-xs text-emerald-400">{updateCheckMsg}</span>
+              )}
+              {updateCheckResult === 'error' && updateCheckMsg && (
+                <span className="text-xs text-red-400 break-all">{updateCheckMsg}</span>
+              )}
+              {updateRunResult === 'success' && updateRunMsg && (
+                <span className="text-xs text-emerald-400">{updateRunMsg}</span>
+              )}
+              {updateRunResult === 'error' && updateRunMsg && (
+                <span className="text-xs text-red-400 break-all">{updateRunMsg}</span>
+              )}
+              {(updating || updateProgressMsg) && (
+                <div className="flex flex-col gap-1 pt-1">
+                  <span className="text-xs text-white/50">
+                    {updateProgressMsg}
+                    {typeof updateProgress === 'number' && updateProgress < 100 && ` · ${updateProgress}%`}
+                  </span>
+                  {typeof updateProgress === 'number' && (
+                    <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 transition-all duration-200"
+                        style={{ width: `${Math.max(updateProgress, 2)}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {updateInfo?.hasUpdate && (
                 <button
                   onClick={async () => {
                     setUpdating(true)
-                    try { await invoke('run_update') } catch (e: any) { setUpdating(false) }
+                    setUpdateProgress(0)
+                    setUpdateProgressMsg('准备下载更新')
+                    setUpdateRunResult(null)
+                    setUpdateRunMsg('')
+                    try {
+                      await invoke('run_update', { dmgUrl: updateInfo?.url || '' })
+                      setUpdateRunResult('success')
+                      setUpdateRunMsg('下载完成，正在退出并安装更新')
+                      window.setTimeout(() => {
+                        void invoke('exit_app').catch((e: any) => {
+                          setUpdating(false)
+                          setUpdateRunResult('error')
+                          setUpdateRunMsg(`退出失败：${String(e)}`)
+                        })
+                      }, 600)
+                    } catch (e: any) {
+                      setUpdateProgress(null)
+                      setUpdateProgressMsg('')
+                      setUpdateRunResult('error')
+                      setUpdateRunMsg(`更新失败：${String(e)}`)
+                      setUpdating(false)
+                    }
                   }}
                   disabled={updating}
                   className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
@@ -572,14 +668,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                 </button>
               )}
               <button
-                onClick={async () => {
-                  setUpdateChecking(true)
-                  try {
-                    const info = await invoke('check_for_update') as any
-                    setUpdateInfo(info)
-                  } catch { setUpdateInfo(null) }
-                  setUpdateChecking(false)
-                }}
+                onClick={() => { void checkForUpdate(true) }}
                 disabled={updateChecking}
                 className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50"
               >
