@@ -51,9 +51,17 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
     setTestMsg('')
     try {
       if (conn.type === 'remote') {
+        // Reset backoff and stale socket so manual test always retries immediately
+        await invoke('reset_ssh', { sshHost: conn.host, sshUser: conn.user }).catch(() => {})
         const result: any = await invoke('get_agents', { mode: 'remote', sshHost: conn.host, sshUser: conn.user })
         if (cancelledRef.current) return
-        setTestMsg(`${result.length} 个 agent`)
+        // Query which SSH key was used for this connection
+        let keyInfo = ''
+        try {
+          const key = await invoke('get_ssh_key_info', { sshHost: conn.host, sshUser: conn.user }) as string | null
+          if (key) keyInfo = ` · 密钥: ${key}`
+        } catch {}
+        setTestMsg(`${result.length} 个 agent${keyInfo}`)
       } else {
         const store = await getStore()
         const agentId = ((await store.get('tracked_agent')) as string) || 'main'

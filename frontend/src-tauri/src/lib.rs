@@ -17,6 +17,14 @@ fn ssh_backoff_map() -> &'static Mutex<HashMap<String, SshBackoffState>> {
     SSH_BACKOFF.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Stores which SSH key was accepted for each host (user@host → key path).
+/// Populated by ensure_ssh_master via `ssh -v` output parsing.
+static SSH_KEY_USED: std::sync::OnceLock<Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
+
+fn ssh_key_map() -> &'static Mutex<HashMap<String, String>> {
+    SSH_KEY_USED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn unix_now() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
 }
@@ -366,11 +374,13 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
     let control_path = format!("/tmp/oc-claw-ssh-{}:22", host_key);
     if std::path::Path::new(&control_path).exists() { return Ok(()); }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let key_path = format!("{}/.ssh/id_ed25519", home);
     let cp = format!("ControlPath={}", control_path);
+    // No `-i` flag — let ssh resolve the key from ~/.ssh/config and default
+    // search order (id_rsa, id_ecdsa, id_ed25519, etc.). Use `-v` to capture
+    // which key was actually accepted so we can show it in the UI.
     let output = tokio::process::Command::new("ssh")
         .args([
+            "-v",
             "-o", "StrictHostKeyChecking=no",
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=10",
@@ -379,7 +389,6 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
             "-o", "ControlPersist=600",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
-            "-i", &key_path,
             "-fN",
             &host_key,
         ])
@@ -388,13 +397,26 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         .output()
         .await
         .map_err(|e| format!("ssh master: {}", e))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         ssh_backoff_record_failure(&host_key);
         let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
         let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
         log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
         return Err(format!("SSH master failed [exit {}]: {}", code, stderr));
+    }
+    // Parse `ssh -v` output for the accepted key.
+    // OpenSSH 8+ prints: "debug1: Server accepts key: /path/to/key TYPE SHA256:..."
+    for line in stderr.lines() {
+        if line.contains("Server accepts key:") {
+            if let Some(rest) = line.split("Server accepts key: ").nth(1) {
+                // rest = "/path/to/key TYPE SHA256:..."
+                let key_path = rest.split_whitespace().next().unwrap_or(rest).to_string();
+                log::info!("[ssh] {} authenticated with key: {}", host_key, key_path);
+                ssh_key_map().lock().unwrap().insert(host_key.clone(), key_path);
+            }
+            break;
+        }
     }
     ssh_backoff_reset(&host_key);
     Ok(())
@@ -482,6 +504,29 @@ async fn close_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> 
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// Returns the SSH key path that was used to authenticate a connection,
+/// or null if unknown (e.g. socket was already established before this session).
+#[tauri::command]
+fn get_ssh_key_info(ssh_host: String, ssh_user: String) -> Option<String> {
+    let key = format!("{}@{}", ssh_user, ssh_host);
+    ssh_key_map().lock().unwrap().get(&key).cloned()
+}
+
+/// Reset backoff + remove stale socket for a host, so the next connection
+/// attempt starts fresh. Called before user-initiated "test connection" to
+/// avoid making the user wait out a backoff timer from a previous failure.
+#[tauri::command]
+async fn reset_ssh(ssh_host: String, ssh_user: String) {
+    let host_key = format!("{}@{}", ssh_user, ssh_host);
+    ssh_backoff_reset(&host_key);
+    // Also remove stale socket so ensure_ssh_master re-establishes from scratch
+    let control_path = format!("/tmp/oc-claw-ssh-{}:22", host_key);
+    let _ = tokio::fs::remove_file(&control_path).await;
+    // Clear cached key info since we're starting fresh
+    ssh_key_map().lock().unwrap().remove(&host_key);
+    log::info!("[reset_ssh] cleared backoff and socket for {}", host_key);
 }
 
 #[tauri::command]
@@ -4344,7 +4389,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
