@@ -5156,7 +5156,15 @@ except:
         // with last_assistant_message containing full response text) get truncated by
         // [Console]::In.ReadToEnd(), breaking ConvertFrom-Json. The Rust side accepts
         // both processed (sessionId, event) and raw CC field names (session_id, hook_event_name).
+        // Forward raw CC JSON to TCP. Use explicit Socket.Shutdown(Send) to ensure
+        // the server receives EOF immediately — TcpClient.Dispose()/Close() alone on
+        // Windows may delay the FIN packet, causing the server's read to hang or timeout
+        // with incomplete data.
         let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
+# Force UTF-8 input encoding — Windows CJK editions default to GBK/Shift-JIS,
+# which corrupts multi-byte characters in CC's UTF-8 JSON payload (especially
+# last_assistant_message in Stop events), causing JSON parse failures downstream.
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
 try {
     $raw = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
@@ -5165,7 +5173,8 @@ try {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
     $stream.Write($bytes, 0, $bytes.Length)
     $stream.Flush()
-    $client.Dispose()
+    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+    $client.Close()
 } catch {}
 "#;
         std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
@@ -5367,11 +5376,11 @@ fn process_claude_event(
         } else if hook_event == "Stop" || hook_event == "SubagentStop" || hook_event == "SessionEnd" {
             stop_session_file_watcher(&session_id);
         }
-    } else {
-        // Log parse failures — raw CC JSON (especially Stop events with last_assistant_message)
-        // can be large and may contain problematic characters.
-        let preview: String = buf.chars().take(200).collect();
-        log::warn!("[claude_event] JSON parse failed, len={}, preview={}", buf.len(), preview);
+    } else if let Err(e) = serde_json::from_str::<serde_json::Value>(buf) {
+        // Log parse failures with the error and the tail of the payload (the head is
+        // usually fine; the problem is truncation or encoding at the end).
+        let tail: String = buf.chars().rev().take(300).collect::<String>().chars().rev().collect();
+        log::warn!("[claude_event] JSON parse failed: err={}, len={}, tail=...{}", e, buf.len(), tail);
     }
 }
 
