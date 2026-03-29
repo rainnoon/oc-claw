@@ -4936,10 +4936,8 @@ while ($sw.Elapsed.TotalSeconds -lt 60) {{
 
 Log "Installing update from $installerPath"
 if ($installerPath.EndsWith('.msi')) {{
-    Start-Process msiexec.exe -ArgumentList '/i', "`"$installerPath`"", '/quiet', '/norestart' -Wait -NoNewWindow
+    Start-Process msiexec.exe -ArgumentList '/i', "`"$installerPath`"", '/quiet', '/norestart' -Verb RunAs -Wait
 }} else {{
-    # Tauri NSIS installer supports /S (silent) and /D=<path> (install dir).
-    # Read the current install location from registry so the update goes to the same place.
     $installDir = $null
     foreach ($regPath in @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -4952,10 +4950,15 @@ if ($installerPath.EndsWith('.msi')) {{
             break
         }}
     }}
-    $args = @('/S')
-    if ($installDir) {{ $args += "/D=$installDir" }}
-    Log "Running installer with args: $($args -join ' ')"
-    Start-Process $installerPath -ArgumentList $args -Wait -NoNewWindow
+    $nsisArgs = @('/S')
+    if ($installDir) {{ $nsisArgs += "/D=$installDir" }}
+    Log "Running installer with args: $($nsisArgs -join ' ')"
+    try {{
+        Start-Process $installerPath -ArgumentList $nsisArgs -Verb RunAs -Wait
+    }} catch {{
+        Log "Installer failed (UAC denied or error): $_"
+        exit 1
+    }}
 }}
 
 Log "Launching updated app"
