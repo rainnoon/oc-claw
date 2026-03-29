@@ -456,7 +456,8 @@ export default function Mini() {
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
   const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
   const mascotPositionRef = useRef<'left' | 'right'>('right')
-  const [islandBg, setIslandBg] = useState('grass-island.png')
+  const [islandBg, setIslandBg] = useState('beach.png')
+  const [uiScale, setUiScale] = useState(1.0)
   const [bgPos, setBgPos] = useState({ x: 50, y: 50 })
 
   // Settings mode: panel becomes wider, shows settings content
@@ -574,6 +575,14 @@ export default function Mini() {
     }
   }, [])
 
+  const playDefaultSound = useCallback(() => {
+    if (navigator.userAgent.includes('Windows')) {
+      new Audio('/audio/glass.mp3').play().catch(() => {})
+    } else {
+      invoke('play_sound', { name: 'Purr' }).catch(() => {})
+    }
+  }, [])
+
   const lastOcSoundRef = useRef(0)
   const playOcCompletionSound = useCallback((source: string) => {
     console.log('[OC-SOUND] triggered from', source, 'soundEnabled:', soundEnabledRef.current)
@@ -588,7 +597,7 @@ export default function Mini() {
     if (notifySoundRef.current === 'manbo') {
       new Audio('/audio/manbo.m4a').play().catch(() => {})
     } else {
-      invoke('play_sound', { name: 'Purr' }).catch(() => {})
+      playDefaultSound()
     }
   }, [])
 
@@ -690,8 +699,9 @@ export default function Mini() {
         } catch { /* ignore */ }
       })
     )
+    console.log('[fetchAllSessions] raw results:', results.length, results)
     // Keep previous data if all fetches failed (SSH backoff etc.)
-    if (results.length === 0 && previewCacheRef.current.size > 0) { fetchingSessionsRef.current = false; return }
+    if (results.length === 0 && previewCacheRef.current.size > 0) { console.log('[fetchAllSessions] empty results, keeping cache'); fetchingSessionsRef.current = false; return }
     const seen = new Set<string>()
     const deduped = results.filter(s => {
       const k = `${s.agentId}:${s.key}`
@@ -722,6 +732,7 @@ export default function Mini() {
     // Filter out OpenClaw sub-agent sessions (key contains ":subagent:")
     .filter(s => !s.key.includes(':subagent:'))
     merged.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
+    console.log('[fetchAllSessions] final merged:', merged.length, merged)
     setAllSessions(merged)
 
     // Build session file lookup and queue preview fetches
@@ -846,6 +857,7 @@ export default function Mini() {
       if (bp) setBgPos(bp)
       const ccChar = ((await store.get('claude_char')) as string) || DEFAULT_CHAR_NAME
       setClaudeCharName(ccChar)
+      invoke('get_ui_scale').then((s) => { if (typeof s === 'number' && s > 0) setUiScale(s) }).catch(() => {})
     })()
   }, [])
 
@@ -878,7 +890,7 @@ export default function Mini() {
       if (notifySoundRef.current === 'manbo') {
         new Audio('/audio/manbo.m4a').play().catch(() => {})
       } else {
-        invoke('play_sound', { name: 'Purr' }).catch(() => {})
+        playDefaultSound()
       }
     })
     return () => { unlisten.then((fn) => fn()) }
@@ -1205,23 +1217,24 @@ export default function Mini() {
   const inAgentDetail = selectedAgentId !== null
   const selectedAgent = agents.find(a => a.id === selectedAgentId)
 
-  // Panel dimensions depend on settingsMode
+  // Panel dimensions — CSS uses fixed base sizes (380/400); on Windows high-DPI
+  // screens the panel root applies `zoom: uiScale` so all content (text, icons,
+  // spacing) scales uniformly to match the Rust-side window enlargement.
   const panelW = settingsMode ? '100vw' : 380
   const panelH = settingsMode ? '100vh' : 560
   const panelRef = useRef<HTMLDivElement>(null)
 
-  // Dynamically resize Tauri window to match panel height (max 400)
   useEffect(() => {
     if (!expanded || settingsMode || !showPanel) return
     const el = panelRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect.height
-      if (h && h > 0) invoke('resize_mini_height', { height: Math.min(h, 400) }).catch(() => {})
+      if (h && h > 0) invoke('resize_mini_height', { height: Math.min(h * uiScale, 400 * uiScale) }).catch(() => {})
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [expanded, settingsMode, showPanel])
+  }, [expanded, settingsMode, showPanel, uiScale])
 
   return (
     <div style={{
@@ -1288,6 +1301,8 @@ export default function Mini() {
           position: 'absolute', top: 0,
           left: '50%',
           transform: 'translateX(-50%)',
+          transformOrigin: 'top center',
+          zoom: uiScale !== 1 && !settingsMode ? uiScale : undefined,
           width: panelW,
           height: settingsMode ? panelH : 'auto',
           maxHeight: settingsMode ? undefined : 400,
@@ -1412,7 +1427,7 @@ export default function Mini() {
                       await store.save()
                       if (next) {
                         if (notifySound === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {})
-                        else invoke('play_sound', { name: 'Purr' }).catch(() => {})
+                        else playDefaultSound()
                       }
                     }}
                     style={{

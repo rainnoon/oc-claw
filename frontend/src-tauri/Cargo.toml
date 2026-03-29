@@ -1,6 +1,6 @@
 [package]
 name = "ooclaw"
-version = "1.5.2"
+version = "1.5.3"
 description = "OpenClaw Desktop Pet"
 authors = ["you"]
 license = "MIT"
@@ -18,17 +18,28 @@ tauri-build = { version = "2", features = [] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-store = "2"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22"
+chrono = "0.4"
+dirs = "5"
+percent-encoding = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSApplication", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray"] }
-chrono = "0.4"
-dirs = "5"
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
-percent-encoding = "2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+notify = { version = "6" }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Media_Audio", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Graphics_Gdi"] }
+
+[target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+notify = { version = "6" }
