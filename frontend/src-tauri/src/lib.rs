@@ -428,7 +428,9 @@ async fn lsof_open_jsonl_paths() -> std::collections::HashSet<String> {
     }
 }
 
-/// Read the last `n` lines of a file using pure Rust (cross-platform replacement for `tail -n`).
+/// Read the last `n` lines of a file using pure Rust (Windows replacement for `tail -n`
+/// which is not available on Windows).
+#[cfg(windows)]
 fn tail_lines_from_file(path: &std::path::Path, n: usize) -> Vec<String> {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut file) = std::fs::File::open(path) else { return vec![] };
@@ -659,8 +661,10 @@ fn build_agent_health_from_meta(
             let sf = val["sessionFile"].as_str().unwrap_or("");
             if sf.is_empty() { continue; }
             // Match session file path to tail output by basename
-            // Use both '/' and '\\' to handle cross-platform paths
+            #[cfg(windows)]
             let basename = sf.rsplit(|c: char| c == '/' || c == '\\').next().unwrap_or("");
+            #[cfg(not(windows))]
+            let basename = sf.rsplit('/').next().unwrap_or("");
             let active = if let Some(lines) = tails.get(basename) {
                 check_agent_active_from_lines(lines)
             } else {
@@ -1586,42 +1590,62 @@ async fn get_agents(mode: Option<String>, url: Option<String>, token: Option<Str
         return Ok(agents);
     }
 
-    // === local mode — read ~/.openclaw/agents/ directly (no CLI dependency) ===
-    let home = home_dir_string();
-    let agents_dir = PathBuf::from(&home).join(".openclaw").join("agents");
-    log::info!("[get_agents] local mode, agents_dir={:?}, exists={}", agents_dir, agents_dir.exists());
+    // === local mode ===
+    // On Windows, read ~/.openclaw/agents/ directly (no CLI dependency).
+    // On macOS/Linux, use the original `openclaw agents list --json` CLI.
+    #[cfg(windows)]
+    {
+        let home = home_dir_string();
+        let agents_dir = PathBuf::from(&home).join(".openclaw").join("agents");
+        log::info!("[get_agents] local mode, agents_dir={:?}, exists={}", agents_dir, agents_dir.exists());
 
-    let entries = std::fs::read_dir(&agents_dir)
-        .map_err(|e| { log::error!("[get_agents] read_dir failed: {}", e); format!("read agents dir: {}", e) })?;
+        let entries = std::fs::read_dir(&agents_dir)
+            .map_err(|e| { log::error!("[get_agents] read_dir failed: {}", e); format!("read agents dir: {}", e) })?;
 
-    let mut agents: Vec<AgentInfo> = Vec::new();
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        log::info!("[get_agents] found entry: {:?} is_dir={}", path, path.is_dir());
-        if !path.is_dir() { continue; }
-        let id = entry.file_name().to_string_lossy().to_string();
-        let config_path = path.join("agent.json");
-        log::info!("[get_agents] agent id={}, config exists={}", id, config_path.exists());
-        let (name, emoji) = if config_path.exists() {
-            match std::fs::read_to_string(&config_path) {
-                Ok(c) => {
-                    log::info!("[get_agents] agent.json content len={}", c.len());
-                    let val: serde_json::Value = serde_json::from_str(&c).unwrap_or_default();
-                    (
-                        val.get("identityName").or_else(|| val.get("identity_name")).and_then(|v| v.as_str()).map(|s| s.to_string()),
-                        val.get("identityEmoji").or_else(|| val.get("identity_emoji")).and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    )
+        let mut agents: Vec<AgentInfo> = Vec::new();
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_dir() { continue; }
+            let id = entry.file_name().to_string_lossy().to_string();
+            let config_path = path.join("agent.json");
+            let (name, emoji) = if config_path.exists() {
+                match std::fs::read_to_string(&config_path) {
+                    Ok(c) => {
+                        let val: serde_json::Value = serde_json::from_str(&c).unwrap_or_default();
+                        (
+                            val.get("identityName").or_else(|| val.get("identity_name")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            val.get("identityEmoji").or_else(|| val.get("identity_emoji")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        )
+                    }
+                    Err(_) => (None, None),
                 }
-                Err(e) => { log::error!("[get_agents] read agent.json failed: {}", e); (None, None) }
-            }
-        } else {
-            (None, None)
-        };
-        log::info!("[get_agents] pushing agent: id={} name={:?} emoji={:?}", id, name, emoji);
-        agents.push(AgentInfo { id, identity_name: name, identity_emoji: emoji });
+            } else {
+                (None, None)
+            };
+            agents.push(AgentInfo { id, identity_name: name, identity_emoji: emoji });
+        }
+        Ok(agents)
     }
-    log::info!("[get_agents] returning {} agents", agents.len());
-    Ok(agents)
+    #[cfg(not(windows))]
+    {
+        let output = tokio::process::Command::new("openclaw")
+            .args(["agents", "list", "--json"])
+            .output()
+            .await
+            .map_err(|e| format!("openclaw agents list: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("openclaw agents list failed: {}", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json_start = stdout.find('[').ok_or("no JSON array in agents output")?;
+        let json_end = stdout.rfind(']').ok_or("no closing bracket")? + 1;
+        let agents: Vec<AgentInfo> =
+            serde_json::from_str(&stdout[json_start..json_end]).map_err(|e| e.to_string())?;
+        Ok(agents)
+    }
 }
 
 #[tauri::command]
@@ -1743,7 +1767,16 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
                     for fe in rd.filter_map(|e| e.ok()) {
                         let p = fe.path();
                         if p.extension().map_or(true, |ext| ext != "jsonl") { continue; }
+                        #[cfg(windows)]
                         let lines = tail_lines_from_file(&p, 5);
+                        #[cfg(not(windows))]
+                        let lines = {
+                            let out = tokio::process::Command::new("tail")
+                                .args(["-5", &p.to_string_lossy()])
+                                .output().await.ok();
+                            out.map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.to_string()).collect::<Vec<_>>())
+                                .unwrap_or_default()
+                        };
                         if !lines.is_empty() {
                             if let Some(fname) = p.file_name() {
                                 tails.insert(fname.to_string_lossy().to_string(), lines);
@@ -1763,7 +1796,16 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
                 .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
                 .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok())));
         let active = if let Some(f) = latest {
+            #[cfg(windows)]
             let lines = tail_lines_from_file(&f.path(), 5);
+            #[cfg(not(windows))]
+            let lines = {
+                let out = tokio::process::Command::new("tail")
+                    .args(["-5", &f.path().to_string_lossy()])
+                    .output().await.ok();
+                out.map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.to_string()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            };
             check_agent_active_from_lines(&lines)
         } else { false };
         agents.push(AgentHealth { agent_id, active, sessions: vec![] });
@@ -3637,10 +3679,29 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
 
     log::info!("[get_agent_sessions] parsed {} top-level keys", map.len());
 
-    // Check which sessions are active (cross-platform)
     let home = home_dir_string();
     let agent_dir = if agent_id.is_empty() { "main" } else { &agent_id };
 
+    // Check which sessions are active
+    // On macOS: original lsof-based detection scoped to agent dir
+    // On Windows: cross-platform helper + content-based fallback
+    #[cfg(not(windows))]
+    let open_jsonl: std::collections::HashSet<String> = {
+        let search_path = format!("{}/.openclaw/agents/{}", home, agent_dir);
+        let lsof_bin = if std::path::Path::new("/usr/sbin/lsof").exists() { "/usr/sbin/lsof" } else { "lsof" };
+        let lsof_stdout = tokio::process::Command::new(lsof_bin)
+            .args(["+D", &search_path])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output().await
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        lsof_stdout.lines()
+            .filter(|l| l.contains(".jsonl"))
+            .filter_map(|l| l.split_whitespace().last().map(|s| s.to_string()))
+            .collect()
+    };
+    #[cfg(windows)]
     let open_jsonl = lsof_open_jsonl_paths().await;
 
     let mut sessions: Vec<MiniSessionInfo> = Vec::new();
@@ -3665,19 +3726,24 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
 
         if session_file.is_empty() { skipped_no_file += 1; continue; }
 
-        // Check 1: lsof / modification-time based detection
-        let mut is_active = open_jsonl.iter().any(|p| {
+        // Active detection: macOS uses lsof path matching, Windows adds content-based fallback
+        #[cfg(not(windows))]
+        let is_active = open_jsonl.iter().any(|p| {
             p.starts_with(&session_file) || session_file.starts_with(p.as_str())
-            // Cross-platform path normalization
-            || p.replace('\\', "/").starts_with(&session_file.replace('\\', "/"))
-            || session_file.replace('\\', "/").starts_with(&p.replace('\\', "/"))
         });
-
-        // Check 2: content-based detection (cross-platform, more reliable on Windows)
-        if !is_active {
-            let lines = tail_lines_from_file(std::path::Path::new(&session_file), 5);
-            is_active = check_agent_active_from_lines(&lines);
-        }
+        #[cfg(windows)]
+        let is_active = {
+            let mut active = open_jsonl.iter().any(|p| {
+                p.starts_with(&session_file) || session_file.starts_with(p.as_str())
+                || p.replace('\\', "/").starts_with(&session_file.replace('\\', "/"))
+                || session_file.replace('\\', "/").starts_with(&p.replace('\\', "/"))
+            });
+            if !active {
+                let lines = tail_lines_from_file(std::path::Path::new(&session_file), 5);
+                active = check_agent_active_from_lines(&lines);
+            }
+            active
+        };
 
         // Read last messages from .jsonl
         let (last_user, last_assistant) = match tokio::fs::read_to_string(&session_file).await {
@@ -4055,7 +4121,18 @@ async fn get_active_sessions(mode: Option<String>, url: Option<String>, token: O
                 continue;
             }
             // Check 2: content-based — read last 5 lines for efficiency
+            #[cfg(windows)]
             let lines = tail_lines_from_file(std::path::Path::new(&file_path), 5);
+            #[cfg(not(windows))]
+            let lines = {
+                tokio::process::Command::new("tail")
+                    .args(["-5", &file_path])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .output().await.ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.to_string()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            };
             if check_agent_active_from_lines(&lines) {
                 active_keys.push(format!("{}:{}", agent_id, key));
             }
@@ -4181,7 +4258,10 @@ struct ClaudeState {
 /// Compute the JSONL session file path (matching notchi's ConversationParser.sessionFilePath)
 fn claude_session_file_path(session_id: &str, cwd: &str) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_default();
+    #[cfg(windows)]
     let project_dir = cwd.replace('/', "-").replace('\\', "-").replace('.', "-");
+    #[cfg(not(windows))]
+    let project_dir = cwd.replace('/', "-").replace('.', "-");
     home.join(".claude").join("projects").join(project_dir).join(format!("{}.jsonl", session_id))
 }
 
@@ -4561,18 +4641,20 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
     let json: serde_json::Value = resp.json().await
         .map_err(|e| { log::warn!("[update] json parse error: {e}"); format!("json parse error: {e}") })?;
 
+    log::info!("[update] latest={:?} hasUpdate={}", json["version"], version_cmp(json["version"].as_str().unwrap_or(""), &current));
     let latest = json["version"].as_str().unwrap_or("");
     let has_update = version_cmp(latest, &current);
 
-    let platform_key = if cfg!(target_os = "macos") { "macos" } else { "windows" };
-
-    // Try new per-platform format first, fall back to legacy single "url" field
-    let url = json["platforms"][platform_key]["url"]
+    // On Windows, try per-platform format first, fall back to legacy single "url" field.
+    // On macOS, use the original single "url" field (unchanged from before).
+    #[cfg(windows)]
+    let url = json["platforms"]["windows"]["url"]
         .as_str()
         .or_else(|| json["url"].as_str())
         .unwrap_or("");
+    #[cfg(not(windows))]
+    let url = json["url"].as_str().unwrap_or("");
 
-    log::info!("[update] latest={} hasUpdate={} platform={} url={}", latest, has_update, platform_key, url);
     Ok(serde_json::json!({
         "current": current,
         "latest": latest,
@@ -5389,25 +5471,24 @@ pub fn run() {
             let path = percent_decode_str(raw_path).decode_utf8_lossy();
             let resource_dir = ctx.app_handle().path().resource_dir().unwrap_or_default();
             let file_path = resource_dir.join("assets").join("builtin").join(path.trim_start_matches('/'));
-            log::info!("[localasset] request={} resource_dir={} resolved={}", raw_path, resource_dir.display(), file_path.display());
+            log::info!("[localasset] request={} resolved={}", raw_path, file_path.display());
             match std::fs::read(&file_path) {
                 Ok(data) => {
                     let mime = if path.ends_with(".gif") { "image/gif" }
                         else if path.ends_with(".png") { "image/png" }
                         else { "application/octet-stream" };
-                    tauri::http::Response::builder()
-                        .header("Content-Type", mime)
-                        // WebView2 on Windows serves the frontend from https://tauri.localhost,
-                        // making custom scheme URLs cross-origin. CORS headers are required.
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(data)
-                        .unwrap()
+                    let mut resp = tauri::http::Response::builder()
+                        .header("Content-Type", mime);
+                    // WebView2 on Windows requires CORS headers for custom scheme responses
+                    if cfg!(target_os = "windows") {
+                        resp = resp.header("Access-Control-Allow-Origin", "*");
+                    }
+                    resp.body(data).unwrap()
                 }
                 Err(e) => {
                     log::warn!("[localasset] 404: {} err={}", file_path.display(), e);
                     tauri::http::Response::builder()
                         .status(404)
-                        .header("Access-Control-Allow-Origin", "*")
                         .body(Vec::new())
                         .unwrap()
                 }
@@ -5415,29 +5496,26 @@ pub fn run() {
         })
         .register_uri_scheme_protocol("customasset", |ctx, req| {
             let raw_path = req.uri().path();
+            // Percent-decode path for Chinese character names etc.
             let path = percent_decode_str(raw_path).decode_utf8_lossy();
             let data_dir = ctx.app_handle().path().app_data_dir().unwrap_or_default();
             let file_path = data_dir.join("characters").join(path.trim_start_matches('/'));
-            log::info!("[customasset] request={} resolved={}", raw_path, file_path.display());
             match std::fs::read(&file_path) {
                 Ok(data) => {
                     let mime = if path.ends_with(".gif") { "image/gif" }
                         else if path.ends_with(".png") { "image/png" }
                         else { "application/octet-stream" };
-                    tauri::http::Response::builder()
-                        .header("Content-Type", mime)
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(data)
-                        .unwrap()
+                    let mut resp = tauri::http::Response::builder()
+                        .header("Content-Type", mime);
+                    if cfg!(target_os = "windows") {
+                        resp = resp.header("Access-Control-Allow-Origin", "*");
+                    }
+                    resp.body(data).unwrap()
                 }
-                Err(e) => {
-                    log::warn!("[customasset] 404: {} err={}", file_path.display(), e);
-                    tauri::http::Response::builder()
-                        .status(404)
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(Vec::new())
-                        .unwrap()
-                }
+                Err(_) => tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap(),
             }
         })
         .setup(|app| {
