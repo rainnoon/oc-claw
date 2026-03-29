@@ -77,6 +77,41 @@ Write thorough comments for any non-trivial logic, especially:
 
 This prevents re-introducing bugs when context from previous conversations is lost.
 
+# Windows Platform
+
+## SSH on Windows
+
+Windows OpenSSH does NOT support `ControlMaster` / `ControlPath` (Unix domain sockets). The project uses a custom `win_ssh_mux` module in `lib.rs` that maintains a persistent `ssh -T` subprocess per host. Commands are serialized over stdin/stdout using unique marker strings. Key points:
+
+- `win_ssh_mux::ensure()` spawns the persistent SSH subprocess if not already running.
+- `win_ssh_mux::exec()` sends a command via stdin with markers and reads stdout until the end marker appears.
+- `win_ssh_mux::kill()` / `kill_all()` cleans up subprocesses.
+- On transport errors, the caller should kill the mux session and respawn before retrying.
+- SSH marker files are stored under `~/.ssh/oc-claw-ctl/` to fast-path connection checks.
+
+## Window Management on Windows
+
+- **DPI scaling**: Windows does not automatically scale webview content like macOS. A `win_ui_scale()` function calculates a scale factor based on the monitor's logical height relative to 1080p. This factor is exposed to the frontend via the `get_ui_scale` Tauri command. The frontend applies CSS `zoom: uiScale` to the expanded panel (but NOT to the settings page, which uses `100vw`/`100vh`).
+- **Window positioning**: Windows uses top-left origin (unlike macOS bottom-left). The mini window is positioned at top-center to simulate macOS notch placement. The `set_mini_expanded` and `resize_mini_height` commands handle DPI-aware sizing and positioning.
+- **Fullscreen detection**: A background thread polls every 500ms using `MonitorFromWindow` + `GetMonitorInfoW` to check if the foreground window covers its entire monitor. When detected:
+  - The mini window is moved off-screen (`-9999, -9999`) instead of using `hide()/show()`, because `show()` triggers a `window.focus` event that causes the frontend panel to auto-expand.
+  - A global `FULLSCREEN_HIDING` `AtomicBool` flag is set to `true`, preventing other code paths (`set_mini_expanded`, `open_mini`, `resize_mini_height`) from calling `set_always_on_top(true)` or `show()` which would override the hidden state.
+  - When fullscreen exits, the saved position is restored and `always_on_top` is re-enabled.
+  - The system tray "show" menu item clears the `FULLSCREEN_HIDING` flag and resets position, allowing manual override.
+- **Always-on-top**: On Windows, `set_always_on_top(true)` is called in multiple places (`set_mini_expanded`, `open_mini`, setup). All of these must check `FULLSCREEN_HIDING` before calling to avoid fighting with the fullscreen detection thread.
+
+## Audio on Windows
+
+- macOS uses `NSSound` via `invoke('play_sound', { name })` for system sounds.
+- Windows cannot play macOS system sounds. The frontend detects `navigator.userAgent.includes('Windows')` and plays bundled audio files from `/audio/` (e.g. `glass.mp3`) via `new Audio()` instead.
+- The macOS default notification sound is "Purr"; on Windows the default is "Glass" (`/audio/glass.mp3`).
+
+## Build
+
+- `npx tauri build` produces an NSIS installer `.exe` in `src-tauri/target/release/bundle/nsis/` and a standalone binary in `src-tauri/target/release/ooclaw.exe`.
+- Windows builds do not require code signing (users may see SmartScreen warnings).
+- When `npx tauri dev` fails with "拒绝访问 (os error 5)", it means the old `ooclaw.exe` process is still running and must be killed before recompilation can replace the binary.
+
 # Code Style
 
 - Prefer simple, minimal fixes.

@@ -3108,24 +3108,27 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
     #[cfg(target_os = "windows")]
     {
         // On Windows: DPI-aware positioning and sizing.
-        // Collapsed → top-center (simulating macOS notch); Expanded → centered.
+        // Use monitor.position() to offset into the correct monitor in the virtual desktop.
         if let Ok(Some(monitor)) = win.current_monitor() {
             let scale = monitor.scale_factor();
+            let mp = monitor.position();
+            let mx = mp.x as f64 / scale;
+            let my = mp.y as f64 / scale;
             let sw = monitor.size().width as f64 / scale;
             let ui = win_ui_scale(&monitor);
             if expanded {
                 let win_w = (400.0 * ui).round();
                 let win_h = (400.0 * ui).round();
-                let x = (sw - win_w) / 2.0;
+                let x = mx + (sw - win_w) / 2.0;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             } else {
                 let win_w = (60.0 * ui).round();
                 let win_h = (45.0 * ui).round();
                 let notch_off = (80.0 * ui).round();
-                let x = if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
+                let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             }
         }
         if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
@@ -3262,6 +3265,9 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
     {
         if let Ok(Some(monitor)) = win.current_monitor() {
             let scale = monitor.scale_factor();
+            let mp = monitor.position();
+            let mx = mp.x as f64 / scale;
+            let my = mp.y as f64 / scale;
             let sw = monitor.size().width as f64 / scale;
             let sh = monitor.size().height as f64 / scale;
             let ui = win_ui_scale(&monitor);
@@ -3269,20 +3275,19 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                 let win_w = (60.0 * ui).round();
                 let win_h = (45.0 * ui).round();
                 let notch_off = (80.0 * ui).round();
-                let x = if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
+                let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
                 if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
                     let _ = win.set_always_on_top(true);
                 }
-                let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             } else {
                 let win_w = (sw * 0.85).round();
                 let win_h = (sh * 0.85).round();
-                let x = (sw - win_w) / 2.0;
+                let x = mx + (sw - win_w) / 2.0;
                 let _ = win.set_always_on_top(false);
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                // Top-aligned like macOS (not center)
-                let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             }
         }
     }
