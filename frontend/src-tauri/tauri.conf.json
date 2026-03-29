@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "oc-claw",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "identifier": "com.openclaw.ooclaw",
   "build": {
     "frontendDist": "../dist",
@@ -36,7 +36,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "dmg"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

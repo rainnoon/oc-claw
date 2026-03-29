@@ -100,6 +100,16 @@ Windows OpenSSH does NOT support `ControlMaster` / `ControlPath` (Unix domain so
   - The system tray "show" menu item clears the `FULLSCREEN_HIDING` flag and resets position, allowing manual override.
 - **Always-on-top**: On Windows, `set_always_on_top(true)` is called in multiple places (`set_mini_expanded`, `open_mini`, setup). All of these must check `FULLSCREEN_HIDING` before calling to avoid fighting with the fullscreen detection thread.
 
+## Custom URI Schemes on Windows (Asset Loading)
+
+- **WebView2 does NOT support true custom URI schemes** like `localasset://localhost/path`. Instead, it maps them to `http://<scheme>.localhost/path`. This means:
+  - macOS (WebKit): `localasset://localhost/path` ✓
+  - Windows (WebView2): `http://localasset.localhost/path` ✓, `localasset://localhost/path` ✗
+- Both `scan_characters()` in `lib.rs` (Rust) and `ASSET_PREFIX` / `CUSTOM_ASSET_PREFIX` in `store.ts` (frontend) must use the platform-correct URL prefix. The Rust side uses `cfg!(target_os = "windows")`, the frontend uses `navigator.userAgent.includes('Windows')`.
+- The same applies to `customasset://` for user-uploaded characters.
+- All custom protocol responses must include `Access-Control-Allow-Origin: *` header for WebView2 CORS compatibility.
+- `tauri_plugin_log` is only registered in debug mode — production builds have no Rust-side log output. When debugging asset issues on Windows, either enable the log plugin in release or use the WebView2 DevTools console.
+
 ## Audio on Windows
 
 - macOS uses `NSSound` via `invoke('play_sound', { name })` for system sounds.

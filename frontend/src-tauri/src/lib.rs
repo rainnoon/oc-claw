@@ -61,6 +61,22 @@ use tauri::{
 #[cfg(unix)]
 use libc;
 
+/// Apply CREATE_NO_WINDOW on Windows to prevent console popups from child processes.
+#[cfg(windows)]
+fn hide_window_cmd(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// Apply CREATE_NO_WINDOW on Windows to prevent console popups (tokio version).
+#[cfg(windows)]
+fn hide_window_tokio_cmd(cmd: &mut tokio::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
 // ---------------------------------------------------------------------------
 // Windows SSH multiplexer — a persistent `ssh -T` subprocess per host
 // that serialises commands over stdin/stdout, avoiding the per-exec overhead
@@ -110,8 +126,8 @@ mod win_ssh_mux {
             // Process exited — fall through and respawn.
         }
 
-        let mut child = Command::new("ssh")
-            .args([
+        let mut cmd = Command::new("ssh");
+        cmd.args([
                 "-T",
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "BatchMode=yes",
@@ -123,7 +139,9 @@ mod win_ssh_mux {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        super::hide_window_tokio_cmd(&mut cmd);
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("ssh mux spawn: {}", e))?;
 
@@ -788,12 +806,13 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
     }
 
     // Detect which key was used by querying ssh config for this host.
-    if let Ok(cfg_output) = tokio::process::Command::new("ssh")
-        .args(["-G", &host_key])
+    let mut ssh_g_cmd = tokio::process::Command::new("ssh");
+    ssh_g_cmd.args(["-G", &host_key])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    hide_window_tokio_cmd(&mut ssh_g_cmd);
+    if let Ok(cfg_output) = ssh_g_cmd.output().await
     {
         let cfg = String::from_utf8_lossy(&cfg_output.stdout);
         for line in cfg.lines() {
@@ -1147,15 +1166,16 @@ async fn get_status(_gateway_url: String, _token: String, agent_id: String) -> R
         // On Windows, openclaw gateway runs as a node.exe process (not a separate
         // openclaw-gateway.exe binary).  Check whether anything is listening on
         // the default gateway port (18789) instead.
-        let listening = tokio::process::Command::new("powershell")
-            .args([
+        let mut ps_cmd = tokio::process::Command::new("powershell");
+        ps_cmd.args([
                 "-NoProfile",
                 "-Command",
                 "(Get-NetTCPConnection -LocalPort 18789 -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count",
             ])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output()
+            .stderr(std::process::Stdio::null());
+        hide_window_tokio_cmd(&mut ps_cmd);
+        let listening = ps_cmd.output()
             .await
             .map_err(|e| format!("powershell: {}", e))?;
         let count_str = String::from_utf8_lossy(&listening.stdout).trim().to_string();
@@ -1267,7 +1287,9 @@ fn builtin_assets_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             .ok_or("cannot resolve project root")?;
         Ok(project_root.join("public").join("assets").join("builtin"))
     } else {
-        app.path().resource_dir().map(|p| p.join("assets").join("builtin")).map_err(|e| e.to_string())
+        let dir = app.path().resource_dir().map(|p| p.join("assets").join("builtin")).map_err(|e| e.to_string())?;
+        log::info!("[assets] builtin_assets_dir={} exists={}", dir.display(), dir.exists());
+        Ok(dir)
     }
 }
 
@@ -1391,14 +1413,31 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
     }
 
     // Scan built-in assets
-    let builtin_prefix = if cfg!(debug_assertions) { "/assets/builtin" } else { "localasset://localhost" };
+    // On Windows, WebView2 maps custom schemes to http://<scheme>.localhost/
+    // instead of <scheme>://localhost/. Use the platform-correct URL prefix.
+    let builtin_prefix = if cfg!(debug_assertions) {
+        "/assets/builtin"
+    } else if cfg!(target_os = "windows") {
+        "http://localasset.localhost"
+    } else {
+        "localasset://localhost"
+    };
     if let Ok(builtin_dir) = builtin_assets_dir(&app) {
+        log::info!("[scan_characters] scanning builtin: {} (exists={})", builtin_dir.display(), builtin_dir.exists());
         scan_dir(&builtin_dir, builtin_prefix, true, &ip_map, &mut results);
+        log::info!("[scan_characters] found {} characters after builtin scan", results.len());
     }
 
     // Scan custom assets
-    let custom_prefix = if cfg!(debug_assertions) { "/assets/custom" } else { "customasset://localhost" };
+    let custom_prefix = if cfg!(debug_assertions) {
+        "/assets/custom"
+    } else if cfg!(target_os = "windows") {
+        "http://customasset.localhost"
+    } else {
+        "customasset://localhost"
+    };
     if let Ok(custom_dir) = custom_assets_dir(&app) {
+        log::info!("[scan_characters] scanning custom: {} (exists={})", custom_dir.display(), custom_dir.exists());
         scan_dir(&custom_dir, custom_prefix, false, &ip_map, &mut results);
     }
 
@@ -2863,12 +2902,14 @@ fn win_ui_scale(monitor: &tauri::Monitor) -> f64 {
     (logical_h / 1080.0).max(1.0)
 }
 
-/// Check whether the current foreground window covers the entire monitor
-/// (i.e. a fullscreen video player, game, etc.).
+/// Returns the HMONITOR of the fullscreen foreground window, or None if the
+/// foreground window is not fullscreen.  Excludes desktop shell windows
+/// (Progman, WorkerW, Shell_TrayWnd) which cover the full screen but are
+/// not real fullscreen apps.
 #[cfg(target_os = "windows")]
-fn is_foreground_fullscreen() -> bool {
+fn fullscreen_foreground_monitor() -> Option<windows::Win32::Graphics::Gdi::HMONITOR> {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowRect,
+        GetForegroundWindow, GetWindowRect, GetClassNameW,
     };
     use windows::Win32::Graphics::Gdi::{
         MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST,
@@ -2877,11 +2918,24 @@ fn is_foreground_fullscreen() -> bool {
     unsafe {
         let fg = GetForegroundWindow();
         if fg.0 == std::ptr::null_mut() {
-            return false;
+            return None;
         }
+
+        let mut class_buf = [0u16; 64];
+        let len = GetClassNameW(fg, &mut class_buf) as usize;
+        if len > 0 {
+            let class_name = String::from_utf16_lossy(&class_buf[..len]);
+            if class_name == "Progman"
+                || class_name == "WorkerW"
+                || class_name == "Shell_TrayWnd"
+            {
+                return None;
+            }
+        }
+
         let mut fg_rect = RECT::default();
         if GetWindowRect(fg, &mut fg_rect).is_err() {
-            return false;
+            return None;
         }
         let monitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
         let mut mi = MONITORINFO {
@@ -2889,13 +2943,18 @@ fn is_foreground_fullscreen() -> bool {
             ..Default::default()
         };
         if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
-            return false;
+            return None;
         }
         let mr = mi.rcMonitor;
-        fg_rect.left <= mr.left
+        if fg_rect.left <= mr.left
             && fg_rect.top <= mr.top
             && fg_rect.right >= mr.right
             && fg_rect.bottom >= mr.bottom
+        {
+            Some(monitor)
+        } else {
+            None
+        }
     }
 }
 
@@ -4461,7 +4520,16 @@ async fn open_url(url: String) -> Result<(), String> {
 /// when users see an update prompt (independent of GitHub Releases).
 ///
 /// Expected manifest format:
-///   { "version": "1.6.0", "url": "https://github.com/.../oc-claw_1.6.0_aarch64.dmg", "notes": "..." }
+///   {
+///     "version": "1.6.0",
+///     "notes": "...",
+///     "platforms": {
+///       "macos":   { "url": "https://github.com/.../oc-claw_1.6.0_aarch64.dmg" },
+///       "windows": { "url": "https://github.com/.../oc-claw_1.6.0_x64-setup.exe" }
+///     }
+///   }
+///
+/// Legacy format (single "url" field) is still supported for backward compatibility.
 #[tauri::command]
 async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let current = app.config().version.clone().unwrap_or_default();
@@ -4472,8 +4540,6 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
         "https://www.oc-claw.ai/update/latest.json"
     };
     log::info!("[update] checking {} (current={})", update_url, current);
-    // On macOS, reqwest can inherit system proxies. That breaks local update checks
-    // in dev because localhost requests may be forwarded to the proxy and return 502.
     let mut client_builder = reqwest::Client::builder()
         .user_agent("oc-claw");
     if cfg!(debug_assertions) {
@@ -4494,15 +4560,24 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
     }
     let json: serde_json::Value = resp.json().await
         .map_err(|e| { log::warn!("[update] json parse error: {e}"); format!("json parse error: {e}") })?;
-    log::info!("[update] latest={} hasUpdate={}", json["version"], version_cmp(json["version"].as_str().unwrap_or(""), &current));
+
     let latest = json["version"].as_str().unwrap_or("");
     let has_update = version_cmp(latest, &current);
+
+    let platform_key = if cfg!(target_os = "macos") { "macos" } else { "windows" };
+
+    // Try new per-platform format first, fall back to legacy single "url" field
+    let url = json["platforms"][platform_key]["url"]
+        .as_str()
+        .or_else(|| json["url"].as_str())
+        .unwrap_or("");
+
+    log::info!("[update] latest={} hasUpdate={} platform={} url={}", latest, has_update, platform_key, url);
     Ok(serde_json::json!({
         "current": current,
         "latest": latest,
         "hasUpdate": has_update,
-        // The DMG download URL from the manifest (points to GitHub Release asset)
-        "url": json["url"].as_str().unwrap_or(""),
+        "url": url,
     }))
 }
 
@@ -4798,12 +4873,13 @@ if (Test-Path $appPath) {{
         let log_file_err = log_file
             .try_clone()
             .map_err(|e| format!("failed to clone helper log: {e}"))?;
-        std::process::Command::new("powershell")
-            .args(["-ExecutionPolicy", "Bypass", "-File"])
+        let mut update_cmd = std::process::Command::new("powershell");
+        update_cmd.args(["-ExecutionPolicy", "Bypass", "-File"])
             .arg(&helper_path)
             .stdout(std::process::Stdio::from(log_file))
-            .stderr(std::process::Stdio::from(log_file_err))
-            .spawn()
+            .stderr(std::process::Stdio::from(log_file_err));
+        hide_window_cmd(&mut update_cmd);
+        update_cmd.spawn()
             .map_err(|e| format!("failed to start installer helper: {e}"))?;
     }
 
@@ -5313,6 +5389,7 @@ pub fn run() {
             let path = percent_decode_str(raw_path).decode_utf8_lossy();
             let resource_dir = ctx.app_handle().path().resource_dir().unwrap_or_default();
             let file_path = resource_dir.join("assets").join("builtin").join(path.trim_start_matches('/'));
+            log::info!("[localasset] request={} resource_dir={} resolved={}", raw_path, resource_dir.display(), file_path.display());
             match std::fs::read(&file_path) {
                 Ok(data) => {
                     let mime = if path.ends_with(".gif") { "image/gif" }
@@ -5320,19 +5397,28 @@ pub fn run() {
                         else { "application/octet-stream" };
                     tauri::http::Response::builder()
                         .header("Content-Type", mime)
+                        // WebView2 on Windows serves the frontend from https://tauri.localhost,
+                        // making custom scheme URLs cross-origin. CORS headers are required.
+                        .header("Access-Control-Allow-Origin", "*")
                         .body(data)
                         .unwrap()
                 }
-                Err(_) => tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap(),
+                Err(e) => {
+                    log::warn!("[localasset] 404: {} err={}", file_path.display(), e);
+                    tauri::http::Response::builder()
+                        .status(404)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(Vec::new())
+                        .unwrap()
+                }
             }
         })
         .register_uri_scheme_protocol("customasset", |ctx, req| {
-            let path = req.uri().path();
+            let raw_path = req.uri().path();
+            let path = percent_decode_str(raw_path).decode_utf8_lossy();
             let data_dir = ctx.app_handle().path().app_data_dir().unwrap_or_default();
             let file_path = data_dir.join("characters").join(path.trim_start_matches('/'));
+            log::info!("[customasset] request={} resolved={}", raw_path, file_path.display());
             match std::fs::read(&file_path) {
                 Ok(data) => {
                     let mime = if path.ends_with(".gif") { "image/gif" }
@@ -5340,13 +5426,18 @@ pub fn run() {
                         else { "application/octet-stream" };
                     tauri::http::Response::builder()
                         .header("Content-Type", mime)
+                        .header("Access-Control-Allow-Origin", "*")
                         .body(data)
                         .unwrap()
                 }
-                Err(_) => tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap(),
+                Err(e) => {
+                    log::warn!("[customasset] 404: {} err={}", file_path.display(), e);
+                    tauri::http::Response::builder()
+                        .status(404)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(Vec::new())
+                        .unwrap()
+                }
             }
         })
         .setup(|app| {
@@ -5443,21 +5534,41 @@ pub fn run() {
                 let _ = win.show();
             }
 
-            // Windows: move window off-screen when another app goes fullscreen,
-            // restore its position when fullscreen exits.  We avoid hide()/show()
-            // because show() triggers a focus event which causes the panel to expand.
+            // Windows: move window off-screen when a fullscreen app is on the SAME
+            // monitor as the mini window.  We avoid hide()/show() because show()
+            // triggers a focus event which causes the panel to expand.
             #[cfg(target_os = "windows")]
             {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
+                    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+                    use windows::Win32::Foundation::POINT;
+
                     let mut was_hidden = false;
                     let mut saved_pos: Option<tauri::LogicalPosition<f64>> = None;
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(500));
-                        let fg_fullscreen = is_foreground_fullscreen();
+                        let fs_monitor = fullscreen_foreground_monitor();
+
                         if let Some(win) = app_handle.get_webview_window("mini") {
-                            if fg_fullscreen && !was_hidden {
-                                log::info!("[fullscreen] detected fullscreen app, moving mini off-screen");
+                            let same_monitor = if let Some(fs_mon) = fs_monitor {
+                                if let Ok(pos) = win.outer_position() {
+                                    let mini_mon = unsafe {
+                                        MonitorFromPoint(
+                                            POINT { x: pos.x, y: pos.y },
+                                            MONITOR_DEFAULTTONEAREST,
+                                        )
+                                    };
+                                    mini_mon == fs_mon
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
+                            if same_monitor && !was_hidden {
+                                log::info!("[fullscreen] detected fullscreen app on same monitor, moving mini off-screen");
                                 FULLSCREEN_HIDING.store(true, std::sync::atomic::Ordering::SeqCst);
                                 if let Ok(Some(pos)) = win.outer_position().map(|p| {
                                     win.current_monitor().ok().flatten().map(|m| {
@@ -5470,8 +5581,8 @@ pub fn run() {
                                 let _ = win.set_always_on_top(false);
                                 let _ = win.set_position(tauri::LogicalPosition::new(-9999.0_f64, -9999.0_f64));
                                 was_hidden = true;
-                            } else if !fg_fullscreen && was_hidden {
-                                log::info!("[fullscreen] fullscreen exited, restoring mini position");
+                            } else if !same_monitor && was_hidden {
+                                log::info!("[fullscreen] fullscreen exited or on different monitor, restoring mini position");
                                 FULLSCREEN_HIDING.store(false, std::sync::atomic::Ordering::SeqCst);
                                 if let Some(pos) = saved_pos.take() {
                                     let _ = win.set_position(pos);
