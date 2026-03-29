@@ -436,7 +436,8 @@ fn build_agent_health_from_meta(
             let sf = val["sessionFile"].as_str().unwrap_or("");
             if sf.is_empty() { continue; }
             // Match session file path to tail output by basename
-            let basename = sf.rsplit('/').next().unwrap_or("");
+            // Use both '/' and '\\' to handle cross-platform paths
+            let basename = sf.rsplit(|c: char| c == '/' || c == '\\').next().unwrap_or("");
             let active = if let Some(lines) = tails.get(basename) {
                 check_agent_active_from_lines(lines)
             } else {
@@ -1370,29 +1371,38 @@ async fn get_agents(mode: Option<String>, url: Option<String>, token: Option<Str
     // === local mode — read ~/.openclaw/agents/ directly (no CLI dependency) ===
     let home = home_dir_string();
     let agents_dir = PathBuf::from(&home).join(".openclaw").join("agents");
+    log::info!("[get_agents] local mode, agents_dir={:?}, exists={}", agents_dir, agents_dir.exists());
+
     let entries = std::fs::read_dir(&agents_dir)
-        .map_err(|e| format!("read agents dir: {}", e))?;
+        .map_err(|e| { log::error!("[get_agents] read_dir failed: {}", e); format!("read agents dir: {}", e) })?;
 
     let mut agents: Vec<AgentInfo> = Vec::new();
-    for entry in entries.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        log::info!("[get_agents] found entry: {:?} is_dir={}", path, path.is_dir());
+        if !path.is_dir() { continue; }
         let id = entry.file_name().to_string_lossy().to_string();
-        let config_path = entry.path().join("agent.json");
+        let config_path = path.join("agent.json");
+        log::info!("[get_agents] agent id={}, config exists={}", id, config_path.exists());
         let (name, emoji) = if config_path.exists() {
             match std::fs::read_to_string(&config_path) {
                 Ok(c) => {
+                    log::info!("[get_agents] agent.json content len={}", c.len());
                     let val: serde_json::Value = serde_json::from_str(&c).unwrap_or_default();
                     (
                         val.get("identityName").or_else(|| val.get("identity_name")).and_then(|v| v.as_str()).map(|s| s.to_string()),
                         val.get("identityEmoji").or_else(|| val.get("identity_emoji")).and_then(|v| v.as_str()).map(|s| s.to_string()),
                     )
                 }
-                Err(_) => (None, None),
+                Err(e) => { log::error!("[get_agents] read agent.json failed: {}", e); (None, None) }
             }
         } else {
             (None, None)
         };
+        log::info!("[get_agents] pushing agent: id={} name={:?} emoji={:?}", id, name, emoji);
         agents.push(AgentInfo { id, identity_name: name, identity_emoji: emoji });
     }
+    log::info!("[get_agents] returning {} agents", agents.len());
     Ok(agents)
 }
 
@@ -3318,11 +3328,15 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
 
     // === local mode (original) ===
     let path = sessions_json_path(&agent_id);
+    log::info!("[get_agent_sessions] local mode, path={:?}, exists={}", path, path.exists());
     let content = tokio::fs::read_to_string(&path)
         .await
-        .map_err(|e| format!("read sessions.json: {}", e))?;
+        .map_err(|e| { log::error!("[get_agent_sessions] read sessions.json failed: {}", e); format!("read sessions.json: {}", e) })?;
+    log::info!("[get_agent_sessions] sessions.json len={}, keys count={}", content.len(), content.matches('"').count() / 2);
     let map: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+    log::info!("[get_agent_sessions] parsed {} top-level keys", map.len());
 
     // Check which sessions are active (cross-platform)
     let home = home_dir_string();
@@ -3331,6 +3345,11 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
     let open_jsonl = lsof_open_jsonl_paths().await;
 
     let mut sessions: Vec<MiniSessionInfo> = Vec::new();
+    let mut skipped_no_msg = 0u32;
+    let mut skipped_cron = 0u32;
+    let mut skipped_no_file = 0u32;
+    let mut read_ok = 0u32;
+    let mut read_err = 0u32;
     for (key, val) in map.iter() {
         let session_file_raw = val["sessionFile"].as_str().unwrap_or("").to_string();
         let session_id_str = val["sessionId"].as_str().unwrap_or(key.as_str());
@@ -3345,28 +3364,31 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
             String::new()
         };
 
-        let is_active = if !session_file.is_empty() {
-            open_jsonl.iter().any(|p| {
-                p.starts_with(&session_file) || session_file.starts_with(p.as_str())
-                // Cross-platform path normalization
-                || p.replace('\\', "/").starts_with(&session_file.replace('\\', "/"))
-                || session_file.replace('\\', "/").starts_with(&p.replace('\\', "/"))
-            })
-        } else { false };
+        if session_file.is_empty() { skipped_no_file += 1; continue; }
+
+        // Check 1: lsof / modification-time based detection
+        let mut is_active = open_jsonl.iter().any(|p| {
+            p.starts_with(&session_file) || session_file.starts_with(p.as_str())
+            // Cross-platform path normalization
+            || p.replace('\\', "/").starts_with(&session_file.replace('\\', "/"))
+            || session_file.replace('\\', "/").starts_with(&p.replace('\\', "/"))
+        });
+
+        // Check 2: content-based detection (cross-platform, more reliable on Windows)
+        if !is_active {
+            let lines = tail_lines_from_file(std::path::Path::new(&session_file), 5);
+            is_active = check_agent_active_from_lines(&lines);
+        }
 
         // Read last messages from .jsonl
-        let (last_user, last_assistant) = if !session_file.is_empty() {
-            match tokio::fs::read_to_string(&session_file).await {
-                Ok(c) => extract_last_messages(&c),
-                Err(_) => (None, None),
-            }
-        } else {
-            (None, None)
+        let (last_user, last_assistant) = match tokio::fs::read_to_string(&session_file).await {
+            Ok(c) => { read_ok += 1; extract_last_messages(&c) }
+            Err(_) => { read_err += 1; (None, None) }
         };
 
         // Skip sessions with no messages or cron task sessions
-        if last_user.is_none() && last_assistant.is_none() { continue; }
-        if key.contains(":cron:") { continue; }
+        if last_user.is_none() && last_assistant.is_none() { skipped_no_msg += 1; continue; }
+        if key.contains(":cron:") { skipped_cron += 1; continue; }
 
         sessions.push(MiniSessionInfo {
             key: key.clone(),
@@ -3382,6 +3404,8 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
         });
     }
 
+    log::info!("[get_agent_sessions] results: {} sessions, skipped: no_file={} read_err={} no_msg={} cron={}, read_ok={}", 
+        sessions.len(), skipped_no_file, read_err, skipped_no_msg, skipped_cron, read_ok);
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     sessions.truncate(20);
     Ok(sessions)

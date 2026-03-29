@@ -690,8 +690,9 @@ export default function Mini() {
         } catch { /* ignore */ }
       })
     )
+    console.log('[fetchAllSessions] raw results:', results.length, results)
     // Keep previous data if all fetches failed (SSH backoff etc.)
-    if (results.length === 0 && previewCacheRef.current.size > 0) { fetchingSessionsRef.current = false; return }
+    if (results.length === 0 && previewCacheRef.current.size > 0) { console.log('[fetchAllSessions] empty results, keeping cache'); fetchingSessionsRef.current = false; return }
     const seen = new Set<string>()
     const deduped = results.filter(s => {
       const k = `${s.agentId}:${s.key}`
@@ -722,6 +723,7 @@ export default function Mini() {
     // Filter out OpenClaw sub-agent sessions (key contains ":subagent:")
     .filter(s => !s.key.includes(':subagent:'))
     merged.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
+    console.log('[fetchAllSessions] final merged:', merged.length, merged)
     setAllSessions(merged)
 
     // Build session file lookup and queue preview fetches
