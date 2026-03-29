@@ -4644,19 +4644,25 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
     let json: serde_json::Value = resp.json().await
         .map_err(|e| { log::warn!("[update] json parse error: {e}"); format!("json parse error: {e}") })?;
 
-    log::info!("[update] latest={:?} hasUpdate={}", json["version"], version_cmp(json["version"].as_str().unwrap_or(""), &current));
-    let latest = json["version"].as_str().unwrap_or("");
-    let has_update = version_cmp(latest, &current);
-
-    // On Windows, try per-platform format first, fall back to legacy single "url" field.
-    // On macOS, use the original single "url" field (unchanged from before).
+    // Per-platform update: each platform has its own version and url under
+    // json["platforms"]["<platform>"]["version"] and ["url"].
+    // Falls back to legacy top-level json["version"] / json["url"] for compatibility.
     #[cfg(windows)]
-    let url = json["platforms"]["windows"]["url"]
-        .as_str()
+    let platform_key = "windows";
+    #[cfg(target_os = "macos")]
+    let platform_key = "macos";
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let platform_key = "linux";
+
+    let platform = &json["platforms"][platform_key];
+    let latest = platform["version"].as_str()
+        .or_else(|| json["version"].as_str())
+        .unwrap_or("");
+    let url = platform["url"].as_str()
         .or_else(|| json["url"].as_str())
         .unwrap_or("");
-    #[cfg(not(windows))]
-    let url = json["url"].as_str().unwrap_or("");
+    let has_update = version_cmp(latest, &current);
+    log::info!("[update] platform={} latest={} current={} hasUpdate={}", platform_key, latest, current, has_update);
 
     Ok(serde_json::json!({
         "current": current,

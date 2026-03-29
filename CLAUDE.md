@@ -119,6 +119,9 @@ Windows OpenSSH does NOT support `ControlMaster` / `ControlPath` (Unix domain so
 - The correct approach: write a `.ps1` file and register the command as `powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:/Users/xxx/.claude/hooks/ooclaw-hook.ps1'` (forward slashes).
 - `install_claude_hooks()` in `lib.rs` handles this automatically on startup. It also cleans up old `.cmd`-format hook entries.
 - The cleanup logic (`has_our_hook`) matches any command containing `"ooclaw-hook"` to remove both old and new formats.
+- **PowerShell stdin encoding on CJK Windows**: Chinese/Japanese/Korean editions of Windows default to GBK/Shift-JIS for PowerShell's `[Console]::In`. CC sends UTF-8 JSON, so multi-byte characters (Chinese text in `last_assistant_message` of Stop events) get corrupted, breaking JSON parsing. The hook MUST set `[Console]::InputEncoding = [System.Text.Encoding]::UTF8` before reading stdin.
+- **The hook forwards raw CC JSON directly** — do NOT parse/reconstruct JSON in PowerShell. Large payloads (Stop events) are prone to encoding and truncation issues. Let the Rust side handle parsing. `process_claude_event()` accepts both CC's raw field names (`session_id`, `hook_event_name`, `status`, `tool_name`, `prompt`) and the old processed names (`sessionId`, `event`, `claudeStatus`).
+- **TCP socket shutdown**: The hook must call `$client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)` before `$client.Close()`. Without explicit shutdown, Windows may delay the TCP FIN packet, causing the Rust TCP server's read to hang. The server also uses a 5-second read timeout as a safety net.
 
 ## Claude Code Session File Paths on Windows
 
