@@ -58,6 +58,208 @@ use tauri::{
 #[cfg(unix)]
 use libc;
 
+// ---------------------------------------------------------------------------
+// Windows SSH multiplexer — a persistent `ssh -T` subprocess per host
+// that serialises commands over stdin/stdout, avoiding the per-exec overhead
+// of a full TCP+SSH handshake (Windows lacks ControlMaster).
+// ---------------------------------------------------------------------------
+#[cfg(windows)]
+mod win_ssh_mux {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::process::{Child, Command};
+    use tokio::sync::Mutex as TokioMutex;
+
+    struct MuxChild {
+        stdin: tokio::process::ChildStdin,
+        stdout: BufReader<tokio::process::ChildStdout>,
+        child: Child,
+    }
+
+    // One multiplexed SSH session per user@host.
+    // The TokioMutex serialises commands so marker boundaries never interleave.
+    static MUX_SESSIONS: OnceLock<Mutex<HashMap<String, Arc<TokioMutex<Option<MuxChild>>>>>> =
+        OnceLock::new();
+
+    fn mux_map() -> &'static Mutex<HashMap<String, Arc<TokioMutex<Option<MuxChild>>>>> {
+        MUX_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn session_lock(host_key: &str) -> Arc<TokioMutex<Option<MuxChild>>> {
+        let mut map = mux_map().lock().unwrap();
+        map.entry(host_key.to_string())
+            .or_insert_with(|| Arc::new(TokioMutex::new(None)))
+            .clone()
+    }
+
+    /// Spawn the persistent SSH process if it isn't already running.
+    pub async fn ensure(ssh_user: &str, ssh_host: &str) -> Result<(), String> {
+        let host_key = format!("{}@{}", ssh_user, ssh_host);
+        let lock = session_lock(&host_key);
+        let mut guard = lock.lock().await;
+
+        // Already running and alive?
+        if let Some(ref mut m) = *guard {
+            if m.child.try_wait().ok().flatten().is_none() {
+                return Ok(());
+            }
+            // Process exited — fall through and respawn.
+        }
+
+        let mut child = Command::new("ssh")
+            .args([
+                "-T",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "-o", "ServerAliveInterval=15",
+                "-o", "ServerAliveCountMax=3",
+                &host_key,
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("ssh mux spawn: {}", e))?;
+
+        let stdin = child.stdin.take().ok_or("ssh mux: no stdin")?;
+        let stdout = child.stdout.take().ok_or("ssh mux: no stdout")?;
+        let reader = BufReader::new(stdout);
+
+        *guard = Some(MuxChild { stdin, stdout: reader, child });
+
+        // Validate the connection with a quick echo test.
+        drop(guard);
+        match exec_inner(ssh_user, ssh_host, "echo __oc_mux_ready__").await {
+            Ok(out) if out.contains("__oc_mux_ready__") => Ok(()),
+            Ok(out) => {
+                kill(ssh_user, ssh_host).await;
+                Err(format!("ssh mux validation unexpected output: {}", out))
+            }
+            Err(e) => {
+                kill(ssh_user, ssh_host).await;
+                Err(format!("ssh mux validation failed: {}", e))
+            }
+        }
+    }
+
+    /// Send `cmd` through the persistent session and collect its stdout + exit code.
+    pub async fn exec(ssh_user: &str, ssh_host: &str, cmd: &str) -> Result<String, String> {
+        exec_inner(ssh_user, ssh_host, cmd).await
+    }
+
+    async fn exec_inner(ssh_user: &str, ssh_host: &str, cmd: &str) -> Result<String, String> {
+        let host_key = format!("{}@{}", ssh_user, ssh_host);
+        let lock = session_lock(&host_key);
+        let mut guard = lock.lock().await;
+        let mux = guard.as_mut().ok_or_else(|| "ssh mux: not connected".to_string())?;
+
+        // Check the process is still alive.
+        if mux.child.try_wait().ok().flatten().is_some() {
+            *guard = None;
+            return Err("ssh mux: process exited".to_string());
+        }
+
+        // Unique marker that cannot appear in normal command output.
+        let marker = format!("__OCCLAW_{}__", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+
+        // Wrap the command so we can capture its exit code after a unique delimiter.
+        // The shell on the remote side will:
+        //   1. Run cmd, capturing exit code in __ec
+        //   2. Print a blank line + the marker + exit_code on one line
+        let wrapped = format!(
+            "{cmd}\n__ec=$?\necho \"\"\necho \"{marker} $__ec\"\n",
+            cmd = cmd,
+            marker = marker,
+        );
+
+        mux.stdin
+            .write_all(wrapped.as_bytes())
+            .await
+            .map_err(|e| format!("ssh mux write: {}", e))?;
+        mux.stdin.flush().await.map_err(|e| format!("ssh mux flush: {}", e))?;
+
+        // Read lines until we see the marker.
+        let mut output = String::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let exit_code: i32;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                // Subprocess may be hung — kill and return error.
+                *guard = None;
+                return Err("ssh mux: command timed out after 30s".to_string());
+            }
+
+            let mut line = String::new();
+            let read_result = tokio::time::timeout(remaining, mux.stdout.read_line(&mut line)).await;
+
+            match read_result {
+                Ok(Ok(0)) => {
+                    // EOF — the SSH process died.
+                    *guard = None;
+                    return Err("ssh mux: connection lost (EOF)".to_string());
+                }
+                Ok(Ok(_)) => {
+                    if let Some(rest) = line.trim().strip_prefix(&marker) {
+                        exit_code = rest.trim().parse().unwrap_or(-1);
+                        break;
+                    }
+                    output.push_str(&line);
+                }
+                Ok(Err(e)) => {
+                    *guard = None;
+                    return Err(format!("ssh mux read: {}", e));
+                }
+                Err(_) => {
+                    *guard = None;
+                    return Err("ssh mux: command timed out after 30s".to_string());
+                }
+            }
+        }
+
+        if exit_code == 0 {
+            Ok(output)
+        } else if exit_code == 255 {
+            // Transport-level failure — mark session dead so it respawns.
+            *guard = None;
+            Err(format!("ssh mux transport error (exit 255)"))
+        } else {
+            Err(format!("ssh cmd failed [exit {}]\nstdout: {}", exit_code, output.trim()))
+        }
+    }
+
+    /// Kill the persistent subprocess for a given host.
+    pub async fn kill(ssh_user: &str, ssh_host: &str) {
+        let host_key = format!("{}@{}", ssh_user, ssh_host);
+        let lock = session_lock(&host_key);
+        let mut guard = lock.lock().await;
+        if let Some(ref mut m) = *guard {
+            let _ = m.child.kill().await;
+        }
+        *guard = None;
+    }
+
+    /// Kill all persistent subprocesses.
+    pub async fn kill_all() {
+        let keys: Vec<String> = {
+            mux_map().lock().unwrap().keys().cloned().collect()
+        };
+        for key in keys {
+            let lock = session_lock(&key);
+            let mut guard = lock.lock().await;
+            if let Some(ref mut m) = *guard {
+                let _ = m.child.kill().await;
+            }
+            *guard = None;
+        }
+    }
+}
+
 /// Fix PATH for macOS GUI apps which only get /usr/bin:/bin:/usr/sbin:/sbin.
 /// openclaw is a Node.js script installed via pnpm, so both `openclaw` and `node`
 /// must be reachable via PATH.
@@ -569,45 +771,16 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
 
     #[cfg(windows)]
     {
-        // Windows: ControlMaster not supported. Validate the connection by running
-        // a simple test command, then create a marker file to skip future validation.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            tokio::process::Command::new("ssh")
-                .args([
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=10",
-                    &host_key,
-                    "echo ok",
-                ])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output(),
-        ).await;
-
-        let output = match result {
-            Ok(Ok(o)) => o,
-            Ok(Err(e)) => {
-                ssh_backoff_record_failure(&host_key);
-                return Err(format!("ssh test: {}", e));
-            }
-            Err(_) => {
-                ssh_backoff_record_failure(&host_key);
-                return Err(format!("ssh to {} timed out after 15s", host_key));
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        // Windows: use persistent SSH subprocess multiplexer instead of per-command
+        // connections. This avoids the TCP+SSH handshake overhead on every call and
+        // prevents hitting server-side MaxStartups limits.
+        if let Err(e) = win_ssh_mux::ensure(ssh_user, ssh_host).await {
             ssh_backoff_record_failure(&host_key);
             let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
-            let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
             log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
-            return Err(format!("SSH connection failed [exit {}]: {}", code, stderr));
+            return Err(format!("SSH connection failed: {}", e));
         }
-
-        // Create marker file so subsequent calls skip the test
+        // Create marker file so the fast-path check at the top works.
         let _ = std::fs::write(&control_path, "connected");
     }
 
@@ -638,115 +811,116 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
 
 /// Execute a command on remote host via SSH.
 /// On macOS/Linux: reuses ControlMaster socket for fast multiplexed connections.
-/// On Windows: opens a new SSH connection for each command (no ControlMaster support).
+/// On Windows: routes through a persistent SSH subprocess (win_ssh_mux) so all
+///   commands share a single TCP connection instead of opening one per call.
 /// If the command fails (e.g. stale socket), removes the socket and retries once.
 async fn ssh_exec(ssh_host: &str, ssh_user: &str, cmd: &str) -> Result<String, String> {
     ensure_ssh_master(ssh_host, ssh_user).await?;
-    let target = format!("{}@{}", ssh_user, ssh_host);
-    // Prepend a safe system PATH so basic commands (ls, cat, tail…) are always
-    // available regardless of how the remote server's login environment is configured.
     let safe_cmd = format!(
         "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH && {}",
         cmd
     );
 
-    #[cfg(unix)]
-    let control_path = ssh_control_path(ssh_user, ssh_host);
-    #[cfg(unix)]
-    let cp = format!("ControlPath={}", control_path);
-
-    let mut ssh_args: Vec<&str> = vec![
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=5",
-    ];
-    #[cfg(unix)]
-    { ssh_args.extend_from_slice(&["-o", &cp]); }
     #[cfg(windows)]
-    { ssh_args.extend_from_slice(&["-o", "StrictHostKeyChecking=no"]); }
-
-    ssh_args.push(&target);
-    ssh_args.push(&safe_cmd);
-
-    let output = tokio::process::Command::new("ssh")
-        .args(&ssh_args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("ssh: {}", e))?;
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    {
+        match win_ssh_mux::exec(ssh_user, ssh_host, &safe_cmd).await {
+            Ok(out) => return Ok(out),
+            Err(e) if e.contains("transport error") || e.contains("connection lost") || e.contains("process exited") || e.contains("not connected") || e.contains("timed out") => {
+                log::warn!("[ssh] transport error, removing marker and retrying: {}", e);
+                let _ = tokio::fs::remove_file(&ssh_control_path(ssh_user, ssh_host)).await;
+                ensure_ssh_master(ssh_host, ssh_user).await?;
+                return win_ssh_mux::exec(ssh_user, ssh_host, &safe_cmd).await;
+            }
+            Err(e) => return Err(e),
+        }
     }
 
-    let exit_code = output.status.code().unwrap_or(-1);
-    // Exit 255 = SSH transport error. Any other non-zero exit code comes from
-    // the remote command itself and should be returned as-is.
-    if exit_code != 255 {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut msg = format!("ssh cmd failed [exit {}]", exit_code);
-        if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
-        if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
-        return Err(msg);
-    }
-
-    // SSH transport failure — remove the stale socket/marker and retry once.
-    log::warn!("[ssh] transport error (exit 255), removing stale socket and retrying");
-    #[cfg(unix)]
-    { let _ = tokio::fs::remove_file(&control_path).await; }
-    #[cfg(windows)]
-    { let _ = tokio::fs::remove_file(&ssh_control_path(ssh_user, ssh_host)).await; }
-
-    ensure_ssh_master(ssh_host, ssh_user).await?;
-
-    // Rebuild args for retry
-    let mut ssh_args2: Vec<&str> = vec![
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=5",
-    ];
-    #[cfg(unix)]
-    { ssh_args2.extend_from_slice(&["-o", &cp]); }
-    #[cfg(windows)]
-    { ssh_args2.extend_from_slice(&["-o", "StrictHostKeyChecking=no"]); }
-    ssh_args2.push(&target);
-    ssh_args2.push(&safe_cmd);
-
-    let output = tokio::process::Command::new("ssh")
-        .args(&ssh_args2)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("ssh: {}", e))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
-        let mut msg = format!("ssh cmd failed [exit {}]", code);
-        if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
-        if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
-        return Err(msg);
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Close an active SSH ControlMaster socket (macOS/Linux) or remove marker (Windows).
-async fn close_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
-    let control_path = ssh_control_path(ssh_user, ssh_host);
-    if !std::path::Path::new(&control_path).exists() {
-        ssh_backoff_reset(&format!("{}@{}", ssh_user, ssh_host));
-        return Ok(());
-    }
     #[cfg(unix)]
     {
         let target = format!("{}@{}", ssh_user, ssh_host);
+        let control_path = ssh_control_path(ssh_user, ssh_host);
         let cp = format!("ControlPath={}", control_path);
-        let _ = tokio::process::Command::new("ssh")
-            .args(["-o", &cp, "-O", "exit", &target])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+
+        let mut ssh_args: Vec<&str> = vec![
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            "-o", &cp,
+        ];
+        ssh_args.push(&target);
+        ssh_args.push(&safe_cmd);
+
+        let output = tokio::process::Command::new("ssh")
+            .args(&ssh_args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .output()
-            .await;
+            .await
+            .map_err(|e| format!("ssh: {}", e))?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+
+        let exit_code = output.status.code().unwrap_or(-1);
+        if exit_code != 255 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut msg = format!("ssh cmd failed [exit {}]", exit_code);
+            if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
+            if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
+            return Err(msg);
+        }
+
+        log::warn!("[ssh] transport error (exit 255), removing stale socket and retrying");
+        let _ = tokio::fs::remove_file(&control_path).await;
+        ensure_ssh_master(ssh_host, ssh_user).await?;
+
+        let mut ssh_args2: Vec<&str> = vec![
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            "-o", &cp,
+        ];
+        ssh_args2.push(&target);
+        ssh_args2.push(&safe_cmd);
+
+        let output = tokio::process::Command::new("ssh")
+            .args(&ssh_args2)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("ssh: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+            let mut msg = format!("ssh cmd failed [exit {}]", code);
+            if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
+            if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
+            return Err(msg);
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+}
+
+/// Close an active SSH ControlMaster socket (macOS/Linux) or persistent mux subprocess (Windows).
+async fn close_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
+    let control_path = ssh_control_path(ssh_user, ssh_host);
+    #[cfg(unix)]
+    {
+        if std::path::Path::new(&control_path).exists() {
+            let target = format!("{}@{}", ssh_user, ssh_host);
+            let cp = format!("ControlPath={}", control_path);
+            let _ = tokio::process::Command::new("ssh")
+                .args(["-o", &cp, "-O", "exit", &target])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .await;
+        }
+    }
+    #[cfg(windows)]
+    {
+        win_ssh_mux::kill(ssh_user, ssh_host).await;
     }
     let _ = tokio::fs::remove_file(&control_path).await;
     ssh_backoff_reset(&format!("{}@{}", ssh_user, ssh_host));
@@ -804,6 +978,8 @@ async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result
                 }
             }
         }
+        #[cfg(windows)]
+        { win_ssh_mux::kill_all().await; }
         // Clear all backoff entries
         ssh_backoff_map().lock().unwrap().clear();
         return Ok(());
