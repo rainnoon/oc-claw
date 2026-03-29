@@ -4914,7 +4914,9 @@ open -n "$APP_BUNDLE"
         let helper_path = work_dir.join("install-update.ps1");
         let script = format!(r#"
 $ErrorActionPreference = 'Stop'
-$pid = {pid}
+# NOTE: $pid is a read-only automatic variable in PowerShell (current process PID).
+# Use $appPid instead to avoid "VariableNotWritable" errors.
+$appPid = {pid}
 $installerPath = '{installer_path}'
 $logPath = '{log_path}'
 
@@ -4922,11 +4924,11 @@ function Log($msg) {{
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -Append $logPath
 }}
 
-Log "Waiting for app pid $pid to exit"
+Log "Waiting for app pid $appPid to exit"
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 while ($sw.Elapsed.TotalSeconds -lt 60) {{
     try {{
-        $p = Get-Process -Id $pid -ErrorAction SilentlyContinue
+        $p = Get-Process -Id $appPid -ErrorAction SilentlyContinue
         if (-not $p) {{ break }}
     }} catch {{ break }}
     Start-Sleep -Milliseconds 500
@@ -4936,18 +4938,57 @@ Log "Installing update from $installerPath"
 if ($installerPath.EndsWith('.msi')) {{
     Start-Process msiexec.exe -ArgumentList '/i', "`"$installerPath`"", '/quiet', '/norestart' -Wait -NoNewWindow
 }} else {{
-    Start-Process $installerPath -ArgumentList '/S', '/norestart' -Wait -NoNewWindow
+    # Tauri NSIS installer supports /S (silent) and /D=<path> (install dir).
+    # Read the current install location from registry so the update goes to the same place.
+    $installDir = $null
+    foreach ($regPath in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )) {{
+        $entry = Get-ItemProperty $regPath -ErrorAction SilentlyContinue |
+            Where-Object {{ $_.DisplayName -eq 'oc-claw' }} | Select-Object -First 1
+        if ($entry -and $entry.InstallLocation) {{
+            $installDir = $entry.InstallLocation.Trim('"')
+            break
+        }}
+    }}
+    $args = @('/S')
+    if ($installDir) {{ $args += "/D=$installDir" }}
+    Log "Running installer with args: $($args -join ' ')"
+    Start-Process $installerPath -ArgumentList $args -Wait -NoNewWindow
 }}
 
 Log "Launching updated app"
-$appPath = Join-Path $env:LOCALAPPDATA 'oc-claw\oc-claw.exe'
-if (-not (Test-Path $appPath)) {{
-    $appPath = Join-Path $env:ProgramFiles 'oc-claw\oc-claw.exe'
+# Find install location from registry (user may have chosen a custom path).
+# The executable is named ooclaw.exe (productName config produces this binary name).
+$appPath = $null
+foreach ($regPath in @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)) {{
+    $entry = Get-ItemProperty $regPath -ErrorAction SilentlyContinue |
+        Where-Object {{ $_.DisplayName -eq 'oc-claw' }} | Select-Object -First 1
+    if ($entry -and $entry.InstallLocation) {{
+        $loc = $entry.InstallLocation.Trim('"')
+        $candidate = Join-Path $loc 'ooclaw.exe'
+        if (Test-Path $candidate) {{
+            $appPath = $candidate
+            break
+        }}
+    }}
 }}
-if (Test-Path $appPath) {{
+if (-not $appPath) {{
+    # Fallback: check common locations
+    foreach ($dir in @("$env:LOCALAPPDATA\oc-claw", "$env:ProgramFiles\oc-claw", "H:\oc-claw")) {{
+        $candidate = Join-Path $dir 'ooclaw.exe'
+        if (Test-Path $candidate) {{ $appPath = $candidate; break }}
+    }}
+}}
+if ($appPath) {{
+    Log "Relaunching from $appPath"
     Start-Process $appPath
 }} else {{
-    Log "Warning: could not find oc-claw.exe to relaunch"
+    Log "Warning: could not find ooclaw.exe to relaunch"
 }}
 "#,
             pid = std::process::id(),
