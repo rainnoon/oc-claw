@@ -5151,70 +5151,21 @@ except:
         // so .cmd files and backslash paths don't work. We write a .ps1 file
         // and register the command as "powershell.exe ... -File '<forward-slash-path>'"
         // in settings.json so bash can invoke it correctly.
+        // Simplified hook: forward raw CC JSON directly to the TCP server.
+        // Do NOT parse/reconstruct JSON in PowerShell — large payloads (Stop events
+        // with last_assistant_message containing full response text) get truncated by
+        // [Console]::In.ReadToEnd(), breaking ConvertFrom-Json. The Rust side accepts
+        // both processed (sessionId, event) and raw CC field names (session_id, hook_event_name).
         let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
 try {
-    $inputData = [Console]::In.ReadToEnd() | ConvertFrom-Json
-} catch {
-    exit 0
-}
-if (-not $inputData) { exit 0 }
-
-$hookEvent = $inputData.hook_event_name
-if (-not $hookEvent) { $hookEvent = '' }
-
-$statusMap = @{
-    'UserPromptSubmit'  = 'processing'
-    'PreCompact'        = 'compacting'
-    'SessionStart'      = 'waiting_for_input'
-    'SessionEnd'        = 'ended'
-    'PreToolUse'        = 'running_tool'
-    'PostToolUse'       = 'processing'
-    'PermissionRequest' = 'waiting_for_input'
-    'Stop'              = 'waiting_for_input'
-    'SubagentStop'      = 'waiting_for_input'
-}
-
-$claudeStatus = $inputData.status
-if (-not $claudeStatus) {
-    $claudeStatus = $statusMap[$hookEvent]
-    if (-not $claudeStatus) { $claudeStatus = 'unknown' }
-}
-
-$output = @{
-    sessionId    = if ($inputData.session_id) { $inputData.session_id } else { '' }
-    cwd          = if ($inputData.cwd) { $inputData.cwd } else { '' }
-    event        = $hookEvent
-    claudeStatus = $claudeStatus
-    interactive  = $true
-}
-
-if ($hookEvent -eq 'UserPromptSubmit' -and $inputData.prompt) {
-    $p = $inputData.prompt
-    if ($p.Length -gt 200) { $p = $p.Substring(0, 200) }
-    $output['userPrompt'] = $p
-}
-
-if ($inputData.tool_name) {
-    $output['tool'] = $inputData.tool_name
-}
-
-if ($inputData.tool_input) {
-    $ti = $inputData.tool_input | ConvertTo-Json -Compress
-    if ($ti.Length -gt 200) { $ti = $ti.Substring(0, 200) }
-    $output['toolInput'] = $ti
-}
-
-try {
-    $json = $output | ConvertTo-Json -Compress
-    $client = [System.Net.Sockets.TcpClient]::new()
-    $client.SendTimeout = 2000
-    $client.ReceiveTimeout = 2000
-    $client.Connect('127.0.0.1', 19283)
+    $raw = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
     $stream = $client.GetStream()
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
     $stream.Write($bytes, 0, $bytes.Length)
     $stream.Flush()
-    $client.Close()
+    $client.Dispose()
 } catch {}
 "#;
         std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
@@ -5297,15 +5248,23 @@ fn process_claude_event(
 ) {
     log::info!("[claude_event] raw buf len={}", buf.len());
     if let Ok(event) = serde_json::from_str::<serde_json::Value>(buf) {
-        let session_id = event.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // Accept both processed field names (sessionId, event, claudeStatus) from the old
+        // hook format AND raw CC field names (session_id, hook_event_name, status).
+        // On Windows the hook now forwards raw CC JSON directly to avoid truncation issues
+        // with large payloads (Stop events contain last_assistant_message with full response text).
+        let session_id = event.get("sessionId").or_else(|| event.get("session_id"))
+            .and_then(|v| v.as_str()).unwrap_or("").to_string();
         if session_id.is_empty() { log::warn!("[claude_event] empty sessionId, ignoring"); return; }
 
-        let hook_event = event.get("event").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let claude_status = event.get("claudeStatus").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+        let hook_event = event.get("event").or_else(|| event.get("hook_event_name"))
+            .and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let claude_status = event.get("claudeStatus").or_else(|| event.get("status"))
+            .and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
 
         let is_processing = claude_status != "waiting_for_input";
 
-        let user_prompt = event.get("userPrompt").and_then(|v| v.as_str()).unwrap_or("");
+        let user_prompt = event.get("userPrompt").or_else(|| event.get("prompt"))
+            .and_then(|v| v.as_str()).unwrap_or("");
         let is_local_slash = if user_prompt.starts_with('/') {
             let cmd = user_prompt.split_whitespace().next().unwrap_or("");
             matches!(cmd, "/clear" | "/compact" | "/help" | "/cost" | "/status" | "/vim" | "/fast" | "/model" | "/login" | "/logout")
@@ -5368,10 +5327,10 @@ fn process_claude_event(
                 session.updated_at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
 
-                if let Some(t) = event.get("tool").and_then(|v| v.as_str()) {
+                if let Some(t) = event.get("tool").or_else(|| event.get("tool_name")).and_then(|v| v.as_str()) {
                     if !t.is_empty() { session.tool = Some(t.to_string()); }
                 }
-                if let Some(t) = event.get("toolInput").and_then(|v| v.as_str()) {
+                if let Some(t) = event.get("toolInput").or_else(|| event.get("tool_input")).and_then(|v| v.as_str()) {
                     if !t.is_empty() { session.tool_input = Some(t.to_string()); }
                 }
                 if let Some(t) = event.get("userPrompt").and_then(|v| v.as_str()) {
