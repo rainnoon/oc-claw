@@ -1367,23 +1367,32 @@ async fn get_agents(mode: Option<String>, url: Option<String>, token: Option<Str
         return Ok(agents);
     }
 
-    // === local mode (original) ===
-    let output = tokio::process::Command::new("openclaw")
-        .args(["agents", "list", "--json"])
-        .output()
-        .await
-        .map_err(|e| format!("openclaw agents list: {}", e))?;
+    // === local mode — read ~/.openclaw/agents/ directly (no CLI dependency) ===
+    let home = home_dir_string();
+    let agents_dir = PathBuf::from(&home).join(".openclaw").join("agents");
+    let entries = std::fs::read_dir(&agents_dir)
+        .map_err(|e| format!("read agents dir: {}", e))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("openclaw agents list failed: {}", stderr));
+    let mut agents: Vec<AgentInfo> = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
+        let id = entry.file_name().to_string_lossy().to_string();
+        let config_path = entry.path().join("agent.json");
+        let (name, emoji) = if config_path.exists() {
+            match std::fs::read_to_string(&config_path) {
+                Ok(c) => {
+                    let val: serde_json::Value = serde_json::from_str(&c).unwrap_or_default();
+                    (
+                        val.get("identityName").or_else(|| val.get("identity_name")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        val.get("identityEmoji").or_else(|| val.get("identity_emoji")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    )
+                }
+                Err(_) => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        agents.push(AgentInfo { id, identity_name: name, identity_emoji: emoji });
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json_start = stdout.find('[').ok_or("no JSON array in agents output")?;
-    let json_end = stdout.rfind(']').ok_or("no closing bracket")? + 1;
-    let agents: Vec<AgentInfo> =
-        serde_json::from_str(&stdout[json_start..json_end]).map_err(|e| e.to_string())?;
     Ok(agents)
 }
 
