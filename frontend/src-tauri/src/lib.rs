@@ -4997,19 +4997,11 @@ if ($appPath) {{
         );
         std::fs::write(&helper_path, &script).map_err(|e| format!("failed to write helper script: {e}"))?;
 
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map_err(|e| format!("failed to open helper log: {e}"))?;
-        let log_file_err = log_file
-            .try_clone()
-            .map_err(|e| format!("failed to clone helper log: {e}"))?;
         let mut update_cmd = std::process::Command::new("powershell");
         update_cmd.args(["-ExecutionPolicy", "Bypass", "-File"])
             .arg(&helper_path)
-            .stdout(std::process::Stdio::from(log_file))
-            .stderr(std::process::Stdio::from(log_file_err));
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
         hide_window_cmd(&mut update_cmd);
         update_cmd.spawn()
             .map_err(|e| format!("failed to start installer helper: {e}"))?;
