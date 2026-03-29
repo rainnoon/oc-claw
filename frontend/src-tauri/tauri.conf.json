@@ -53,6 +53,12 @@
         "applicationFolderPosition": { "x": 480, "y": 170 }
       }
     },
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": false
+      }
+    },
     "resources": {
       "../public/assets": "assets/"
     }

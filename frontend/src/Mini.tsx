@@ -456,7 +456,7 @@ export default function Mini() {
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
   const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
   const mascotPositionRef = useRef<'left' | 'right'>('right')
-  const [islandBg, setIslandBg] = useState('grass-island.png')
+  const [islandBg, setIslandBg] = useState('beach.png')
   const [bgPos, setBgPos] = useState({ x: 50, y: 50 })
 
   // Settings mode: panel becomes wider, shows settings content
