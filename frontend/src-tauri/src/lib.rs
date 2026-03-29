@@ -2856,6 +2856,18 @@ fn win_ui_scale(monitor: &tauri::Monitor) -> f64 {
     (logical_h / 1080.0).max(1.0)
 }
 
+#[tauri::command]
+async fn get_ui_scale(app: tauri::AppHandle) -> Result<f64, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let win = app.get_webview_window("mini").ok_or("mini not found")?;
+        if let Ok(Some(m)) = win.current_monitor() {
+            return Ok(win_ui_scale(&m));
+        }
+    }
+    Ok(1.0)
+}
+
 /// Get the notch half-width (distance from screen center to notch edge) using
 /// macOS 12+ `auxiliaryTopRightArea` API. Falls back to 80pt for older systems
 /// or screens without a notch (external displays, pre-notch Macs).
@@ -5416,7 +5428,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
