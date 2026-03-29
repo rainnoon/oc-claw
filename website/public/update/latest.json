@@ -6,8 +6,8 @@
       "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.5.2/oc-claw_1.5.2_aarch64.dmg"
     },
     "windows": {
-      "version": "1.5.3",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.5.3/oc-claw_1.5.3_x64-setup.exe"
+      "version": "1.5.4",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.5.4/oc-claw_1.5.4_x64-setup.exe"
     }
   }
 }
