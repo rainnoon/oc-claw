@@ -110,6 +110,24 @@ Windows OpenSSH does NOT support `ControlMaster` / `ControlPath` (Unix domain so
 - All custom protocol responses must include `Access-Control-Allow-Origin: *` header for WebView2 CORS compatibility.
 - `tauri_plugin_log` is only registered in debug mode — production builds have no Rust-side log output. When debugging asset issues on Windows, either enable the log plugin in release or use the WebView2 DevTools console.
 
+## Claude Code Hooks on Windows
+
+- **Claude Code runs hook commands via `/usr/bin/bash` (Git Bash), NOT `cmd.exe`.** This means:
+  - `.cmd` / `.bat` files cannot be used as hook scripts — bash doesn't understand them.
+  - Backslash paths (`C:\Users\...`) get mangled — bash treats `\` as escape characters.
+  - The hook command in `~/.claude/settings.json` must be bash-compatible.
+- The correct approach: write a `.ps1` file and register the command as `powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:/Users/xxx/.claude/hooks/ooclaw-hook.ps1'` (forward slashes).
+- `install_claude_hooks()` in `lib.rs` handles this automatically on startup. It also cleans up old `.cmd`-format hook entries.
+- The cleanup logic (`has_our_hook`) matches any command containing `"ooclaw-hook"` to remove both old and new formats.
+
+## Claude Code Session File Paths on Windows
+
+- Claude Code stores session JSONL files under `~/.claude/projects/<project_dir>/<session_id>.jsonl`.
+- `<project_dir>` is derived from the working directory by replacing all path separators and special characters with `-`.
+- **On Windows, the drive letter colon must also be replaced**: `G:\Desktop\code` → `G--Desktop-code` (colon becomes `-`, backslash becomes `-`).
+- `claude_session_file_path()` in `lib.rs` does: `.replace('/', "-").replace('\\', "-").replace(':', "-").replace('.', "-")`.
+- If this path computation doesn't match what Claude Code uses, the session file watcher won't start and activity status won't update (character stays idle/sleeping).
+
 ## Audio on Windows
 
 - macOS uses `NSSound` via `invoke('play_sound', { name })` for system sounds.

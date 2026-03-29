@@ -4258,8 +4258,11 @@ struct ClaudeState {
 /// Compute the JSONL session file path (matching notchi's ConversationParser.sessionFilePath)
 fn claude_session_file_path(session_id: &str, cwd: &str) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_default();
+    // On Windows, Claude Code replaces all of / \ : . with "-" when computing
+    // the project directory name (e.g. G:\Desktop\code → G--Desktop-code).
+    // The colon after the drive letter (G:) must also be replaced.
     #[cfg(windows)]
-    let project_dir = cwd.replace('/', "-").replace('\\', "-").replace('.', "-");
+    let project_dir = cwd.replace('/', "-").replace('\\', "-").replace(':', "-").replace('.', "-");
     #[cfg(not(windows))]
     let project_dir = cwd.replace('/', "-").replace('.', "-");
     home.join(".claude").join("projects").join(project_dir).join(format!("{}.jsonl", session_id))
@@ -5064,7 +5067,7 @@ async fn install_claude_hooks() -> Result<(), String> {
     #[cfg(unix)]
     let hook_path = hooks_dir.join("ooclaw-hook.sh");
     #[cfg(windows)]
-    let hook_path = hooks_dir.join("ooclaw-hook.cmd");
+    let hook_path = hooks_dir.join("ooclaw-hook.ps1");
 
     #[cfg(unix)]
     {
@@ -5143,9 +5146,11 @@ except:
 
     #[cfg(windows)]
     {
-        // Windows hook: uses PowerShell instead of Python (Python may not be installed).
-        // The logic is in a .ps1 file; the .cmd wrapper invokes it.
-        let ps1_path = hooks_dir.join("ooclaw-hook.ps1");
+        // Windows hook: uses PowerShell directly (no .cmd wrapper).
+        // Claude Code runs hooks via /usr/bin/bash (Git Bash) on Windows,
+        // so .cmd files and backslash paths don't work. We write a .ps1 file
+        // and register the command as "powershell.exe ... -File '<forward-slash-path>'"
+        // in settings.json so bash can invoke it correctly.
         let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
 try {
     $inputData = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -5212,11 +5217,7 @@ try {
     $client.Close()
 } catch {}
 "#;
-        std::fs::write(&ps1_path, ps1_script).map_err(|e| e.to_string())?;
-
-        // The .cmd wrapper invokes the .ps1 script
-        let hook_script = "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0ooclaw-hook.ps1\" 2>nul\r\n";
-        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
+        std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
     }
 
     // Update ~/.claude/settings.json to register hooks
@@ -5228,6 +5229,14 @@ try {
         serde_json::json!({})
     };
 
+    // On Windows, Claude Code runs hooks via bash (Git Bash), so the command
+    // must be bash-compatible. We call powershell.exe with forward-slash path.
+    #[cfg(windows)]
+    let hook_path_str = format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+        hook_path.to_string_lossy().replace('\\', "/")
+    );
+    #[cfg(not(windows))]
     let hook_path_str = hook_path.to_string_lossy().to_string();
     let hooks = settings.as_object_mut().ok_or("settings not object")?
         .entry("hooks").or_insert(serde_json::json!({}))
@@ -5254,10 +5263,14 @@ try {
         ("SessionEnd", &without_matcher),
     ];
 
+    // Detect both old (.cmd path) and new (powershell.exe ... .ps1) hook entries for cleanup
     let has_our_hook = |entry: &serde_json::Value| -> bool {
-        entry.get("command").and_then(|c| c.as_str()) == Some(&hook_path_str)
+        let is_ours = |cmd: &str| -> bool {
+            cmd == hook_path_str || cmd.contains("ooclaw-hook")
+        };
+        entry.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c))
         || entry.get("hooks").and_then(|hs| hs.as_array()).map_or(false, |hs| {
-            hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()) == Some(&hook_path_str))
+            hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c)))
         })
     };
 
@@ -5282,9 +5295,10 @@ fn process_claude_event(
     state: &Arc<Mutex<HashMap<String, ClaudeSession>>>,
     app: &tauri::AppHandle,
 ) {
+    log::info!("[claude_event] raw buf len={}", buf.len());
     if let Ok(event) = serde_json::from_str::<serde_json::Value>(buf) {
         let session_id = event.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if session_id.is_empty() { return; }
+        if session_id.is_empty() { log::warn!("[claude_event] empty sessionId, ignoring"); return; }
 
         let hook_event = event.get("event").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let claude_status = event.get("claudeStatus").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
@@ -5379,8 +5393,10 @@ fn process_claude_event(
         }
 
         let cwd_str = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        log::info!("[claude_event] session={} event={} status={} cwd={}", session_id, hook_event, status, cwd_str);
         if hook_event == "UserPromptSubmit" && !cwd_str.is_empty() {
             let jsonl_path = claude_session_file_path(&session_id, &cwd_str);
+            log::info!("[claude_event] session file path: {} exists={}", jsonl_path.display(), jsonl_path.exists());
             if jsonl_path.exists() {
                 start_session_file_watcher(
                     session_id.clone(),
@@ -5527,13 +5543,11 @@ pub fn run() {
                 log::warn!("Failed to install Claude hooks on startup: {}", e);
             }
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
 
             // Hide from Dock, show only in menu bar (macOS only)
             #[cfg(target_os = "macos")]
