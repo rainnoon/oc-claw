@@ -574,6 +574,14 @@ export default function Mini() {
     }
   }, [])
 
+  const playDefaultSound = useCallback(() => {
+    if (navigator.userAgent.includes('Windows')) {
+      new Audio('/audio/glass.mp3').play().catch(() => {})
+    } else {
+      invoke('play_sound', { name: 'Purr' }).catch(() => {})
+    }
+  }, [])
+
   const lastOcSoundRef = useRef(0)
   const playOcCompletionSound = useCallback((source: string) => {
     console.log('[OC-SOUND] triggered from', source, 'soundEnabled:', soundEnabledRef.current)
@@ -588,7 +596,7 @@ export default function Mini() {
     if (notifySoundRef.current === 'manbo') {
       new Audio('/audio/manbo.m4a').play().catch(() => {})
     } else {
-      invoke('play_sound', { name: 'Purr' }).catch(() => {})
+      playDefaultSound()
     }
   }, [])
 
@@ -880,7 +888,7 @@ export default function Mini() {
       if (notifySoundRef.current === 'manbo') {
         new Audio('/audio/manbo.m4a').play().catch(() => {})
       } else {
-        invoke('play_sound', { name: 'Purr' }).catch(() => {})
+        playDefaultSound()
       }
     })
     return () => { unlisten.then((fn) => fn()) }
@@ -1414,7 +1422,7 @@ export default function Mini() {
                       await store.save()
                       if (next) {
                         if (notifySound === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {})
-                        else invoke('play_sound', { name: 'Purr' }).catch(() => {})
+                        else playDefaultSound()
                       }
                     }}
                     style={{
