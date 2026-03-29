@@ -205,6 +205,26 @@ async fn lsof_open_jsonl_paths() -> std::collections::HashSet<String> {
     }
 }
 
+/// Read the last `n` lines of a file using pure Rust (cross-platform replacement for `tail -n`).
+fn tail_lines_from_file(path: &std::path::Path, n: usize) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else { return vec![] };
+    let Ok(meta) = file.metadata() else { return vec![] };
+    let len = meta.len();
+    // Read up to 8KB from the end — more than enough for a handful of JSONL lines
+    let read_size = std::cmp::min(len, 8192) as usize;
+    let _ = file.seek(SeekFrom::End(-(read_size as i64)));
+    let mut buf = vec![0u8; read_size];
+    let Ok(bytes_read) = file.read(&mut buf) else { return vec![] };
+    let text = String::from_utf8_lossy(&buf[..bytes_read]);
+    let all_lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    if all_lines.len() <= n {
+        all_lines
+    } else {
+        all_lines[all_lines.len() - n..].to_vec()
+    }
+}
+
 /// Single `lsof +D` over the entire agents dir → set of active agent directory names.
 /// A .jsonl being held open by a process = that agent is working.
 /// On Windows: uses file modification time heuristic instead of lsof.
@@ -944,16 +964,23 @@ async fn get_status(_gateway_url: String, _token: String, agent_id: String) -> R
     }
     #[cfg(windows)]
     {
-        // On Windows, use tasklist to check if openclaw-gateway is running
-        let tasklist = tokio::process::Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq openclaw-gateway.exe", "/NH"])
+        // On Windows, openclaw gateway runs as a node.exe process (not a separate
+        // openclaw-gateway.exe binary).  Check whether anything is listening on
+        // the default gateway port (18789) instead.
+        let listening = tokio::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "(Get-NetTCPConnection -LocalPort 18789 -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count",
+            ])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .output()
             .await
-            .map_err(|e| format!("tasklist: {}", e))?;
-        let stdout = String::from_utf8_lossy(&tasklist.stdout);
-        if !stdout.contains("openclaw-gateway") {
+            .map_err(|e| format!("powershell: {}", e))?;
+        let count_str = String::from_utf8_lossy(&listening.stdout).trim().to_string();
+        let count: u32 = count_str.parse().unwrap_or(0);
+        if count == 0 {
             return Err("gateway not running".into());
         }
     }
@@ -1479,15 +1506,8 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
                     for fe in rd.filter_map(|e| e.ok()) {
                         let p = fe.path();
                         if p.extension().map_or(true, |ext| ext != "jsonl") { continue; }
-                        if let Ok(tail_out) = tokio::process::Command::new("tail")
-                            .args(["-5", &p.to_string_lossy()])
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::null())
-                            .output()
-                            .await
-                        {
-                            let tail_str = String::from_utf8_lossy(&tail_out.stdout);
-                            let lines: Vec<String> = tail_str.lines().map(|l| l.to_string()).collect();
+                        let lines = tail_lines_from_file(&p, 5);
+                        if !lines.is_empty() {
                             if let Some(fname) = p.file_name() {
                                 tails.insert(fname.to_string_lossy().to_string(), lines);
                             }
@@ -1506,17 +1526,8 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
                 .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
                 .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok())));
         let active = if let Some(f) = latest {
-            if let Ok(tail_out) = tokio::process::Command::new("tail")
-                .args(["-5", &f.path().to_string_lossy()])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output()
-                .await
-            {
-                let tail_str = String::from_utf8_lossy(&tail_out.stdout);
-                let lines: Vec<String> = tail_str.lines().map(|l| l.to_string()).collect();
-                check_agent_active_from_lines(&lines)
-            } else { false }
+            let lines = tail_lines_from_file(&f.path(), 5);
+            check_agent_active_from_lines(&lines)
         } else { false };
         agents.push(AgentHealth { agent_id, active, sessions: vec![] });
     }
@@ -3711,19 +3722,10 @@ async fn get_active_sessions(mode: Option<String>, url: Option<String>, token: O
                 active_keys.push(format!("{}:{}", agent_id, key));
                 continue;
             }
-            // Check 2: content-based — read last 5 lines via tail for efficiency
-            if let Ok(tail_out) = tokio::process::Command::new("tail")
-                .args(["-5", &file_path])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output()
-                .await
-            {
-                let tail_str = String::from_utf8_lossy(&tail_out.stdout);
-                let lines: Vec<String> = tail_str.lines().map(|l| l.to_string()).collect();
-                if check_agent_active_from_lines(&lines) {
-                    active_keys.push(format!("{}:{}", agent_id, key));
-                }
+            // Check 2: content-based — read last 5 lines for efficiency
+            let lines = tail_lines_from_file(std::path::Path::new(&file_path), 5);
+            if check_agent_active_from_lines(&lines) {
+                active_keys.push(format!("{}:{}", agent_id, key));
             }
         }
     }
