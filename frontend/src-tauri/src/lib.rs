@@ -5367,6 +5367,11 @@ fn process_claude_event(
         } else if hook_event == "Stop" || hook_event == "SubagentStop" || hook_event == "SessionEnd" {
             stop_session_file_watcher(&session_id);
         }
+    } else {
+        // Log parse failures — raw CC JSON (especially Stop events with last_assistant_message)
+        // can be large and may contain problematic characters.
+        let preview: String = buf.chars().take(200).collect();
+        log::warn!("[claude_event] JSON parse failed, len={}, preview={}", buf.len(), preview);
     }
 }
 
@@ -5425,9 +5430,26 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
                         let app = app.clone();
                         std::thread::spawn(move || {
                             use std::io::Read;
-                            let mut buf = String::new();
-                            let _ = s.read_to_string(&mut buf);
-                            process_claude_event(&buf, &state, &app);
+                            // Set a read timeout to prevent read_to_string from hanging
+                            // indefinitely if the client (PowerShell TcpClient.Dispose())
+                            // doesn't send FIN promptly on Windows.
+                            s.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                            let mut buf = Vec::new();
+                            let mut chunk = [0u8; 4096];
+                            loop {
+                                match s.read(&mut chunk) {
+                                    Ok(0) => break, // EOF
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                    Err(e) => {
+                                        // Timeout or other error — process whatever we have
+                                        if !buf.is_empty() { break; }
+                                        log::warn!("[claude_tcp] read error with empty buf: {}", e);
+                                        return;
+                                    }
+                                }
+                            }
+                            let text = String::from_utf8_lossy(&buf);
+                            process_claude_event(&text, &state, &app);
                         });
                     }
                     Err(e) => { log::error!("Claude TCP accept error: {}", e); }
