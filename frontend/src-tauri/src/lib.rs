@@ -363,6 +363,62 @@ pub struct HealthResult {
     pub agents: Vec<AgentHealth>,
 }
 
+/// Check whether the local OpenClaw gateway process is alive.
+///
+/// OpenClaw uses a lock file at `$TMPDIR/openclaw-<uid>/gateway.<hash>.lock`
+/// containing `{"pid": <n>, ...}`. When the gateway shuts down it deletes the
+/// lock file. If the file is missing or the PID inside is no longer running,
+/// the gateway is considered dead — meaning any "active" session state left in
+/// the JSONL files is stale and should be forced to inactive.
+fn is_openclaw_gateway_alive() -> bool {
+    // Build the lock directory: $TMPDIR/openclaw-<uid>
+    let tmp = std::env::temp_dir();
+    #[cfg(unix)]
+    let lock_dir = {
+        let uid = unsafe { libc::getuid() };
+        tmp.join(format!("openclaw-{}", uid))
+    };
+    #[cfg(windows)]
+    let lock_dir = tmp.join("openclaw");
+
+    // Look for any gateway.*.lock file in the lock directory
+    let rd = match std::fs::read_dir(&lock_dir) {
+        Ok(rd) => rd,
+        Err(_) => return false, // no lock dir → gateway not running
+    };
+    for entry in rd.filter_map(|e| e.ok()) {
+        let fname = entry.file_name();
+        let name = fname.to_string_lossy();
+        if !name.starts_with("gateway.") || !name.ends_with(".lock") {
+            continue;
+        }
+        // Read the lock file to extract the PID
+        if let Ok(contents) = std::fs::read_to_string(entry.path()) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(pid) = val["pid"].as_u64() {
+                    // Check if the process is still alive (kill -0)
+                    #[cfg(unix)]
+                    {
+                        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+                        if alive { return true; }
+                    }
+                    #[cfg(windows)]
+                    {
+                        // OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION
+                        // returns Ok(handle) if the process exists.
+                        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+                        if let Ok(handle) = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid as u32) } {
+                            let _ = unsafe { windows::Win32::Foundation::CloseHandle(handle) };
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Get the user home directory string in a cross-platform way.
 fn home_dir_string() -> String {
     dirs::home_dir()
