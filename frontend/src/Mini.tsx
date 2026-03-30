@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event'
 import { ChevronDown, Check, Loader2, Pen, Plus, X } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
+import { useTranslation } from 'react-i18next'
 import { SettingsTab } from './components/SettingsTab'
 import { AgentDetailView } from './components/AgentDetailView'
 import { CreateCharacterModal } from './components/CreateCharacterModal'
@@ -237,6 +238,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
   onDeleteChar?: (name: string) => void
   sourceLabel?: string
 }) {
+  const { t } = useTranslation()
   const [isEditing, setIsEditing] = useState(false)
   const charsWithMini = characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0)
   const charMeta = characters.find((c) => c.name === currentChar)
@@ -272,7 +274,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
           </div>
         </div>
         <div className="flex items-center gap-2 text-sm text-white/50 group-hover:text-white/80 transition-colors pr-2">
-          <span>{currentChar || '未分配'}</span>
+          <span>{currentChar || t('mini.unassigned')}</span>
           <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
         </div>
       </div>
@@ -295,7 +297,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                   <button
                     onClick={() => onOpenCreate()}
                     className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-white/5 text-white/60 hover:text-white hover:bg-white/10 border border-transparent"
-                    title="创建角色"
+                    title={t('mini.createChar')}
                   >
                     <Plus className="w-4 h-4" />
                   </button>
@@ -307,7 +309,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                       ? 'bg-red-500/20 text-red-400 border border-red-500/20'
                       : 'bg-white/5 text-white/60 hover:text-white hover:bg-white/10 border border-transparent'
                   }`}
-                  title={isEditing ? '完成' : '编辑'}
+                  title={isEditing ? t('common.done') : t('common.edit')}
                 >
                   {isEditing ? <Check className="w-4 h-4" /> : <Pen className="w-3.5 h-3.5" />}
                 </button>
@@ -332,7 +334,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                   }
                   return groups.map(({ ip, chars }) => (
                     <div key={ip} className="mb-3 last:mb-0">
-                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">{ip}</div>
+                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">{ip === '自定义' ? t('mini.custom') : ip === '其他' ? t('mini.other') : ip}</div>
                       <div className="grid grid-cols-3 gap-3">
                         {chars.map((c) => {
                           const isSelected = c.name === currentChar
@@ -475,6 +477,8 @@ export default function Mini() {
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
   const [moveMode, setMoveMode] = useState(false)
 
+  const { t } = useTranslation()
+
   // Bob animation (only when collapsed, avoid 60fps re-renders in settings mode)
   useEffect(() => {
     if (expanded) return
@@ -548,7 +552,7 @@ export default function Mini() {
           if (!oc) return // skip incomplete remote connections
           const agents = (await invoke('get_agents', oc)) as AgentInfo[]
           const prefix = multi ? `${conn.id.slice(0, 8)}:` : ''
-          const label = conn.type === 'local' ? '本地' : (conn.host || '远程')
+          const label = conn.type === 'local' ? t('mini.local') : (conn.host || t('mini.remote'))
           for (const a of agents) {
             const qualifiedId = prefix + a.id
             newConnMap.set(qualifiedId, oc)
@@ -1369,7 +1373,7 @@ export default function Mini() {
                         cursor: 'pointer', padding: '3px 8px',
                         borderRadius: 6, display: 'flex', alignItems: 'center', gap: 4,
                       }}>
-                      <span style={{ fontSize: 13 }}>&lsaquo;</span> 返回
+                      <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
                     </button>
                     {(['pairing', 'settings'] as const).map((nav) => (
                       <button key={nav} data-no-drag
@@ -1381,7 +1385,7 @@ export default function Mini() {
                           fontSize: 11, cursor: 'pointer', padding: '3px 10px',
                           borderRadius: 6, fontWeight: settingsNav === nav ? 600 : 400,
                         }}>
-                        {nav === 'pairing' ? '配对' : '设置'}
+                        {nav === 'pairing' ? t('mini.pairing') : t('mini.settings')}
                       </button>
                     ))}
                   </div>
@@ -1394,7 +1398,7 @@ export default function Mini() {
                       cursor: 'pointer', padding: '3px 8px',
                       borderRadius: 6, display: 'flex', alignItems: 'center', gap: 4,
                     }}>
-                    <span style={{ fontSize: 13 }}>&lsaquo;</span> Back
+                    <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
                   </button>
                 ) : (
                   <button data-no-drag
@@ -1406,7 +1410,7 @@ export default function Mini() {
                       transform: pinned ? 'rotate(0deg)' : 'rotate(45deg)',
                       transition: 'transform 0.2s, color 0.2s',
                     }}
-                    title={pinned ? '取消置顶' : '置顶'}
+                    title={pinned ? t('mini.unpin') : t('mini.pin')}
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill={pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M12 17v5"/>
@@ -1436,7 +1440,7 @@ export default function Mini() {
                       cursor: 'pointer', padding: '4px 6px', paddingTop: '5px',
                       position: 'relative',
                     }}
-                    title={soundEnabled ? '提示音: 开' : '提示音: 关'}
+                    title={soundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
                   >
                     <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
@@ -1453,7 +1457,7 @@ export default function Mini() {
                       color: 'rgba(255,255,255,0.35)', fontSize: 14,
                       cursor: 'pointer', padding: '4px 6px',
                     }}
-                    title="移动看板娘"
+                    title={t('mini.moveMascot')}
                   >
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><path d="M2 12h20"/><path d="M12 2v20"/>
@@ -1468,7 +1472,7 @@ export default function Mini() {
                       color: 'rgba(255,255,255,0.35)', fontSize: 14,
                       cursor: 'pointer', padding: '4px 6px',
                     }}
-                    title="设置"
+                    title={t('mini.settings')}
                   >&#9881;</button>
                 )}
                 <button data-no-drag
@@ -1489,15 +1493,15 @@ export default function Mini() {
                     <div className="h-full overflow-y-auto bg-[#151515] pt-6 px-6 pb-10 scrollbar-hidden">
                       <div className="max-w-3xl mx-auto">
                         <p className="text-sm text-white/50 mb-10">
-                          将 Agent 与角色配对，配对后 Mini 中会显示对应角色的 GIF 动画。
+                          {t('mini.pairingDesc')}
                         </p>
 
                         {/* System (看板娘) */}
                         <div className="mb-8">
-                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">看板娘</h2>
+                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">{t('mini.mascot')}</h2>
                           <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
                             <AgentAccordionItem
-                              agent={{ id: '__mini__', identityName: '看板娘' }}
+                              agent={{ id: '__mini__', identityName: t('mini.mascot') }}
                               characters={characters}
                               currentChar={miniChar?.name || ''}
                               isOpen={openAccordionId === '__mini__'}
@@ -1567,7 +1571,7 @@ export default function Mini() {
 
                         {agents.length > 0 && characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0).length < agents.length && (
                           <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
-                            角色数量不足，请先创建更多带 Mini 动画的角色。
+                            {t('mini.notEnoughChars')}
                           </div>
                         )}
                       </div>
@@ -1594,7 +1598,7 @@ export default function Mini() {
                     onMouseEnter={(e) => { e.currentTarget.style.color = '#f5c542'; e.currentTarget.style.transform = 'scale(1.04)'; e.currentTarget.style.letterSpacing = '0.3px' }}
                     onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.35)'; e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.letterSpacing = '0px' }}
                   >
-                    如果觉得有用，给我们一个 <span style={{ fontSize: 13, lineHeight: 1 }}>⭐</span> 吧
+                    {t('mini.starPrompt')} <span style={{ fontSize: 13, lineHeight: 1 }}>⭐</span> {t('mini.starPromptSuffix')}
                   </span>
                 </div>
               </div>
@@ -1625,7 +1629,7 @@ export default function Mini() {
                       }}
                     >
                       <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'rgba(255,255,255,0.4)' }} />
-                      <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11 }}>connecting...</span>
+                      <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11 }}>{t('mini.connecting')}</span>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -1658,7 +1662,7 @@ export default function Mini() {
                           />
                         ) : (
                           <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11 }}>
-                            waiting for agents...
+                            {t('mini.waitingForAgents')}
                           </span>
                         )}
                       </div>
@@ -1734,13 +1738,13 @@ export default function Mini() {
                       display: 'flex', flexDirection: 'column', gap: 6,
                       alignItems: 'center',
                     }}>
-                      {enableClaudeCode && <span>Send a message in Claude Code to start tracking</span>}
+                      {enableClaudeCode && <span>{t('mini.ccStartTracking')}</span>}
                       <span
                         data-no-drag
                         onClick={(e) => { e.stopPropagation(); enterSettings() }}
                         style={{ color: 'rgba(255,255,255,0.4)', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 2 }}
                       >
-                        Go to Settings to connect OpenClaw
+                        {t('mini.goToSettings')}
                       </span>
                     </div>
                   )}
@@ -1811,7 +1815,7 @@ export default function Mini() {
                                 }}
                                 onMouseEnter={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.5)'}
                                 onMouseLeave={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.15)'}
-                                title="移除"
+                                title={t('mini.remove')}
                               >×</button>
                             </div>
                           )
@@ -1856,7 +1860,7 @@ export default function Mini() {
                                   whiteSpace: 'nowrap', lineHeight: 1.5,
                                   marginTop: 1,
                                 }}>
-                                  {cs.tool ? `🔧 ${cs.tool}` : cs.status === 'stopped' ? 'idle' : cs.status === 'waiting' ? '⏳ waiting...' : cs.status === 'processing' ? 'thinking...' : cs.status === 'tool_running' ? 'working...' : cs.status === 'compacting' ? 'compacting...' : cs.status}
+                                  {cs.tool ? `🔧 ${cs.tool}` : cs.status === 'stopped' ? t('mini.idle') : cs.status === 'waiting' ? '⏳ ' + t('mini.waiting') : cs.status === 'processing' ? t('mini.thinking') : cs.status === 'tool_running' ? t('mini.working') : cs.status === 'compacting' ? t('mini.compacting') : cs.status}
                                   {cs.userPrompt ? ` · ${cs.userPrompt}` : ''}
                                 </div>
                               </div>
@@ -1870,7 +1874,7 @@ export default function Mini() {
                                 }}
                                 onMouseEnter={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.5)'}
                                 onMouseLeave={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.15)'}
-                                title="移除"
+                                title={t('mini.remove')}
                               >×</button>
                             </div>
                           )
@@ -1890,7 +1894,7 @@ export default function Mini() {
                 transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}>
                 {sessionMessages.length === 0 ? (
                   <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>
-                    loading...
+                    {t('common.loading')}
                   </div>
                 ) : (
                   <ChatList messages={sessionMessages} accentColor="#2ecc71" />
@@ -1906,7 +1910,7 @@ export default function Mini() {
                 transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}>
                 {claudeConversation.length === 0 ? (
                   <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>
-                    loading...
+                    {t('common.loading')}
                   </div>
                 ) : (
                   <ChatList messages={claudeConversation} accentColor="#007AFF" />

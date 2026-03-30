@@ -1,12 +1,15 @@
 ---
+import type { Lang } from '../i18n/index';
+
 interface Props {
   title: string;
   description?: string;
+  lang?: Lang;
 }
 
 import '../styles/global.css';
 
-const { title, description = 'A macOS menu bar desktop pet that monitors your AI coding agents in real time.' } = Astro.props;
+const { title, description = 'A desktop pet that monitors your AI coding agents in real time.', lang = 'en' } = Astro.props;
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 const ogImage = new URL('/app-icon.png', Astro.site);
 
@@ -18,7 +21,7 @@ const jsonLd = {
   url: canonicalURL.href,
   image: ogImage.href,
   applicationCategory: 'DeveloperApplication',
-  operatingSystem: 'macOS',
+  operatingSystem: 'macOS, Windows',
   offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
   author: { '@type': 'Person', name: 'rainnoon', url: 'https://github.com/rainnoon' },
   license: 'https://opensource.org/licenses/MIT',
@@ -26,7 +29,7 @@ const jsonLd = {
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang={lang}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />

@@ -1,7 +1,39 @@
+---
+import type { Lang } from '../i18n/index';
+
+interface Props {
+  lang?: Lang;
+}
+
+const { lang = 'en' } = Astro.props;
+const otherLang = lang === 'zh' ? 'en' : 'zh';
+const otherLabel = lang === 'zh' ? 'EN' : '中文';
+const switchHref = `/${otherLang}/`;
+---
+
 <nav>
-  <a href="/" class="logo">
+  <a href={`/${lang}/`} class="logo">
     <img src="/app-icon.png" alt="OC-Claw" class="logo-icon" />
     <span class="logo-label">OC-Claw</span>
   </a>
-  <a href="https://github.com/rainnoon/oc-claw" class="nav-link">GitHub</a>
+  <div class="nav-right">
+    <a href={switchHref} class="nav-link lang-switch">{otherLabel}</a>
+    <a href="https://github.com/rainnoon/oc-claw" class="nav-link">GitHub</a>
+  </div>
 </nav>
+
+<style>
+  .nav-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+  .lang-switch {
+    font-size: 0.85rem;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+  }
+  .lang-switch:hover {
+    opacity: 1;
+  }
+</style>

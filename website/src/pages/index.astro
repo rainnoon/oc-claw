@@ -1,12 +1,15 @@
 ---
-import Base from '../layouts/Base.astro';
-import Nav from '../components/Nav.astro';
-import Hero from '../components/Hero.astro';
-import Footer from '../components/Footer.astro';
+// Root page: redirect to /en/ or /zh/ based on browser language.
+// Since Astro is static, we use a client-side redirect.
 ---
 
-<Base title="OC-Claw — macOS Notch Desktop Pet for AI Agents" description="A macOS menu bar desktop pet that monitors your AI coding agents — OpenClaw and Claude Code — in real time.">
-  <Nav />
-  <Hero />
-  <Footer />
-</Base>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script is:inline>
+      const lang = navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+      window.location.replace('/' + lang + '/');
+    </script>
+    <meta http-equiv="refresh" content="0;url=/en/" />
+  </head>
+</html>

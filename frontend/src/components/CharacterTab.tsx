@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
 import { ChevronDown, Edit2, X, UploadCloud, Check } from 'lucide-react'
 import type { CharacterMeta, AgentInfo } from '../lib/types'
 import { getStore, loadCharacters, saveCharacters, getActiveCharacter, setActiveCharacter, fileToDataUrl, MINI_CATEGORIES, CUSTOM_ASSET_PREFIX, DEFAULT_CHAR_NAME } from '../lib/store'
 
 export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
+  const { t } = useTranslation()
   const [characters, setCharacters] = useState<CharacterMeta[]>([])
   const [active, setActive] = useState('')
 
@@ -122,7 +124,7 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
     const name = newName.trim()
     if (!name || workFiles.length === 0 || restFiles.length === 0) return
     if (characters.some((c) => c.name === name)) {
-      alert('角色名已存在，Pet GIF 将追加到该角色')
+      alert(t('character.charNameExists'))
     }
     setSaving(true)
     try {
@@ -148,7 +150,7 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
       await saveCharacters(updated)
       setCharacters(updated)
       setNewName(''); setWorkFiles([]); setRestFiles([]); setWorkPreviews([]); setRestPreviews([])
-    } catch (e: any) { alert('保存失败: ' + String(e)) }
+    } catch (e: any) { alert(t('character.saveFailed') + ' ' + String(e)) }
     setSaving(false)
   }
 
@@ -183,7 +185,7 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
       await saveCharacters(updated)
       setCharacters(updated)
       setMiniFiles([]); setMiniPreviews([])
-    } catch (e: any) { alert('保存失败: ' + String(e)) }
+    } catch (e: any) { alert(t('character.saveFailed') + ' ' + String(e)) }
     setMiniSaving(false)
   }
 
@@ -198,8 +200,8 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
           <section className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-semibold text-gray-900">追踪 Agent</h2>
-                <p className="text-xs text-gray-500 mt-1">桌宠状态和聊天将绑定此 Agent</p>
+                <h2 className="text-sm font-semibold text-gray-900">{t('character.trackAgent')}</h2>
+                <p className="text-xs text-gray-500 mt-1">{t('character.trackAgentDesc')}</p>
               </div>
               <AgentSelect
                 agents={agentList}
@@ -211,7 +213,7 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
 
           {/* Character Cards */}
           <section>
-            <h2 className="text-base font-semibold text-gray-900 mb-4">当前桌宠角色</h2>
+            <h2 className="text-base font-semibold text-gray-900 mb-4">{t('character.currentPetChar')}</h2>
             <div className="space-y-6">
               {charsWithPet.map((c) => (
                 <PetCharacterCard
@@ -228,23 +230,23 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
 
           {/* Upload Pet GIF */}
           <section>
-            <h2 className="text-base font-semibold text-gray-900 mb-4">上传 Pet GIF</h2>
+            <h2 className="text-base font-semibold text-gray-900 mb-4">{t('character.uploadPetGif')}</h2>
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
               <div className="space-y-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">角色名称</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">{t('character.charName')}</label>
                   <input
                     type="text"
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
-                    placeholder="例如: hutao"
+                    placeholder={t('character.charNamePlaceholder')}
                     className="w-full bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-2 focus:ring-gray-900/10 focus:border-gray-900 block p-2.5 outline-none transition-all placeholder:text-gray-400"
                   />
                 </div>
 
                 <div className="grid grid-cols-2 gap-6">
-                  <UploadZone label="工作 GIF" inputRef={workInputRef} previews={workPreviews} onFiles={handleWorkFiles} />
-                  <UploadZone label="休息 GIF" inputRef={restInputRef} previews={restPreviews} onFiles={handleRestFiles} />
+                  <UploadZone label={t('character.workGif')} inputRef={workInputRef} previews={workPreviews} onFiles={handleWorkFiles} />
+                  <UploadZone label={t('character.restGif')} inputRef={restInputRef} previews={restPreviews} onFiles={handleRestFiles} />
                 </div>
 
                 <div className="pt-2">
@@ -253,7 +255,7 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
                     disabled={saving || !newName.trim() || workFiles.length === 0 || restFiles.length === 0}
                     className="bg-gray-900 hover:bg-gray-800 text-white text-sm font-medium py-2.5 px-6 rounded-lg transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {saving ? '保存中...' : '上传文件'}
+                    {saving ? t('common.saving') : t('character.uploadFiles')}
                   </button>
                 </div>
               </div>
@@ -291,6 +293,7 @@ function PetCharacterCard({
   onDelete: () => void
   onDeleteGif: (charName: string, category: 'rest' | 'crawl', gifPath: string) => void
 }) {
+  const { t } = useTranslation()
   const [isEditing, setIsEditing] = useState(false)
 
   return (
@@ -303,7 +306,7 @@ function PetCharacterCard({
           <h3 className="text-sm font-semibold text-gray-900">{character.name}</h3>
           {isActive && (
             <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-600 border border-emerald-200/60">
-              使用中
+              {t('character.inUse')}
             </span>
           )}
         </div>
@@ -316,13 +319,13 @@ function PetCharacterCard({
                 : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
             }`}
           >
-            {isEditing ? <>完成</> : <><Edit2 size={12} /> 编辑图片</>}
+            {isEditing ? <>{t('common.done')}</> : <><Edit2 size={12} /> {t('character.editImages')}</>}
           </button>
           {!character.builtin && (
             <button
               onClick={(e) => { e.stopPropagation(); onDelete() }}
               className="text-gray-400 hover:text-red-500 transition-colors p-1"
-              title="删除角色"
+              title={t('character.deleteChar')}
             >
               <X size={16} />
             </button>
@@ -337,7 +340,7 @@ function PetCharacterCard({
           <StateGroup title="crawl" gifs={character.crawlGifs!} isEditing={isEditing} onDelete={(g) => onDeleteGif(character.name, 'crawl', g)} />
         )}
         {character.workGifs.length === 0 && character.restGifs.length === 0 && (
-          <div className="text-sm text-gray-400 text-center py-4">暂无图片</div>
+          <div className="text-sm text-gray-400 text-center py-4">{t('character.noImages')}</div>
         )}
       </div>
     </div>
@@ -349,6 +352,7 @@ function PetCharacterCard({
 function StateGroup({ title, gifs, isEditing, onDelete }: {
   title: string; gifs: string[]; isEditing: boolean; onDelete: (gifPath: string) => void
 }) {
+  const { t } = useTranslation()
   if (gifs.length === 0) return null
   return (
     <div>
@@ -368,7 +372,7 @@ function StateGroup({ title, gifs, isEditing, onDelete }: {
               <button
                 onClick={(e) => { e.stopPropagation(); onDelete(g) }}
                 className="absolute -top-2 -right-2 bg-red-500 text-white border-2 border-white hover:bg-red-600 rounded-full p-0.5 shadow-sm z-10 transition-transform hover:scale-110"
-                title="删除图片"
+                title={t('common.delete')}
               >
                 <X size={12} strokeWidth={3} />
               </button>
@@ -398,6 +402,7 @@ function MiniTabContent({
   onMiniUpload: () => void
   miniSaving: boolean
 }) {
+  const { t } = useTranslation()
   const [isEditing, setIsEditing] = useState(false)
   const [miniModeChar, setMiniModeChar] = useState('')
 
@@ -423,8 +428,8 @@ function MiniTabContent({
         <section className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-gray-900">Mini 模式角色</h2>
-              <p className="text-xs text-gray-500 mt-1">选择在屏幕顶部 Mini 小人中显示的角色</p>
+              <h2 className="text-sm font-semibold text-gray-900">{t('character.miniModeChar')}</h2>
+              <p className="text-xs text-gray-500 mt-1">{t('character.miniModeCharDesc')}</p>
             </div>
             <MiniCharSelect
               characters={characters}
@@ -437,7 +442,7 @@ function MiniTabContent({
 
       <section>
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-base font-semibold text-gray-900">公仔角色</h2>
+          <h2 className="text-base font-semibold text-gray-900">{t('character.characters')}</h2>
           <button
             onClick={() => setIsEditing(!isEditing)}
             className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
@@ -446,10 +451,10 @@ function MiniTabContent({
                 : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
             }`}
           >
-            {isEditing ? <>完成</> : <><Edit2 size={12} /> 编辑角色</>}
+            {isEditing ? <>{t('common.done')}</> : <><Edit2 size={12} /> {t('character.editChar')}</>}
           </button>
         </div>
-        {characters.length === 0 && <div className="text-gray-500 text-sm mb-6">暂无公仔角色，请上传。</div>}
+        {characters.length === 0 && <div className="text-gray-500 text-sm mb-6">{t('character.noCharacters')}</div>}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {characters.map((c) => (
             <MiniCharacterCard
@@ -465,22 +470,22 @@ function MiniTabContent({
 
       {/* Upload Mini GIF */}
       <section>
-        <h2 className="text-base font-semibold text-gray-900 mb-4">上传 Mini GIF</h2>
+        <h2 className="text-base font-semibold text-gray-900 mb-4">{t('character.uploadMiniGif')}</h2>
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">角色名称</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">{t('character.charName')}</label>
                 <input
                   type="text"
                   value={miniCharName}
                   onChange={(e) => setMiniCharName(e.target.value)}
-                  placeholder="例如: keli"
+                  placeholder={t('character.actionTypePlaceholder')}
                   className="w-full bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-2 focus:ring-gray-900/10 focus:border-gray-900 block p-2.5 outline-none transition-all placeholder:text-gray-400"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">动作种类</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">{t('character.actionType')}</label>
                 <div className="relative">
                   <select
                     value={miniCategory}
@@ -498,7 +503,7 @@ function MiniTabContent({
 
             <div>
               <input ref={miniInputRef} type="file" accept=".gif" multiple className="hidden" onChange={(e) => onMiniFiles(e.target.files)} />
-              <UploadZoneSimple label="选择 GIF 文件" onClick={() => miniInputRef.current?.click()} previews={miniPreviews} />
+              <UploadZoneSimple label={t('character.selectGifFile')} onClick={() => miniInputRef.current?.click()} previews={miniPreviews} />
             </div>
 
             <div className="pt-2">
@@ -507,7 +512,7 @@ function MiniTabContent({
                 disabled={miniSaving || !miniCharName.trim() || miniPreviews.length === 0}
                 className="bg-gray-900 hover:bg-gray-800 text-white text-sm font-medium py-2.5 px-6 rounded-lg transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {miniSaving ? '保存中...' : '上传'}
+                {miniSaving ? t('common.saving') : t('common.upload')}
               </button>
             </div>
           </div>
@@ -525,13 +530,14 @@ function MiniCharacterCard({ character, isEditing, onDeleteGif, onDeleteCharacte
   onDeleteGif: (charName: string, cat: string, gifPath: string) => void
   onDeleteCharacter: () => void
 }) {
+  const { t } = useTranslation()
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden relative group">
       {isEditing && !character.builtin && (
         <button
           onClick={() => onDeleteCharacter()}
           className="absolute top-3 right-3 text-gray-400 hover:text-red-500 z-10 transition-colors"
-          title="删除角色"
+          title={t('character.deleteChar')}
         >
           <X size={16} strokeWidth={2.5} />
         </button>
@@ -551,7 +557,7 @@ function MiniCharacterCard({ character, isEditing, onDeleteGif, onDeleteCharacte
           />
         ))}
         {(!character.miniActions || Object.keys(character.miniActions).length === 0) && (
-          <div className="text-sm text-gray-400 text-center py-4">暂无图片</div>
+          <div className="text-sm text-gray-400 text-center py-4">{t('character.noImages')}</div>
         )}
       </div>
     </div>
@@ -563,6 +569,7 @@ function MiniCharacterCard({ character, isEditing, onDeleteGif, onDeleteCharacte
 function MiniStateGroup({ title, gifs, isEditing, onDelete, allowDelete }: {
   title: string; gifs: string[]; isEditing: boolean; onDelete: (gifPath: string) => void; allowDelete: boolean
 }) {
+  const { t } = useTranslation()
   if (gifs.length === 0) return null
   return (
     <div>
@@ -582,7 +589,7 @@ function MiniStateGroup({ title, gifs, isEditing, onDelete, allowDelete }: {
               <button
                 onClick={() => onDelete(g)}
                 className="absolute -top-1.5 -right-1.5 bg-red-500 text-white border border-white rounded-full p-0.5 shadow-sm z-10 hover:scale-110 hover:bg-red-600 transition-all"
-                title="删除图片"
+                title={t('common.delete')}
               >
                 <X size={10} strokeWidth={3} />
               </button>
@@ -602,6 +609,7 @@ function UploadZone({ label, inputRef, previews, onFiles }: {
   previews: string[]
   onFiles: (files: FileList | null) => void
 }) {
+  const { t } = useTranslation()
   return (
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-2">{label}</label>
@@ -621,8 +629,8 @@ function UploadZone({ label, inputRef, previews, onFiles }: {
             <div className="p-3 bg-white rounded-full shadow-sm border border-gray-100 mb-3 group-hover:scale-105 transition-transform">
               <UploadCloud size={20} className="text-gray-400 group-hover:text-gray-600" />
             </div>
-            <span className="text-sm text-gray-600 font-medium">点击或拖拽文件到此处</span>
-            <span className="text-xs text-gray-400 mt-1">支持 GIF 格式，最大 5MB</span>
+            <span className="text-sm text-gray-600 font-medium">{t('character.clickOrDrag')}</span>
+            <span className="text-xs text-gray-400 mt-1">{t('character.gifFormat')}</span>
           </>
         )}
       </div>
@@ -635,6 +643,7 @@ function UploadZone({ label, inputRef, previews, onFiles }: {
 function UploadZoneSimple({ label, onClick, previews }: {
   label: string; onClick: () => void; previews: string[]
 }) {
+  const { t } = useTranslation()
   return (
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-2">{label}</label>
@@ -653,8 +662,8 @@ function UploadZoneSimple({ label, onClick, previews }: {
             <div className="p-3 bg-white rounded-full shadow-sm border border-gray-100 mb-3 group-hover:scale-105 transition-transform">
               <UploadCloud size={20} className="text-gray-400 group-hover:text-gray-600" />
             </div>
-            <span className="text-sm text-gray-600 font-medium">点击或拖拽文件到此处</span>
-            <span className="text-xs text-gray-400 mt-1">支持 GIF 格式，最大 5MB</span>
+            <span className="text-sm text-gray-600 font-medium">{t('character.clickOrDrag')}</span>
+            <span className="text-xs text-gray-400 mt-1">{t('character.gifFormat')}</span>
           </>
         )}
       </div>
@@ -669,6 +678,7 @@ function MiniCharSelect({ characters, value, onChange }: {
   value: string
   onChange: (name: string) => void
 }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -687,7 +697,7 @@ function MiniCharSelect({ characters, value, onChange }: {
   }
 
   const options = [
-    { name: '', label: '自动选择', gif: undefined as string | undefined },
+    { name: '', label: t('character.autoSelect'), gif: undefined as string | undefined },
     ...characters.map((c) => ({ name: c.name, label: c.name, gif: getPreviewGif(c) })),
   ]
   const selected = options.find((o) => o.name === value) || options[0]
@@ -739,6 +749,7 @@ function AgentSelect({ agents, value, onChange }: {
   value: string
   onChange: (agentId: string) => void
 }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -751,7 +762,7 @@ function AgentSelect({ agents, value, onChange }: {
   }, [])
 
   const allOptions = [
-    { id: 'main', emoji: '', name: 'main', label: '默认' },
+    { id: 'main', emoji: '', name: 'main', label: t('common.default') },
     ...agents.filter((a) => a.id !== 'main').map((a) => ({
       id: a.id,
       emoji: a.identityEmoji || '',

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { X, Upload, ExternalLink, Loader2 } from 'lucide-react'
@@ -52,6 +53,7 @@ interface RowData {
 }
 
 export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
+  const { t } = useTranslation()
   const [step, setStep] = useState<'upload' | 'processing' | 'tuning'>('upload')
   const [name, setName] = useState('')
   const [rows, setRows] = useState<RowData[]>([])
@@ -138,7 +140,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
       const fileName = filePath.split('/').pop() || 'image.png'
       processFile(new File([bytes], fileName, { type: mime }))
     } catch {
-      setError('无法读取拖拽的文件')
+      setError(t('createChar.cantReadFile'))
       setStep('upload')
     }
   }, [pipeline, processFile])
@@ -203,7 +205,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
   const handleSave = useCallback(async () => {
     if (!name.trim() || !pipeline) return
     if (existingNames.includes(name.trim())) {
-      setError('角色名已存在，请换一个名字')
+      setError(t('createChar.nameExists'))
       return
     }
     setSaving(true)
@@ -248,7 +250,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
       <div className="bg-[#141414] border border-white/10 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]" onMouseDown={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-white/5 shrink-0">
-          <h3 className="text-lg font-medium text-white">创建新角色</h3>
+          <h3 className="text-lg font-medium text-white">{t('createChar.title')}</h3>
           <button onClick={onClose} className="text-white/50 hover:text-white transition-colors">
             <X className="w-5 h-5" />
           </button>
@@ -262,16 +264,16 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
               <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-2 text-white/90 font-medium text-sm">
                   <span className="flex items-center justify-center w-5 h-5 rounded-full bg-white/10 text-xs font-mono">1</span>
-                  前往 Gemini 生成角色精灵图
+                  {t('createChar.step1Title')}
                 </div>
                 <p className="text-xs text-white/50 pl-7">
-                  使用 Google Gemini 生成角色精灵图。
+                  {t('createChar.step1Desc')}
                 </p>
                 <button
                   onClick={() => invoke('open_url', { url: 'https://gemini.google.com/gem/f30e7b9be50d' })}
                   className="ml-7 inline-flex items-center gap-1.5 text-xs bg-white/10 hover:bg-white/20 text-white/80 w-fit px-3 py-1.5 rounded-lg transition-colors mt-1 border border-white/5"
                 >
-                  打开 Gemini <ExternalLink className="w-3 h-3" />
+                  {t('createChar.openGemini')} <ExternalLink className="w-3 h-3" />
                 </button>
               </div>
 
@@ -279,7 +281,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
               <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-2 text-white/90 font-medium text-sm">
                   <span className="flex items-center justify-center w-5 h-5 rounded-full bg-white/10 text-xs font-mono">2</span>
-                  上传图片进行自动切分
+                  {t('createChar.step2Title')}
                 </div>
                 <label
                   className={`mt-2 ml-7 flex flex-col items-center justify-center h-40 border-2 border-dashed rounded-xl transition-all cursor-pointer group ${
@@ -293,9 +295,9 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
                 >
                   <Upload className={`w-8 h-8 mb-3 transition-colors ${isDragging ? 'text-blue-400' : 'text-white/30 group-hover:text-white/60'}`} />
                   <span className={`text-sm transition-colors ${isDragging ? 'text-blue-400' : 'text-white/50 group-hover:text-white/80'}`}>
-                    {isDragging ? '松开以上传图片' : '点击或拖拽上传图片'}
+                    {isDragging ? t('createChar.dropToUpload') : t('createChar.clickOrDragUpload')}
                   </span>
-                  <span className="text-xs text-white/30 mt-1">支持 PNG, JPG, WEBP</span>
+                  <span className="text-xs text-white/30 mt-1">{t('createChar.supportFormats')}</span>
                   <input type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
                 </label>
               </div>
@@ -310,8 +312,8 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
             <div className="flex flex-col items-center justify-center h-64 gap-4">
               <Loader2 className="w-10 h-10 text-white/80 animate-spin" />
               <div className="flex flex-col items-center gap-1">
-                <span className="text-white/80 font-medium">正在处理图像...</span>
-                <span className="text-xs text-white/40">识别动作帧并生成 GIF 中</span>
+                <span className="text-white/80 font-medium">{t('createChar.processing')}</span>
+                <span className="text-xs text-white/40">{t('createChar.processingDesc')}</span>
               </div>
             </div>
           )}
@@ -320,12 +322,12 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
             <div className="flex flex-col gap-6">
               {/* Name */}
               <div className="flex flex-col gap-2">
-                <label className="text-sm text-white/80 font-medium">角色名称</label>
+                <label className="text-sm text-white/80 font-medium">{t('createChar.charName')}</label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="输入角色名称..."
+                  placeholder={t('createChar.charNamePlaceholder')}
                   list="char-name-list-modal"
                   className="bg-black/50 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
                 />
@@ -337,8 +339,8 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
               {/* Row previews with offset controls */}
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between">
-                  <label className="text-sm text-white/80 font-medium">微调动作帧</label>
-                  <span className="text-xs text-white/40">如果自动切分有偏移，请调整 X/Y 坐标</span>
+                  <label className="text-sm text-white/80 font-medium">{t('createChar.tunFrames')}</label>
+                  <span className="text-xs text-white/40">{t('createChar.tuneDesc')}</span>
                 </div>
 
                 <div className={`grid gap-4`} style={{ gridTemplateColumns: `repeat(${Math.min(rows.filter(r => r.label !== 'unused').length, 3)}, 1fr)` }}>
@@ -393,20 +395,20 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
                 onClick={() => { setStep('upload'); setRows([]); setError('') }}
                 className="px-4 py-2 rounded-lg text-sm font-medium text-white/60 hover:text-white hover:bg-white/5 transition-colors"
               >
-                重新上传
+                {t('createChar.reUpload')}
               </button>
               <button
                 onClick={onClose}
                 className="px-4 py-2 rounded-lg text-sm font-medium text-white/60 hover:text-white hover:bg-white/5 transition-colors"
               >
-                取消
+                {t('common.cancel')}
               </button>
               <button
                 onClick={handleSave}
                 disabled={!name.trim() || saving}
                 className="px-6 py-2 rounded-lg text-sm font-medium bg-white text-black hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {saving ? '保存中...' : '保存角色'}
+                {saving ? t('common.saving') : t('createChar.saveChar')}
               </button>
             </div>
           </div>

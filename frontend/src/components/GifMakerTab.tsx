@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
 import { Image as ImageIcon, Loader2 } from 'lucide-react'
 import {
@@ -40,6 +41,7 @@ function AnimPreview({ frames, offsets, fps, size = 80 }: {
 }
 
 export function GifMakerTab() {
+  const { t } = useTranslation()
   const [charName, setCharName] = useState('')
   const [pipelineId, setPipelineId] = useState<string | null>(null)
   const [pipelines, setPipelines] = useState<PipelineConfig[]>([])
@@ -217,7 +219,7 @@ export function GifMakerTab() {
   }, [])
 
   const handleSaveAll = useCallback(async () => {
-    if (!charName.trim()) { setSaveMsg('Please enter character name'); return }
+    if (!charName.trim()) { setSaveMsg(t('gifMaker.enterCharName')); return }
     if (!pipeline) return
     setSaving(true); setSaveMsg('')
     let totalSaved = 0
@@ -239,7 +241,7 @@ export function GifMakerTab() {
 
   const handleSaveItem = useCallback(async (idx: number) => {
     const item = items[idx]
-    if (!item || item.status !== 'ready' || !charName.trim()) { setSaveMsg('请输入角色名称'); return }
+    if (!item || item.status !== 'ready' || !charName.trim()) { setSaveMsg(t('gifMaker.enterCharName')); return }
     setSaving(true); setSaveMsg('')
     try {
       const gifs = await exportItemGifs(item)
@@ -255,7 +257,7 @@ export function GifMakerTab() {
 
   const handleSaveRow = useCallback(async (idx: number, ri: number) => {
     const item = items[idx]
-    if (!item || item.status !== 'ready' || !charName.trim()) { setSaveMsg('请输入角色名称'); return }
+    if (!item || item.status !== 'ready' || !charName.trim()) { setSaveMsg(t('gifMaker.enterCharName')); return }
     const frames = item.rowGroups[ri]
     if (!frames?.length) return
     setSaving(true); setSaveMsg('')
@@ -302,20 +304,20 @@ export function GifMakerTab() {
                   type={showKey ? 'text' : 'password'}
                   value={geminiKey}
                   onChange={async (e) => { setGeminiKey(e.target.value); const store = await getStore(); await store.set('gemini_api_key', e.target.value); await store.save() }}
-                  placeholder="填入你的 Gemini API Key"
+                  placeholder={t('gifMaker.fillApiKey')}
                   className="flex-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-400 font-mono"
                 />
                 <button onClick={() => setShowKey(!showKey)} className="px-2 py-1.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg">
-                  {showKey ? '隐藏' : '显示'}
+                  {showKey ? t('common.hide') : t('common.show')}
                 </button>
               </div>
             </div>
             <div className="min-w-0" style={{ width: 220 }}>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Base URL <span className="text-gray-400">(可选)</span></label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Base URL <span className="text-gray-400">{t('gifMaker.optional')}</span></label>
               <input
                 value={geminiUrl}
                 onChange={async (e) => { setGeminiUrl(e.target.value); const store = await getStore(); await store.set('gemini_base_url', e.target.value); await store.save() }}
-                placeholder="默认 Google 官方"
+                placeholder={t('gifMaker.defaultGoogle')}
                 className="w-full px-3 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-400 font-mono"
               />
             </div>
@@ -326,18 +328,18 @@ export function GifMakerTab() {
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">角色名称</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">{t('gifMaker.charName')}</label>
               <input
                 value={charName}
                 onChange={(e) => setCharName(e.target.value)}
-                placeholder="例如: hutao"
+                placeholder={t('gifMaker.charNamePlaceholder')}
                 list="char-name-list-gm"
                 className="w-full bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-2 focus:ring-gray-900/10 focus:border-gray-900 block p-2.5 outline-none transition-all placeholder:text-gray-400"
               />
               <datalist id="char-name-list-gm">{characters.map((n) => <option key={n} value={n} />)}</datalist>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">参考图</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">{t('gifMaker.referenceImage')}</label>
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-lg bg-gray-100 border border-gray-200 flex items-center justify-center overflow-hidden">
                   {referencePreview ? (
@@ -351,7 +353,7 @@ export function GifMakerTab() {
                   onClick={() => fileInputRef.current?.click()}
                   className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium py-2 px-4 rounded-lg transition-colors shadow-sm"
                 >
-                  {referencePreview ? '重新选择' : '选择文件'}
+                  {referencePreview ? t('gifMaker.reselect') : t('gifMaker.selectFile')}
                 </button>
               </div>
             </div>
@@ -368,7 +370,7 @@ export function GifMakerTab() {
                 disabled={!charName.trim() || started}
                 className="bg-gray-900 hover:bg-gray-800 text-white text-sm font-medium py-2 px-6 rounded-lg transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {started ? 'AI 生成中...' : `AI 生成 (${pipeline.presets.length} presets)`}
+                {started ? t('gifMaker.aiGenerating') : `${t('gifMaker.aiGenerate')} (${pipeline.presets.length} presets)`}
               </button>
             )}
             {items.some(it => it.status !== 'idle') && (
@@ -420,6 +422,7 @@ function PipelineCard({ item, idx, pipeline, fps, onUpdate, onRetry, onUpload, o
   onUpload: (idx: number, file: File) => void
   onSaveItem: (idx: number) => void; onSaveRow: (idx: number, ri: number) => void
 }) {
+  const { t } = useTranslation()
   const uploadRef = useRef<HTMLInputElement>(null)
   const isWholeMode = pipeline?.exportMode !== 'by-row'
 
@@ -470,10 +473,10 @@ function PipelineCard({ item, idx, pipeline, fps, onUpdate, onRetry, onUpload, o
     : item.status === 'idle' ? 'bg-gray-100 text-gray-500'
     : 'bg-blue-50 text-blue-500'
 
-  const statusLabel = item.status === 'idle' ? 'Waiting'
-    : item.status === 'generating' ? 'AI Generating...'
-    : item.status === 'processing' ? 'Processing...'
-    : item.status === 'ready' ? 'Ready' : 'Error'
+  const statusLabel = item.status === 'idle' ? t('gifMaker.statusWaiting')
+    : item.status === 'generating' ? t('gifMaker.statusGenerating')
+    : item.status === 'processing' ? t('gifMaker.statusProcessing')
+    : item.status === 'ready' ? t('gifMaker.statusReady') : t('gifMaker.statusError')
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden outline-none" tabIndex={0} onKeyDown={handleKeyDown}>
@@ -486,19 +489,19 @@ function PipelineCard({ item, idx, pipeline, fps, onUpdate, onRetry, onUpload, o
         <div className="flex gap-2 items-center">
           {item.status === 'ready' && (
             <button onClick={() => onSaveItem(idx)} className="bg-gray-900 hover:bg-gray-800 text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-colors shadow-sm">
-              保存
+              {t('common.save')}
             </button>
           )}
           <input ref={uploadRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(idx, f); e.target.value = '' }} />
-          <button onClick={() => uploadRef.current?.click()} className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-medium py-1.5 px-3 rounded-lg transition-colors shadow-sm" title="复制提示词到 ChatGPT/Gemini 等网站生成图片，再上传到这里">
-            上传图片
+          <button onClick={() => uploadRef.current?.click()} className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-medium py-1.5 px-3 rounded-lg transition-colors shadow-sm" title={t('gifMaker.uploadHint')}>
+            {t('gifMaker.uploadImage')}
           </button>
           <button onClick={togglePrompt} className={`bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-medium py-1.5 px-3 rounded-lg transition-colors shadow-sm ${showPrompt ? 'ring-1 ring-gray-900/10' : ''}`}>
-            提示词
+            {t('gifMaker.prompt')}
           </button>
           {(item.status === 'ready' || item.status === 'error') && (
             <button onClick={() => onRetry(idx)} className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-medium py-1.5 px-3 rounded-lg transition-colors shadow-sm">
-              重试
+              {t('common.retry')}
             </button>
           )}
           <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${statusClass}`}>{statusLabel}</span>
@@ -515,7 +518,7 @@ function PipelineCard({ item, idx, pipeline, fps, onUpdate, onRetry, onUpload, o
       {/* Idle hint */}
       {item.status === 'idle' && (
         <div className="px-6 py-3 text-[11px] text-gray-400">
-          点击「提示词」查看生成要求，复制到 ChatGPT / Gemini / Midjourney 等平台生成图片后上传
+          {t('gifMaker.idleHint')}
         </div>
       )}
 
@@ -528,7 +531,7 @@ function PipelineCard({ item, idx, pipeline, fps, onUpdate, onRetry, onUpload, o
       {(item.status === 'generating' || item.status === 'processing') && (
         <div className="p-6 flex items-center gap-2 text-blue-500 text-sm">
           <Loader2 className="w-4 h-4 animate-spin" />
-          {item.status === 'generating' ? 'AI Generating...' : 'Processing frames...'}
+          {item.status === 'generating' ? t('gifMaker.statusGenerating') : t('gifMaker.processingFrames')}
         </div>
       )}
 
@@ -556,7 +559,7 @@ function PipelineCard({ item, idx, pipeline, fps, onUpdate, onRetry, onUpload, o
               <AnimPreview frames={item.rowGroups[0]} offsets={getRowOffsets(0)} fps={fps} size={120} />
               <span className="text-[10px] text-gray-500">{item.rowGroups[0].length} frames</span>
               <button onClick={() => onSaveRow(idx, 0)} className="bg-gray-900 hover:bg-gray-800 text-white text-[10px] font-medium py-1 px-2.5 rounded-md transition-colors shadow-sm ml-auto">
-                保存
+                {t('common.save')}
               </button>
             </div>
           )}
@@ -588,8 +591,8 @@ function PipelineCard({ item, idx, pipeline, fps, onUpdate, onRetry, onUpload, o
                       </div>
                       <button onClick={() => onSaveRow(idx, ri)} className="bg-gray-900 hover:bg-gray-800 text-white text-[10px] font-medium py-1 px-2.5 rounded-md transition-colors shadow-sm ml-auto shrink-0">
                         {pipeline?.id === 'top'
-                          ? `保存为 ${item.rowLabels[ri] || `row-${ri}`}.gif`
-                          : '保存'}
+                          ? t('gifMaker.saveAs', { label: item.rowLabels[ri] || `row-${ri}` })
+                          : t('common.save')}
                       </button>
                     </div>
                   </div>

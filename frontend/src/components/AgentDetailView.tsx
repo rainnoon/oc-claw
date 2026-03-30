@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import type { AgentMetrics } from '../lib/types'
 import { formatTokens, formatTime, formatDuration } from '../lib/agents'
@@ -12,6 +13,7 @@ interface AgentDetailViewProps {
 type ChartMode = 'calls' | 'tokens'
 
 function DailyChart({ extraInfo }: { extraInfo: { daily_counts: { date: string; count: number; tokens: number }[] } }) {
+  const { t } = useTranslation()
   const [mode, setMode] = useState<ChartMode>('calls')
   const counts = extraInfo.daily_counts
   const todayEntry = counts[counts.length - 1]
@@ -21,7 +23,7 @@ function DailyChart({ extraInfo }: { extraInfo: { daily_counts: { date: string; 
   const chartH = 80
 
   const scale = !isCalls && maxVal >= 1_000_000 ? 1_000_000 : !isCalls && maxVal >= 1_000 ? 1_000 : 1
-  const unitLabel = isCalls ? '次数' : scale === 1_000_000 ? 'M tokens' : scale === 1_000 ? 'K tokens' : 'tokens'
+  const unitLabel = isCalls ? t('agentDetail.callsUnit') : scale === 1_000_000 ? 'M tokens' : scale === 1_000 ? 'K tokens' : 'tokens'
   const fmtTick = (v: number) => {
     if (isCalls) return String(v)
     const n = v / scale
@@ -33,7 +35,7 @@ function DailyChart({ extraInfo }: { extraInfo: { daily_counts: { date: string; 
     <div className="flex flex-col gap-4 bg-white/[0.03] border border-white/5 rounded-2xl p-4">
       <div className="flex items-center justify-between">
         <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">
-          {isCalls ? '每日调用' : '每日 Token'} (近14天)
+          {isCalls ? t('agentDetail.dailyCalls') : t('agentDetail.dailyTokens')} ({t('agentDetail.last14Days')})
         </span>
         <div className="flex bg-white/[0.08] rounded p-0.5">
           {(['calls', 'tokens'] as const).map((m) => (
@@ -42,14 +44,14 @@ function DailyChart({ extraInfo }: { extraInfo: { daily_counts: { date: string; 
               onClick={() => setMode(m)}
               className={`text-[10px] px-2 py-0.5 rounded transition-colors ${mode === m ? 'bg-white/15 text-white font-semibold' : 'text-white/40'}`}
             >
-              {m === 'calls' ? '调用' : 'Token'}
+              {m === 'calls' ? t('agentDetail.calls') : t('agentDetail.token')}
             </button>
           ))}
         </div>
       </div>
       <div className="flex items-center justify-end">
         <span className="text-xs font-medium text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded-md">
-          今天 {isCalls ? `${todayEntry?.count ?? 0} 次` : formatTokens(todayEntry?.tokens ?? 0)}
+          {t('agentDetail.today')} {isCalls ? `${todayEntry?.count ?? 0} ${t('agentDetail.times')}` : formatTokens(todayEntry?.tokens ?? 0)}
         </span>
       </div>
       <div className="bg-white/[0.04] rounded-lg p-2 pt-1">
@@ -67,7 +69,7 @@ function DailyChart({ extraInfo }: { extraInfo: { daily_counts: { date: string; 
               const v = values[i]
               const h = Math.max(2, Math.round((v / maxVal) * (chartH - 6)))
               const isToday = d.date === new Date().toISOString().slice(0, 10)
-              const tip = isCalls ? `${d.date}: ${d.count} 次` : `${d.date}: ${formatTokens(d.tokens)}`
+              const tip = isCalls ? `${d.date}: ${d.count} ${t('agentDetail.times')}` : `${d.date}: ${formatTokens(d.tokens)}`
               return (
                 <div key={d.date} className="flex-1 flex flex-col items-center group" title={tip}>
                   <div
@@ -93,10 +95,11 @@ function DailyChart({ extraInfo }: { extraInfo: { daily_counts: { date: string; 
 }
 
 export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewProps) {
+  const { t } = useTranslation()
   if (!metrics) {
     return (
       <div className="flex items-center justify-center py-20 text-white/30 text-sm">
-        loading...
+        {t('common.loading')}
       </div>
     )
   }
@@ -111,7 +114,7 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
         <div className="flex flex-col gap-4">
           <div className="flex items-center justify-between">
             <div className="flex flex-col">
-              <h1 className="text-lg font-semibold text-white tracking-tight">{agent?.identityName || agent?.id || '未知'}</h1>
+              <h1 className="text-lg font-semibold text-white tracking-tight">{agent?.identityName || agent?.id || t('common.unknown')}</h1>
               {metrics.channel && <span className="text-xs text-white/40">via {metrics.channel}</span>}
             </div>
             <span className={`px-2.5 py-1 rounded-full text-xs font-medium border flex items-center gap-1.5 ${
@@ -120,14 +123,14 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
                 : 'bg-white/5 text-white/50 border-white/10'
             }`}>
               <span className={`w-1.5 h-1.5 rounded-full ${metrics.active ? 'bg-emerald-400 animate-pulse' : 'bg-white/30'}`} />
-              {metrics.active ? '工作中' : '空闲'}
+              {metrics.active ? t('agentDetail.working') : t('agentDetail.idleStatus')}
             </span>
           </div>
 
           {metrics.currentTask && (
             <div className="bg-white/[0.03] border border-white/5 rounded-2xl p-4 flex flex-col gap-2 relative overflow-hidden group">
               <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-              <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider relative z-10">当前任务</span>
+              <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider relative z-10">{t('agentDetail.currentTask')}</span>
               <div className="text-sm text-white/90 leading-relaxed relative z-10 markdown-content">
                 <ReactMarkdown>{metrics.currentTask}</ReactMarkdown>
               </div>
@@ -138,7 +141,7 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
         {/* Recent Activity */}
         {metrics.recentActions && metrics.recentActions.length > 0 && (
           <div className="flex flex-col gap-3">
-            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider px-1">最近动态</span>
+            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider px-1">{t('agentDetail.recentActivity')}</span>
             <div className="bg-[#0a0a0a] border border-white/5 rounded-2xl p-4 flex flex-col gap-4 font-mono text-xs">
               {metrics.recentActions.slice(0, 5).map((action, i) => (
                 <div key={i} className="flex items-start gap-3 opacity-80 hover:opacity-100 transition-opacity">
@@ -157,7 +160,7 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
         <div className="grid grid-cols-2 gap-3">
           {/* Tokens */}
           <div className="bg-white/[0.03] border border-white/5 rounded-2xl p-4 flex flex-col gap-1 hover:bg-white/[0.05] transition-colors">
-            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">消耗 (Tokens)</span>
+            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">{t('agentDetail.tokensUsed')}</span>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-2xl font-semibold text-white tracking-tight">{totalTokensStr}</span>
             </div>
@@ -166,14 +169,14 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
 
           {/* Session */}
           <div className="bg-white/[0.03] border border-white/5 rounded-2xl p-4 flex flex-col gap-1 hover:bg-white/[0.05] transition-colors">
-            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">会话状态</span>
+            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">{t('agentDetail.sessionStatus')}</span>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="text-2xl font-semibold text-white tracking-tight">{metrics.messageCount}</span>
-              <span className="text-xs text-white/40">消息</span>
+              <span className="text-xs text-white/40">{t('agentDetail.messages')}</span>
             </div>
             <div className="flex items-center gap-3 mt-1 text-xs text-white/40">
-              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-400" /> {metrics.activeSessionCount} 活跃</span>
-              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-red-400" /> {metrics.errorCount} 错误</span>
+              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-400" /> {metrics.activeSessionCount} {t('agentDetail.active')}</span>
+              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-red-400" /> {metrics.errorCount} {t('agentDetail.error')}</span>
             </div>
           </div>
         </div>
@@ -181,15 +184,15 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
         {/* Model Details */}
         <div className="flex flex-col gap-3 bg-white/[0.03] border border-white/5 rounded-2xl p-4 hover:bg-white/[0.05] transition-colors">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">模型</span>
-            <span className="text-xs font-medium text-white/70">{metrics.currentModel || '未知'}</span>
+            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">{t('agentDetail.model')}</span>
+            <span className="text-xs font-medium text-white/70">{metrics.currentModel || t('common.unknown')}</span>
           </div>
           <div className="grid grid-cols-4 gap-2 text-xs mt-1">
             {([
-              ['输入', metrics.inputTokens],
-              ['输出', metrics.outputTokens],
-              ['缓存读', metrics.cacheReadTokens],
-              ['缓存写', metrics.cacheWriteTokens],
+              [t('agentDetail.input'), metrics.inputTokens],
+              [t('agentDetail.output'), metrics.outputTokens],
+              [t('agentDetail.cacheRead'), metrics.cacheReadTokens],
+              [t('agentDetail.cacheWrite'), metrics.cacheWriteTokens],
             ] as [string, number][]).map(([label, val]) => (
               <div key={label} className="flex flex-col gap-1">
                 <span className="text-white/40 text-[10px]">{label}</span>
@@ -202,7 +205,7 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
         {/* Tools Distribution */}
         {metrics.toolCalls && metrics.toolCalls.length > 0 && (
           <div className="flex flex-col gap-3">
-            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider px-1">工具使用分布</span>
+            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider px-1">{t('agentDetail.toolDistribution')}</span>
             <div className="flex flex-col gap-2.5 bg-white/[0.02] border border-white/5 rounded-2xl p-4">
               {metrics.toolCalls.slice(0, 8).map(tool => {
                 const maxCount = metrics.toolCalls[0].count
@@ -227,7 +230,7 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
         {/* Skills */}
         {extraInfo?.skills?.length > 0 && (
           <div className="flex flex-col gap-3">
-            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider px-1">已加载技能 (Skills)</span>
+            <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider px-1">{t('agentDetail.loadedSkills')}</span>
             <div className="flex flex-wrap gap-1.5">
               {extraInfo.skills.map((skill: string) => (
                 <span key={skill} className="bg-white/5 hover:bg-white/10 transition-colors text-white/60 px-2.5 py-1 rounded-md text-[11px] font-mono border border-white/5">

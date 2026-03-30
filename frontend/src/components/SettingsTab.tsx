@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { Loader2, Check, ChevronDown, Copy, Plus, Trash2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
+import { useTranslation } from 'react-i18next'
 import { getStore, loadOcConnections, saveOcConnections } from '../lib/store'
 import type { OcConnection } from '../lib/types'
 
@@ -45,6 +46,7 @@ function CopyCode({ text }: { text: string }) {
 }
 
 function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcConnection; onUpdate: (c: OcConnection) => void; onDelete: () => void; disableLocal?: boolean }) {
+  const { t } = useTranslation()
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
   const [testMsg, setTestMsg] = useState('')
@@ -68,15 +70,15 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
         let keyInfo = ''
         try {
           const key = await invoke('get_ssh_key_info', { sshHost: conn.host, sshUser: conn.user }) as string | null
-          if (key) keyInfo = ` · 密钥: ${key}`
+          if (key) keyInfo = ` · ${t('settings.key')} ${key}`
         } catch {}
-        setTestMsg(`${result.length} 个 agent${keyInfo}`)
+        setTestMsg(`${result.length} ${t('settings.agents')}${keyInfo}`)
       } else {
         const store = await getStore()
         const agentId = ((await store.get('tracked_agent')) as string) || 'main'
         const result: any = await invoke('get_status', { gatewayUrl: 'http://localhost:4446', token: '', agentId })
         if (cancelledRef.current) return
-        setTestMsg(`${result.sessions.length} 个 session`)
+        setTestMsg(`${result.sessions.length} ${t('settings.sessions')}`)
       }
       setTestResult('success')
       setTimeout(() => setTestResult(null), 3000)
@@ -104,22 +106,22 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
-            {(['local', 'remote'] as const).map((t) => {
+            {(['local', 'remote'] as const).map((typ) => {
               // Only one local connection allowed across all connections
-              const disabled = t === 'local' && disableLocal && conn.type !== 'local'
+              const disabled = typ === 'local' && disableLocal && conn.type !== 'local'
               return (
                 <button
-                  key={t}
-                  onClick={() => !disabled && onUpdate({ ...conn, type: t })}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === t ? 'bg-white/10 text-white' : disabled ? 'text-white/15 cursor-not-allowed' : 'text-white/40 hover:text-white/60'}`}
+                  key={typ}
+                  onClick={() => !disabled && onUpdate({ ...conn, type: typ })}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === typ ? 'bg-white/10 text-white' : disabled ? 'text-white/15 cursor-not-allowed' : 'text-white/40 hover:text-white/60'}`}
                 >
-                  {t === 'local' ? '本地' : '远程'}
+                  {typ === 'local' ? t('settings.local') : t('settings.remote')}
                 </button>
               )
             })}
           </div>
           <span className="text-xs text-white/30">
-            {conn.type === 'local' ? '~/.openclaw' : conn.host ? `${conn.user || 'root'}@${conn.host}` : '未配置'}
+            {conn.type === 'local' ? '~/.openclaw' : conn.host ? `${conn.user || 'root'}@${conn.host}` : t('settings.notConfigured')}
           </span>
         </div>
         <button onClick={onDelete} className="p-1.5 text-white/20 hover:text-red-400 transition-colors rounded-lg hover:bg-red-500/10">
@@ -140,7 +142,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
                 type="text"
                 value={conn.user || ''}
                 onChange={(e) => onUpdate({ ...conn, user: e.target.value })}
-                placeholder="用户名"
+                placeholder={t('settings.username')}
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
@@ -151,7 +153,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
                 type="text"
                 value={conn.host || ''}
                 onChange={(e) => onUpdate({ ...conn, host: e.target.value })}
-                placeholder="服务器地址"
+                placeholder={t('settings.serverAddress')}
                 className="flex-1 bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
               />
             </div>
@@ -160,7 +162,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
               className="flex items-center gap-1 text-xs text-white/40 hover:text-white/60 transition-colors w-fit"
             >
               <ChevronDown className={`w-3 h-3 transition-transform ${showGuide ? 'rotate-0' : '-rotate-90'}`} />
-              如何连接远程服务器？
+              {t('settings.howToConnect')}
             </button>
             <AnimatePresence>
               {showGuide && (
@@ -171,16 +173,16 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
                   className="overflow-hidden"
                 >
                   <div className="bg-white/[0.03] border border-white/5 rounded-lg p-3 flex flex-col gap-2 text-xs text-white/50 leading-relaxed">
-                    <p className="text-white/70 font-medium">前置条件</p>
-                    <p>远程服务器需安装 OpenClaw 并运行 Gateway</p>
-                    <p className="text-white/70 font-medium pt-1">步骤</p>
-                    <p>1. 生成本地 SSH 密钥（如果没有）</p>
+                    <p className="text-white/70 font-medium">{t('settings.prerequisites')}</p>
+                    <p>{t('settings.prerequisitesDesc')}</p>
+                    <p className="text-white/70 font-medium pt-1">{t('settings.steps')}</p>
+                    <p>{t('settings.step1')}</p>
                     <CopyCode text="ssh-keygen -t ed25519" />
-                    <p>2. 将公钥复制到远程服务器</p>
+                    <p>{t('settings.step2')}</p>
                     <CopyCode text="ssh-copy-id -i ~/.ssh/id_ed25519.pub 用户名@xx.xx.xx.xx" />
-                    <p>3. 验证免密登录</p>
+                    <p>{t('settings.step3')}</p>
                     <CopyCode text={`ssh 用户名@xx.xx.xx.xx "echo ok"`} />
-                    <p>4. 填入用户名和服务器地址，点击「测试」</p>
+                    <p>{t('settings.step4')}</p>
                   </div>
                 </motion.div>
               )}
@@ -196,24 +198,24 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
           className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-white transition-colors flex items-center gap-1.5 disabled:opacity-50"
         >
           {testing && <Loader2 className="w-3 h-3 animate-spin" />}
-          测试
+          {t('common.test')}
         </button>
         {testing && (
           <button
             onClick={cancelTest}
             className="px-3 py-1.5 bg-white/5 hover:bg-red-500/20 border border-white/10 rounded-lg text-xs font-medium text-white/50 hover:text-red-400 transition-colors"
           >
-            取消
+            {t('common.cancel')}
           </button>
         )}
         {testResult === 'success' && (
           <span className="text-xs text-emerald-400 flex items-center gap-1">
-            <Check className="w-3 h-3" /> 成功 {testMsg && `· ${testMsg}`}
+            <Check className="w-3 h-3" /> {t('common.success')} {testMsg && `· ${testMsg}`}
           </span>
         )}
         {testResult === 'error' && (
           <div className="text-xs text-red-400 w-full">
-            <span>失败</span>
+            <span>{t('common.failed')}</span>
             <pre className="mt-1 p-2 bg-red-500/10 border border-red-500/20 rounded-lg whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto font-mono text-[11px] leading-relaxed select-text">
               {testMsg}
             </pre>
@@ -225,6 +227,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
 }
 
 export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void }) {
+  const { t, i18n } = useTranslation()
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
@@ -254,12 +257,12 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
       setUpdateInfo(info)
       if (showFeedback) {
         setUpdateCheckResult('success')
-        setUpdateCheckMsg(info.hasUpdate ? `发现新版本 v${info.latest}` : '当前已是最新版本')
+        setUpdateCheckMsg(info.hasUpdate ? `${t('settings.newVersionFound')} v${info.latest}` : t('settings.alreadyLatest'))
       }
     } catch (e: any) {
       if (showFeedback) {
         setUpdateCheckResult('error')
-        setUpdateCheckMsg(`检查失败：${String(e)}`)
+        setUpdateCheckMsg(`${t('settings.checkFailed')}${String(e)}`)
       }
     } finally {
       setUpdateChecking(false)
@@ -388,9 +391,9 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
     if (val) {
       try {
         await invoke('install_claude_hooks')
-        setHookStatus('Hook 已安装')
+        setHookStatus(t('settings.hookInstalled'))
       } catch (e: any) {
-        setHookStatus(`安装失败: ${String(e)}`)
+        setHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
       }
     }
   }
@@ -400,18 +403,18 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
       {/* OpenClaw 连接 */}
       <section className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-medium text-white">OpenClaw 连接</h2>
+          <h2 className="text-lg font-medium text-white">{t('settings.ocConnections')}</h2>
           <button
             onClick={addConnection}
             className="flex items-center gap-1 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-white transition-colors"
           >
-            <Plus className="w-3 h-3" /> 添加
+            <Plus className="w-3 h-3" /> {t('common.add')}
           </button>
         </div>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden divide-y divide-white/5">
           {connections.length === 0 ? (
             <div className="text-center text-white/30 py-8 text-sm">
-              暂无连接，点击「添加」来连接 OpenClaw 实例
+              {t('settings.noConnections')}
             </div>
           ) : (
             connections.map((conn, idx) => (
@@ -433,8 +436,8 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
           <div className="flex items-center justify-between p-4">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">启用 Claude Code</span>
-              <span className="text-xs text-white/40">通过 Hook 监听本地 Claude Code 会话</span>
+              <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeCode')}</span>
+              <span className="text-xs text-white/40">{t('settings.enableClaudeCodeDesc')}</span>
               {hookStatus && <span className="text-xs text-white/30 mt-1">{hookStatus}</span>}
             </div>
             <Toggle checked={enableClaudeCode} onChange={toggleClaudeCode} />
@@ -444,12 +447,12 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
 
       {/* 显示设置 */}
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">显示</h2>
+        <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">看板娘位置</span>
-              <span className="text-xs text-white/40">看板娘在刘海的哪一侧</span>
+              <span className="text-sm font-medium text-white/90">{t('settings.mascotPosition')}</span>
+              <span className="text-xs text-white/40">{t('settings.mascotPositionDesc')}</span>
             </div>
             <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
               {(['left', 'right'] as const).map((s) => (
@@ -458,23 +461,23 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                   onClick={() => onChangeMascotPosition(s)}
                   className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${mascotPosition === s ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
                 >
-                  {s === 'left' ? '居左' : '居右'}
+                  {s === 'left' ? t('settings.left') : t('settings.right')}
                 </button>
               ))}
             </div>
           </div>
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">关闭睡眠动画</span>
-              <span className="text-xs text-white/40">看板娘空闲时显示静态画面</span>
+              <span className="text-sm font-medium text-white/90">{t('settings.disableSleepAnim')}</span>
+              <span className="text-xs text-white/40">{t('settings.disableSleepAnimDesc')}</span>
             </div>
             <Toggle checked={disableSleepAnim} onChange={onToggleSleepAnim} />
           </div>
           {/* Background picker with crop preview */}
           <div className="p-4">
             <div className="flex flex-col gap-1 mb-3">
-              <span className="text-sm font-medium text-white/90">岛屿背景</span>
-              <span className="text-xs text-white/40">选择或上传背景图片，拖动选择裁剪区域</span>
+              <span className="text-sm font-medium text-white/90">{t('settings.islandBg')}</span>
+              <span className="text-xs text-white/40">{t('settings.islandBgDesc')}</span>
             </div>
 
             {/* Background thumbnails */}
@@ -561,12 +564,12 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
 
       {/* 提示音 */}
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">提示音</h2>
+        <h2 className="text-lg font-medium text-white">{t('settings.sound')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">完成提示音</span>
-              <span className="text-xs text-white/40">任务完成时播放的提示音</span>
+              <span className="text-sm font-medium text-white/90">{t('settings.completionSound')}</span>
+              <span className="text-xs text-white/40">{t('settings.completionSoundDesc')}</span>
             </div>
             <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
               {(['default', 'manbo'] as const).map((s) => (
@@ -575,15 +578,15 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                   onClick={() => onChangeNotifySound(s)}
                   className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${notifySound === s ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
                 >
-                  {s === 'default' ? '默认' : '曼波'}
+                  {s === 'default' ? t('settings.defaultSound') : t('settings.manboSound')}
                 </button>
               ))}
             </div>
           </div>
           <div className="flex items-center justify-between p-4">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">等待时提示音</span>
-              <span className="text-xs text-white/40">Claude Code 等待用户确认时播放提示音</span>
+              <span className="text-sm font-medium text-white/90">{t('settings.waitingSound')}</span>
+              <span className="text-xs text-white/40">{t('settings.waitingSoundDesc')}</span>
             </div>
             <Toggle checked={waitingSound} onChange={onToggleWaitingSound} />
           </div>
@@ -592,16 +595,16 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
 
       {/* 关于 */}
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">关于</h2>
+        <h2 className="text-lg font-medium text-white">{t('settings.about')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
           <div className="flex items-center justify-between p-4">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">当前版本</span>
+              <span className="text-sm font-medium text-white/90">{t('settings.currentVersion')}</span>
               <span className="text-xs text-white/40">
                 {updateInfo ? `v${updateInfo.current}` : '...'}
-                {updateInfo && !updateInfo.hasUpdate && ' (Latest)'}
+                {updateInfo && !updateInfo.hasUpdate && ` (${t('settings.latest')})`}
                 {updateInfo?.hasUpdate && (
-                  <span className="ml-2 text-emerald-400">v{updateInfo.latest} 可用</span>
+                  <span className="ml-2 text-emerald-400">v{updateInfo.latest} {t('settings.available')}</span>
                 )}
               </span>
               {updateCheckResult === 'success' && updateCheckMsg && (
@@ -639,32 +642,32 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                   onClick={async () => {
                     setUpdating(true)
                     setUpdateProgress(0)
-                    setUpdateProgressMsg('准备下载更新')
+                    setUpdateProgressMsg(t('settings.preparingDownload'))
                     setUpdateRunResult(null)
                     setUpdateRunMsg('')
                     try {
                       await invoke('run_update', { dmgUrl: updateInfo?.url || '' })
                       setUpdateRunResult('success')
-                      setUpdateRunMsg('下载完成，正在退出并安装更新')
+                      setUpdateRunMsg(t('settings.downloadComplete'))
                       window.setTimeout(() => {
                         void invoke('exit_app').catch((e: any) => {
                           setUpdating(false)
                           setUpdateRunResult('error')
-                          setUpdateRunMsg(`退出失败：${String(e)}`)
+                          setUpdateRunMsg(`${t('settings.exitFailed')}${String(e)}`)
                         })
                       }, 600)
                     } catch (e: any) {
                       setUpdateProgress(null)
                       setUpdateProgressMsg('')
                       setUpdateRunResult('error')
-                      setUpdateRunMsg(`更新失败：${String(e)}`)
+                      setUpdateRunMsg(`${t('settings.updateFailed')}${String(e)}`)
                       setUpdating(false)
                     }
                   }}
                   disabled={updating}
                   className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                 >
-                  {updating ? '更新中...' : '立即更新'}
+                  {updating ? t('settings.updating') : t('settings.updateNow')}
                 </button>
               )}
               <button
@@ -672,20 +675,44 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                 disabled={updateChecking}
                 className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50"
               >
-                {updateChecking ? '检查中...' : '检查更新'}
+                {updateChecking ? t('settings.checking') : t('settings.checkUpdate')}
               </button>
             </div>
           </div>
         </div>
       </section>
 
-      {/* 退出 */}
+      {/* Language selector */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-white">{t('settings.language')}</h2>
+        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.language')}</span>
+              <span className="text-xs text-white/40">{t('settings.languageDesc')}</span>
+            </div>
+            <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
+              {(['zh', 'en'] as const).map((lng) => (
+                <button
+                  key={lng}
+                  onClick={() => { i18n.changeLanguage(lng); localStorage.setItem('oc-claw-lang', lng) }}
+                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${i18n.language === lng ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
+                >
+                  {lng === 'zh' ? t('settings.langZh') : t('settings.langEn')}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Exit app */}
       <section className="pt-4">
         <button
           onClick={() => invoke('exit_app').catch(() => {})}
           className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 rounded-xl text-sm font-medium transition-colors"
         >
-          退出应用
+          {t('settings.exitApp')}
         </button>
       </section>
     </div>
