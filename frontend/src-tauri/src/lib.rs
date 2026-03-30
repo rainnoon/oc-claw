@@ -3932,9 +3932,7 @@ async fn get_session_messages(agent_id: String, session_key: String, mode: Optio
                 } else {
                     let cleaned = strip_brackets(&text);
                     if cleaned.is_empty() { continue; }
-                    if cleaned.chars().count() > 500 {
-                        format!("{}...", cleaned.chars().take(500).collect::<String>())
-                    } else { cleaned }
+                    cleaned
                 };
                 messages.push(ChatMessage { role: role.to_string(), text: clean_text, timestamp: ts });
             }
@@ -3972,10 +3970,7 @@ async fn get_session_messages(agent_id: String, session_key: String, mode: Optio
                     .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
                     .unwrap_or_default()
             });
-            let truncated = if content.chars().count() > 500 {
-                format!("{}...", content.chars().take(500).collect::<String>())
-            } else { content };
-            messages.push(ChatMessage { role: role.to_string(), text: truncated, timestamp: ts });
+            messages.push(ChatMessage { role: role.to_string(), text: content, timestamp: ts });
         }
         return Ok(messages);
     }
@@ -4029,12 +4024,7 @@ async fn get_session_messages(agent_id: String, session_key: String, mode: Optio
         } else {
             let cleaned = strip_brackets(&text);
             if cleaned.is_empty() { continue; }
-            if cleaned.chars().count() > 500 {
-                let s: String = cleaned.chars().take(500).collect();
-                format!("{}...", s)
-            } else {
-                cleaned
-            }
+            cleaned
         };
 
         messages.push(ChatMessage {
