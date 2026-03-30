@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+
+#[cfg(target_os = "windows")]
+static FULLSCREEN_HIDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use percent_encoding::percent_decode_str;
 
 /// Per-host SSH backoff state.
@@ -58,26 +61,256 @@ use tauri::{
 #[cfg(unix)]
 use libc;
 
-/// Fix PATH for macOS GUI apps which only get /usr/bin:/bin:/usr/sbin:/sbin.
-/// openclaw is a Node.js script installed via pnpm, so both `openclaw` and `node`
-/// must be reachable via PATH.
-fn fix_path() {
-    for shell in ["/bin/zsh", "/bin/bash"] {
-        if let Ok(output) = std::process::Command::new(shell)
-            .args(["-lic", "echo $PATH"])
-            .output()
-        {
-            if output.status.success() {
-                let shell_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !shell_path.is_empty() {
-                    std::env::set_var("PATH", &shell_path);
-                    log::info!("[fix_path] PATH set to: {}", &shell_path);
-                    return;
-                }
+/// Apply CREATE_NO_WINDOW on Windows to prevent console popups from child processes.
+#[cfg(windows)]
+fn hide_window_cmd(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// Apply CREATE_NO_WINDOW on Windows to prevent console popups (tokio version).
+#[cfg(windows)]
+fn hide_window_tokio_cmd(cmd: &mut tokio::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+// ---------------------------------------------------------------------------
+// Windows SSH multiplexer — a persistent `ssh -T` subprocess per host
+// that serialises commands over stdin/stdout, avoiding the per-exec overhead
+// of a full TCP+SSH handshake (Windows lacks ControlMaster).
+// ---------------------------------------------------------------------------
+#[cfg(windows)]
+mod win_ssh_mux {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::process::{Child, Command};
+    use tokio::sync::Mutex as TokioMutex;
+
+    struct MuxChild {
+        stdin: tokio::process::ChildStdin,
+        stdout: BufReader<tokio::process::ChildStdout>,
+        child: Child,
+    }
+
+    // One multiplexed SSH session per user@host.
+    // The TokioMutex serialises commands so marker boundaries never interleave.
+    static MUX_SESSIONS: OnceLock<Mutex<HashMap<String, Arc<TokioMutex<Option<MuxChild>>>>>> =
+        OnceLock::new();
+
+    fn mux_map() -> &'static Mutex<HashMap<String, Arc<TokioMutex<Option<MuxChild>>>>> {
+        MUX_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn session_lock(host_key: &str) -> Arc<TokioMutex<Option<MuxChild>>> {
+        let mut map = mux_map().lock().unwrap();
+        map.entry(host_key.to_string())
+            .or_insert_with(|| Arc::new(TokioMutex::new(None)))
+            .clone()
+    }
+
+    /// Spawn the persistent SSH process if it isn't already running.
+    pub async fn ensure(ssh_user: &str, ssh_host: &str) -> Result<(), String> {
+        let host_key = format!("{}@{}", ssh_user, ssh_host);
+        let lock = session_lock(&host_key);
+        let mut guard = lock.lock().await;
+
+        // Already running and alive?
+        if let Some(ref mut m) = *guard {
+            if m.child.try_wait().ok().flatten().is_none() {
+                return Ok(());
+            }
+            // Process exited — fall through and respawn.
+        }
+
+        let mut cmd = Command::new("ssh");
+        cmd.args([
+                "-T",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "-o", "ServerAliveInterval=15",
+                "-o", "ServerAliveCountMax=3",
+                &host_key,
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        super::hide_window_tokio_cmd(&mut cmd);
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("ssh mux spawn: {}", e))?;
+
+        let stdin = child.stdin.take().ok_or("ssh mux: no stdin")?;
+        let stdout = child.stdout.take().ok_or("ssh mux: no stdout")?;
+        let reader = BufReader::new(stdout);
+
+        *guard = Some(MuxChild { stdin, stdout: reader, child });
+
+        // Validate the connection with a quick echo test.
+        drop(guard);
+        match exec_inner(ssh_user, ssh_host, "echo __oc_mux_ready__").await {
+            Ok(out) if out.contains("__oc_mux_ready__") => Ok(()),
+            Ok(out) => {
+                kill(ssh_user, ssh_host).await;
+                Err(format!("ssh mux validation unexpected output: {}", out))
+            }
+            Err(e) => {
+                kill(ssh_user, ssh_host).await;
+                Err(format!("ssh mux validation failed: {}", e))
             }
         }
     }
-    log::warn!("[fix_path] could not get PATH from login shell");
+
+    /// Send `cmd` through the persistent session and collect its stdout + exit code.
+    pub async fn exec(ssh_user: &str, ssh_host: &str, cmd: &str) -> Result<String, String> {
+        exec_inner(ssh_user, ssh_host, cmd).await
+    }
+
+    async fn exec_inner(ssh_user: &str, ssh_host: &str, cmd: &str) -> Result<String, String> {
+        let host_key = format!("{}@{}", ssh_user, ssh_host);
+        let lock = session_lock(&host_key);
+        let mut guard = lock.lock().await;
+        let mux = guard.as_mut().ok_or_else(|| "ssh mux: not connected".to_string())?;
+
+        // Check the process is still alive.
+        if mux.child.try_wait().ok().flatten().is_some() {
+            *guard = None;
+            return Err("ssh mux: process exited".to_string());
+        }
+
+        // Unique marker that cannot appear in normal command output.
+        let marker = format!("__OCCLAW_{}__", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+
+        // Wrap the command so we can capture its exit code after a unique delimiter.
+        // The shell on the remote side will:
+        //   1. Run cmd, capturing exit code in __ec
+        //   2. Print a blank line + the marker + exit_code on one line
+        let wrapped = format!(
+            "{cmd}\n__ec=$?\necho \"\"\necho \"{marker} $__ec\"\n",
+            cmd = cmd,
+            marker = marker,
+        );
+
+        mux.stdin
+            .write_all(wrapped.as_bytes())
+            .await
+            .map_err(|e| format!("ssh mux write: {}", e))?;
+        mux.stdin.flush().await.map_err(|e| format!("ssh mux flush: {}", e))?;
+
+        // Read lines until we see the marker.
+        let mut output = String::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let exit_code: i32;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                // Subprocess may be hung — kill and return error.
+                *guard = None;
+                return Err("ssh mux: command timed out after 30s".to_string());
+            }
+
+            let mut line = String::new();
+            let read_result = tokio::time::timeout(remaining, mux.stdout.read_line(&mut line)).await;
+
+            match read_result {
+                Ok(Ok(0)) => {
+                    // EOF — the SSH process died.
+                    *guard = None;
+                    return Err("ssh mux: connection lost (EOF)".to_string());
+                }
+                Ok(Ok(_)) => {
+                    if let Some(rest) = line.trim().strip_prefix(&marker) {
+                        exit_code = rest.trim().parse().unwrap_or(-1);
+                        break;
+                    }
+                    output.push_str(&line);
+                }
+                Ok(Err(e)) => {
+                    *guard = None;
+                    return Err(format!("ssh mux read: {}", e));
+                }
+                Err(_) => {
+                    *guard = None;
+                    return Err("ssh mux: command timed out after 30s".to_string());
+                }
+            }
+        }
+
+        if exit_code == 0 {
+            Ok(output)
+        } else if exit_code == 255 {
+            // Transport-level failure — mark session dead so it respawns.
+            *guard = None;
+            Err(format!("ssh mux transport error (exit 255)"))
+        } else {
+            Err(format!("ssh cmd failed [exit {}]\nstdout: {}", exit_code, output.trim()))
+        }
+    }
+
+    /// Kill the persistent subprocess for a given host.
+    pub async fn kill(ssh_user: &str, ssh_host: &str) {
+        let host_key = format!("{}@{}", ssh_user, ssh_host);
+        let lock = session_lock(&host_key);
+        let mut guard = lock.lock().await;
+        if let Some(ref mut m) = *guard {
+            let _ = m.child.kill().await;
+        }
+        *guard = None;
+    }
+
+    /// Kill all persistent subprocesses.
+    pub async fn kill_all() {
+        let keys: Vec<String> = {
+            mux_map().lock().unwrap().keys().cloned().collect()
+        };
+        for key in keys {
+            let lock = session_lock(&key);
+            let mut guard = lock.lock().await;
+            if let Some(ref mut m) = *guard {
+                let _ = m.child.kill().await;
+            }
+            *guard = None;
+        }
+    }
+}
+
+/// Fix PATH for macOS GUI apps which only get /usr/bin:/bin:/usr/sbin:/sbin.
+/// openclaw is a Node.js script installed via pnpm, so both `openclaw` and `node`
+/// must be reachable via PATH.
+/// On Windows, GUI apps inherit the full user PATH, so no fix is needed.
+fn fix_path() {
+    #[cfg(target_os = "macos")]
+    {
+        for shell in ["/bin/zsh", "/bin/bash"] {
+            if let Ok(output) = std::process::Command::new(shell)
+                .args(["-lic", "echo $PATH"])
+                .output()
+            {
+                if output.status.success() {
+                    let shell_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !shell_path.is_empty() {
+                        std::env::set_var("PATH", &shell_path);
+                        log::info!("[fix_path] PATH set to: {}", &shell_path);
+                        return;
+                    }
+                }
+            }
+        }
+        log::warn!("[fix_path] could not get PATH from login shell");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Windows GUI apps inherit the full user/system PATH from the registry.
+        // No fix needed — openclaw and node should be reachable if installed.
+        log::info!("[fix_path] Windows: using inherited PATH");
+    }
 }
 
 /// Managed state: tracks the PID of the currently running `openclaw agent` subprocess.
@@ -130,63 +363,164 @@ pub struct HealthResult {
     pub agents: Vec<AgentHealth>,
 }
 
+/// Get the user home directory string in a cross-platform way.
+fn home_dir_string() -> String {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            #[cfg(unix)]
+            { std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()) }
+            #[cfg(windows)]
+            { std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into()) }
+        })
+}
+
 /// Returns the full set of open .jsonl file paths across all agents.
+/// On macOS/Linux: uses `lsof +D` to detect open files.
+/// On Windows: falls back to checking file modification time (recent = active).
 async fn lsof_open_jsonl_paths() -> std::collections::HashSet<String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let agents_dir = format!("{}/.openclaw/agents", home);
-    let lsof_bin = if std::path::Path::new("/usr/sbin/lsof").exists() { "/usr/sbin/lsof" } else { "lsof" };
-    let Ok(output) = tokio::process::Command::new(lsof_bin)
-        .args(["+D", &agents_dir])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await
-    else { return std::collections::HashSet::new() };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.lines()
-        .filter(|l| l.contains(".jsonl"))
-        .filter_map(|l| l.split_whitespace().last().map(|s| s.to_string()))
-        .collect()
+    #[cfg(unix)]
+    {
+        let home = home_dir_string();
+        let agents_dir = format!("{}/.openclaw/agents", home);
+        let lsof_bin = if std::path::Path::new("/usr/sbin/lsof").exists() { "/usr/sbin/lsof" } else { "lsof" };
+        let Ok(output) = tokio::process::Command::new(lsof_bin)
+            .args(["+D", &agents_dir])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .await
+        else { return std::collections::HashSet::new() };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.lines()
+            .filter(|l| l.contains(".jsonl"))
+            .filter_map(|l| l.split_whitespace().last().map(|s| s.to_string()))
+            .collect()
+    }
+    #[cfg(windows)]
+    {
+        // Windows fallback: find .jsonl files modified in the last 5 seconds
+        // (indicates an active agent writing to them)
+        let home = home_dir_string();
+        let agents_dir = PathBuf::from(&home).join(".openclaw").join("agents");
+        let mut result = std::collections::HashSet::new();
+        let now = SystemTime::now();
+        if let Ok(agents) = std::fs::read_dir(&agents_dir) {
+            for agent_entry in agents.flatten() {
+                let sessions_dir = agent_entry.path().join("sessions");
+                if let Ok(files) = std::fs::read_dir(&sessions_dir) {
+                    for file_entry in files.flatten() {
+                        let path = file_entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                            if let Ok(meta) = path.metadata() {
+                                if let Ok(modified) = meta.modified() {
+                                    if now.duration_since(modified).unwrap_or_default().as_secs() < 5 {
+                                        result.insert(path.to_string_lossy().to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+}
+
+/// Read the last `n` lines of a file using pure Rust (Windows replacement for `tail -n`
+/// which is not available on Windows).
+#[cfg(windows)]
+fn tail_lines_from_file(path: &std::path::Path, n: usize) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else { return vec![] };
+    let Ok(meta) = file.metadata() else { return vec![] };
+    let len = meta.len();
+    // Read up to 8KB from the end — more than enough for a handful of JSONL lines
+    let read_size = std::cmp::min(len, 8192) as usize;
+    let _ = file.seek(SeekFrom::End(-(read_size as i64)));
+    let mut buf = vec![0u8; read_size];
+    let Ok(bytes_read) = file.read(&mut buf) else { return vec![] };
+    let text = String::from_utf8_lossy(&buf[..bytes_read]);
+    let all_lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    if all_lines.len() <= n {
+        all_lines
+    } else {
+        all_lines[all_lines.len() - n..].to_vec()
+    }
 }
 
 /// Single `lsof +D` over the entire agents dir → set of active agent directory names.
 /// A .jsonl being held open by a process = that agent is working.
+/// On Windows: uses file modification time heuristic instead of lsof.
 async fn lsof_active_agents() -> std::collections::HashSet<String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let agents_dir = format!("{}/.openclaw/agents", home);
-    let mut active = std::collections::HashSet::new();
+    #[cfg(unix)]
+    {
+        let home = home_dir_string();
+        let agents_dir = format!("{}/.openclaw/agents", home);
+        let mut active = std::collections::HashSet::new();
 
-    // Use full path for lsof (macOS: /usr/sbin/lsof)
-    let lsof_bin = if std::path::Path::new("/usr/sbin/lsof").exists() {
-        "/usr/sbin/lsof"
-    } else {
-        "lsof"
-    };
+        let lsof_bin = if std::path::Path::new("/usr/sbin/lsof").exists() {
+            "/usr/sbin/lsof"
+        } else {
+            "lsof"
+        };
 
-    let Ok(output) = tokio::process::Command::new(lsof_bin)
-        .args(["+D", &agents_dir])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await
-    else {
-        return active;
-    };
+        let Ok(output) = tokio::process::Command::new(lsof_bin)
+            .args(["+D", &agents_dir])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .await
+        else {
+            return active;
+        };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let prefix = ".openclaw/agents/";
-    for line in stdout.lines() {
-        if !line.contains(".jsonl") {
-            continue;
-        }
-        if let Some(idx) = line.find(prefix) {
-            let rest = &line[idx + prefix.len()..];
-            if let Some(slash) = rest.find('/') {
-                active.insert(rest[..slash].to_string());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let prefix = ".openclaw/agents/";
+        for line in stdout.lines() {
+            if !line.contains(".jsonl") {
+                continue;
+            }
+            if let Some(idx) = line.find(prefix) {
+                let rest = &line[idx + prefix.len()..];
+                if let Some(slash) = rest.find('/') {
+                    active.insert(rest[..slash].to_string());
+                }
             }
         }
+        active
     }
-    active
+    #[cfg(windows)]
+    {
+        // Windows: find agent directories that have recently modified .jsonl files
+        let home = home_dir_string();
+        let agents_dir = PathBuf::from(&home).join(".openclaw").join("agents");
+        let mut active = std::collections::HashSet::new();
+        let now = SystemTime::now();
+        if let Ok(agents) = std::fs::read_dir(&agents_dir) {
+            for agent_entry in agents.flatten() {
+                let agent_name = agent_entry.file_name().to_string_lossy().to_string();
+                let sessions_dir = agent_entry.path().join("sessions");
+                if let Ok(files) = std::fs::read_dir(&sessions_dir) {
+                    for file_entry in files.flatten() {
+                        let path = file_entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                            if let Ok(meta) = path.metadata() {
+                                if let Ok(modified) = meta.modified() {
+                                    if now.duration_since(modified).unwrap_or_default().as_secs() < 5 {
+                                        active.insert(agent_name.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        active
+    }
 }
 
 /// Generic helper: call OpenClaw remote API via /tools/invoke
@@ -327,6 +661,9 @@ fn build_agent_health_from_meta(
             let sf = val["sessionFile"].as_str().unwrap_or("");
             if sf.is_empty() { continue; }
             // Match session file path to tail output by basename
+            #[cfg(windows)]
+            let basename = sf.rsplit(|c: char| c == '/' || c == '\\').next().unwrap_or("");
+            #[cfg(not(windows))]
             let basename = sf.rsplit('/').next().unwrap_or("");
             let active = if let Some(lines) = tails.get(basename) {
                 check_agent_active_from_lines(lines)
@@ -352,7 +689,24 @@ fn build_agent_health_from_meta(
     AgentHealth { agent_id: agent_id.to_string(), active: any_active, sessions }
 }
 
+/// Get the SSH control socket path for a given host.
+/// On macOS/Linux: /tmp/oc-claw-ssh-user@host:22
+/// On Windows: returns a path in %TEMP% (used only as a "marker" since ControlMaster
+/// is not supported; the marker file tracks whether a connection was recently validated).
+fn ssh_control_path(ssh_user: &str, ssh_host: &str) -> String {
+    #[cfg(unix)]
+    { format!("/tmp/oc-claw-ssh-{}@{}:22", ssh_user, ssh_host) }
+    #[cfg(windows)]
+    {
+        let temp = std::env::temp_dir();
+        temp.join(format!("oc-claw-ssh-{}@{}.marker", ssh_user, ssh_host))
+            .to_string_lossy().to_string()
+    }
+}
+
 /// Ensure an SSH ControlMaster socket is established (called once, reused by all ssh_exec).
+/// On Windows, ControlMaster is not available — we just validate the connection once
+/// and create a marker file. Each ssh_exec call will open its own SSH connection.
 /// Implements exponential backoff on connection failure (15s, 30s, 60s, … capped at 300s)
 /// to avoid flooding the server with reconnection attempts.
 async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
@@ -361,15 +715,11 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         return Err(format!("SSH connection to {} backing off, retry in {}s", host_key, remaining));
     }
 
-    let control_path = format!("/tmp/oc-claw-ssh-{}:22", host_key);
-    // Fast path: socket already exists, reuse the master connection.
+    let control_path = ssh_control_path(ssh_user, ssh_host);
+    // Fast path: socket/marker already exists, reuse the master connection.
     if std::path::Path::new(&control_path).exists() { return Ok(()); }
 
     // Per-host lock so only one task establishes the master at a time.
-    // Other tasks wait, then hit the re-check and return immediately once
-    // the socket is created. The socket existence check ABOVE the lock is
-    // the fast path — most polling requests return there without touching
-    // the lock at all.
     use std::sync::OnceLock;
     use tokio::sync::Mutex as TokioMutex;
     static LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Arc<TokioMutex<()>>>>> = OnceLock::new();
@@ -378,92 +728,100 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         locks.entry(host_key.clone()).or_insert_with(|| Arc::new(TokioMutex::new(()))).clone()
     };
     let _guard = lock.lock().await;
-    // Re-check after acquiring the lock — the task ahead of us may have
-    // already established the master while we were waiting.
+    // Re-check after acquiring the lock
     if std::path::Path::new(&control_path).exists() { return Ok(()); }
 
-    let cp = format!("ControlPath={}", control_path);
-    // No `-i` flag — let ssh resolve the key from ~/.ssh/config and default
-    // search order. No `-v` either — verbose output on a piped stderr can
-    // cause `.output()` to block when combined with `-fN` (the forked master
-    // keeps the pipe open, preventing the parent from exiting cleanly).
-    let child = tokio::process::Command::new("ssh")
-        .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=10",
-            "-o", "ControlMaster=yes",
-            "-o", &cp,
-            "-o", "ControlPersist=600",
-            "-o", "ServerAliveInterval=15",
-            "-o", "ServerAliveCountMax=3",
-            "-fN",
-            &host_key,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("ssh master spawn: {}", e))?;
+    #[cfg(unix)]
+    {
+        let cp = format!("ControlPath={}", control_path);
+        let child = tokio::process::Command::new("ssh")
+            .args([
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "-o", "ControlMaster=yes",
+                "-o", &cp,
+                "-o", "ControlPersist=600",
+                "-o", "ServerAliveInterval=15",
+                "-o", "ServerAliveCountMax=3",
+                "-fN",
+                &host_key,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("ssh master spawn: {}", e))?;
 
-    let child_id = child.id();
+        let child_id = child.id();
 
-    // ssh -fN should fork to background within seconds. If it doesn't
-    // finish in 15s, something is wrong — kill it to avoid blocking forever.
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        child.wait_with_output(),
-    ).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            child.wait_with_output(),
+        ).await;
 
-    let output = match result {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => {
-            ssh_backoff_record_failure(&host_key);
-            return Err(format!("ssh master wait: {}", e));
-        }
-        Err(_) => {
-            if let Some(pid) = child_id {
-                unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+        let output = match result {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => {
+                ssh_backoff_record_failure(&host_key);
+                return Err(format!("ssh master wait: {}", e));
             }
+            Err(_) => {
+                if let Some(pid) = child_id {
+                    unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+                }
+                ssh_backoff_record_failure(&host_key);
+                return Err(format!("ssh master to {} timed out after 15s", host_key));
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             ssh_backoff_record_failure(&host_key);
-            return Err(format!("ssh master to {} timed out after 15s", host_key));
+            let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
+            let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+            log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
+            return Err(format!("SSH master failed [exit {}]: {}", code, stderr));
         }
-    };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        ssh_backoff_record_failure(&host_key);
-        let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
-        let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
-        log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
-        return Err(format!("SSH master failed [exit {}]: {}", code, stderr));
+        // Wait for the socket file to appear
+        for _ in 0..30 {
+            if std::path::Path::new(&control_path).exists() { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if !std::path::Path::new(&control_path).exists() {
+            ssh_backoff_record_failure(&host_key);
+            return Err(format!("ssh master socket for {} never appeared", host_key));
+        }
     }
 
-    // ssh -fN forks to background — the foreground process exits before the
-    // master socket is fully ready. Wait for the socket file to appear before
-    // declaring success, otherwise ssh_exec will immediately fail with a
-    // "connection refused" on the not-yet-ready socket.
-    for _ in 0..30 {
-        if std::path::Path::new(&control_path).exists() { break; }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    if !std::path::Path::new(&control_path).exists() {
-        ssh_backoff_record_failure(&host_key);
-        return Err(format!("ssh master socket for {} never appeared", host_key));
+    #[cfg(windows)]
+    {
+        // Windows: use persistent SSH subprocess multiplexer instead of per-command
+        // connections. This avoids the TCP+SSH handshake overhead on every call and
+        // prevents hitting server-side MaxStartups limits.
+        if let Err(e) = win_ssh_mux::ensure(ssh_user, ssh_host).await {
+            ssh_backoff_record_failure(&host_key);
+            let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
+            log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
+            return Err(format!("SSH connection failed: {}", e));
+        }
+        // Create marker file so the fast-path check at the top works.
+        let _ = std::fs::write(&control_path, "connected");
     }
 
     // Detect which key was used by querying ssh config for this host.
-    // `ssh -G` prints the resolved config (including IdentityFile) without connecting.
-    if let Ok(cfg_output) = tokio::process::Command::new("ssh")
-        .args(["-G", &host_key])
+    let mut ssh_g_cmd = tokio::process::Command::new("ssh");
+    ssh_g_cmd.args(["-G", &host_key])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    hide_window_tokio_cmd(&mut ssh_g_cmd);
+    if let Ok(cfg_output) = ssh_g_cmd.output().await
     {
         let cfg = String::from_utf8_lossy(&cfg_output.stdout);
         for line in cfg.lines() {
             if let Some(path) = line.strip_prefix("identityfile ") {
-                let expanded = path.replace("~", &std::env::var("HOME").unwrap_or_default());
+                let expanded = path.replace("~", &home_dir_string());
                 if std::path::Path::new(&expanded).exists() {
                     log::info!("[ssh] {} will use key: {}", host_key, expanded);
                     ssh_key_map().lock().unwrap().insert(host_key.clone(), expanded);
@@ -477,94 +835,119 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Execute a command on remote host via SSH, reusing ControlMaster socket.
+/// Execute a command on remote host via SSH.
+/// On macOS/Linux: reuses ControlMaster socket for fast multiplexed connections.
+/// On Windows: routes through a persistent SSH subprocess (win_ssh_mux) so all
+///   commands share a single TCP connection instead of opening one per call.
 /// If the command fails (e.g. stale socket), removes the socket and retries once.
 async fn ssh_exec(ssh_host: &str, ssh_user: &str, cmd: &str) -> Result<String, String> {
     ensure_ssh_master(ssh_host, ssh_user).await?;
-    let control_path = format!("/tmp/oc-claw-ssh-{}@{}:22", ssh_user, ssh_host);
-    let target = format!("{}@{}", ssh_user, ssh_host);
-    let cp = format!("ControlPath={}", control_path);
-    // Prepend a safe system PATH so basic commands (ls, cat, tail…) are always
-    // available regardless of how the remote server's login environment is configured.
     let safe_cmd = format!(
         "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH && {}",
         cmd
     );
-    let output = tokio::process::Command::new("ssh")
-        .args([
+
+    #[cfg(windows)]
+    {
+        match win_ssh_mux::exec(ssh_user, ssh_host, &safe_cmd).await {
+            Ok(out) => return Ok(out),
+            Err(e) if e.contains("transport error") || e.contains("connection lost") || e.contains("process exited") || e.contains("not connected") || e.contains("timed out") => {
+                log::warn!("[ssh] transport error, removing marker and retrying: {}", e);
+                let _ = tokio::fs::remove_file(&ssh_control_path(ssh_user, ssh_host)).await;
+                ensure_ssh_master(ssh_host, ssh_user).await?;
+                return win_ssh_mux::exec(ssh_user, ssh_host, &safe_cmd).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let target = format!("{}@{}", ssh_user, ssh_host);
+        let control_path = ssh_control_path(ssh_user, ssh_host);
+        let cp = format!("ControlPath={}", control_path);
+
+        let mut ssh_args: Vec<&str> = vec![
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=5",
             "-o", &cp,
-            &target,
-            &safe_cmd,
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("ssh: {}", e))?;
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-    }
+        ];
+        ssh_args.push(&target);
+        ssh_args.push(&safe_cmd);
 
-    let exit_code = output.status.code().unwrap_or(-1);
-    // Exit 255 = SSH transport error (connection refused, auth failure, broken
-    // socket, etc.). Any other non-zero exit code comes from the remote command
-    // itself (e.g. file not found) and should be returned as-is — do NOT destroy
-    // a healthy master connection just because `cat` failed.
-    if exit_code != 255 {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut msg = format!("ssh cmd failed [exit {}]", exit_code);
-        if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
-        if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
-        return Err(msg);
-    }
+        let output = tokio::process::Command::new("ssh")
+            .args(&ssh_args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("ssh: {}", e))?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
 
-    // SSH transport failure — remove the stale socket and retry once.
-    log::warn!("[ssh] transport error (exit 255), removing stale socket and retrying");
-    let _ = tokio::fs::remove_file(&control_path).await;
-    ensure_ssh_master(ssh_host, ssh_user).await?;
-    let output = tokio::process::Command::new("ssh")
-        .args([
+        let exit_code = output.status.code().unwrap_or(-1);
+        if exit_code != 255 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut msg = format!("ssh cmd failed [exit {}]", exit_code);
+            if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
+            if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
+            return Err(msg);
+        }
+
+        log::warn!("[ssh] transport error (exit 255), removing stale socket and retrying");
+        let _ = tokio::fs::remove_file(&control_path).await;
+        ensure_ssh_master(ssh_host, ssh_user).await?;
+
+        let mut ssh_args2: Vec<&str> = vec![
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=5",
             "-o", &cp,
-            &target,
-            &safe_cmd,
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("ssh: {}", e))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
-        let mut msg = format!("ssh cmd failed [exit {}]", code);
-        if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
-        if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
-        return Err(msg);
+        ];
+        ssh_args2.push(&target);
+        ssh_args2.push(&safe_cmd);
+
+        let output = tokio::process::Command::new("ssh")
+            .args(&ssh_args2)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("ssh: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+            let mut msg = format!("ssh cmd failed [exit {}]", code);
+            if !stderr.trim().is_empty() { msg.push_str(&format!("\nstderr: {}", stderr.trim())); }
+            if !stdout.trim().is_empty() { msg.push_str(&format!("\nstdout: {}", stdout.trim())); }
+            return Err(msg);
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Close an active SSH ControlMaster socket.
+/// Close an active SSH ControlMaster socket (macOS/Linux) or persistent mux subprocess (Windows).
 async fn close_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
-    let control_path = format!("/tmp/oc-claw-ssh-{}@{}:22", ssh_user, ssh_host);
-    if !std::path::Path::new(&control_path).exists() {
-        ssh_backoff_reset(&format!("{}@{}", ssh_user, ssh_host));
-        return Ok(());
+    let control_path = ssh_control_path(ssh_user, ssh_host);
+    #[cfg(unix)]
+    {
+        if std::path::Path::new(&control_path).exists() {
+            let target = format!("{}@{}", ssh_user, ssh_host);
+            let cp = format!("ControlPath={}", control_path);
+            let _ = tokio::process::Command::new("ssh")
+                .args(["-o", &cp, "-O", "exit", &target])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .await;
+        }
     }
-    let target = format!("{}@{}", ssh_user, ssh_host);
-    let cp = format!("ControlPath={}", control_path);
-    let _ = tokio::process::Command::new("ssh")
-        .args(["-o", &cp, "-O", "exit", &target])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await;
+    #[cfg(windows)]
+    {
+        win_ssh_mux::kill(ssh_user, ssh_host).await;
+    }
     let _ = tokio::fs::remove_file(&control_path).await;
     ssh_backoff_reset(&format!("{}@{}", ssh_user, ssh_host));
     log::info!("[close_ssh_master] closed socket for {}@{}", ssh_user, ssh_host);
@@ -606,15 +989,23 @@ async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result
     let sh = ssh_host.unwrap_or_default();
     let su = ssh_user.unwrap_or_default();
     if sh.is_empty() || su.is_empty() {
-        if let Ok(mut entries) = tokio::fs::read_dir("/tmp").await {
+        // Clean up all stale SSH sockets/markers
+        #[cfg(unix)]
+        let scan_dir = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let scan_dir = std::env::temp_dir();
+
+        if let Ok(mut entries) = tokio::fs::read_dir(&scan_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with("oc-claw-ssh-") {
                     let _ = tokio::fs::remove_file(entry.path()).await;
-                    log::info!("[close_ssh] removed stale socket: {}", name);
+                    log::info!("[close_ssh] removed stale socket/marker: {}", name);
                 }
             }
         }
+        #[cfg(windows)]
+        { win_ssh_mux::kill_all().await; }
         // Clear all backoff entries
         ssh_backoff_map().lock().unwrap().clear();
         return Ok(());
@@ -755,25 +1146,50 @@ fn remote_sessions_json_path(agent_id: &str) -> String {
 }
 
 fn sessions_json_path(agent_id: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let home = home_dir_string();
     let agent_dir = if agent_id.is_empty() { "main" } else { agent_id };
-    PathBuf::from(home).join(format!(".openclaw/agents/{}/sessions/sessions.json", agent_dir))
+    PathBuf::from(home).join(".openclaw").join("agents").join(agent_dir).join("sessions").join("sessions.json")
 }
 
 #[tauri::command]
 async fn get_status(_gateway_url: String, _token: String, agent_id: String) -> Result<GatewayStatus, String> {
-    // Step 1: pgrep -x openclaw-gateway → check gateway is running
-    let pgrep_gw = tokio::process::Command::new("pgrep")
-        .args(["-x", "openclaw-gateway"])
-        .output()
-        .await
-        .map_err(|e| format!("pgrep: {}", e))?;
-
-    if !pgrep_gw.status.success() {
-        return Err("gateway not running".into());
+    // Step 1: check gateway is running
+    #[cfg(unix)]
+    {
+        let pgrep_gw = tokio::process::Command::new("pgrep")
+            .args(["-x", "openclaw-gateway"])
+            .output()
+            .await
+            .map_err(|e| format!("pgrep: {}", e))?;
+        if !pgrep_gw.status.success() {
+            return Err("gateway not running".into());
+        }
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, openclaw gateway runs as a node.exe process (not a separate
+        // openclaw-gateway.exe binary).  Check whether anything is listening on
+        // the default gateway port (18789) instead.
+        let mut ps_cmd = tokio::process::Command::new("powershell");
+        ps_cmd.args([
+                "-NoProfile",
+                "-Command",
+                "(Get-NetTCPConnection -LocalPort 18789 -State Listen -ErrorAction SilentlyContinue | Measure-Object).Count",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        hide_window_tokio_cmd(&mut ps_cmd);
+        let listening = ps_cmd.output()
+            .await
+            .map_err(|e| format!("powershell: {}", e))?;
+        let count_str = String::from_utf8_lossy(&listening.stdout).trim().to_string();
+        let count: u32 = count_str.parse().unwrap_or(0);
+        if count == 0 {
+            return Err("gateway not running".into());
+        }
     }
 
-    // Step 2: lsof check — is any .jsonl held open for this agent?
+    // Step 2: check if any .jsonl is being actively used for this agent
     let active_agents = lsof_active_agents().await;
     let agent_dir = if agent_id.is_empty() { "main" } else { &agent_id };
     let active = active_agents.contains(agent_dir);
@@ -875,7 +1291,9 @@ fn builtin_assets_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             .ok_or("cannot resolve project root")?;
         Ok(project_root.join("public").join("assets").join("builtin"))
     } else {
-        app.path().resource_dir().map(|p| p.join("assets").join("builtin")).map_err(|e| e.to_string())
+        let dir = app.path().resource_dir().map(|p| p.join("assets").join("builtin")).map_err(|e| e.to_string())?;
+        log::info!("[assets] builtin_assets_dir={} exists={}", dir.display(), dir.exists());
+        Ok(dir)
     }
 }
 
@@ -999,14 +1417,31 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
     }
 
     // Scan built-in assets
-    let builtin_prefix = if cfg!(debug_assertions) { "/assets/builtin" } else { "localasset://localhost" };
+    // On Windows, WebView2 maps custom schemes to http://<scheme>.localhost/
+    // instead of <scheme>://localhost/. Use the platform-correct URL prefix.
+    let builtin_prefix = if cfg!(debug_assertions) {
+        "/assets/builtin"
+    } else if cfg!(target_os = "windows") {
+        "http://localasset.localhost"
+    } else {
+        "localasset://localhost"
+    };
     if let Ok(builtin_dir) = builtin_assets_dir(&app) {
+        log::info!("[scan_characters] scanning builtin: {} (exists={})", builtin_dir.display(), builtin_dir.exists());
         scan_dir(&builtin_dir, builtin_prefix, true, &ip_map, &mut results);
+        log::info!("[scan_characters] found {} characters after builtin scan", results.len());
     }
 
     // Scan custom assets
-    let custom_prefix = if cfg!(debug_assertions) { "/assets/custom" } else { "customasset://localhost" };
+    let custom_prefix = if cfg!(debug_assertions) {
+        "/assets/custom"
+    } else if cfg!(target_os = "windows") {
+        "http://customasset.localhost"
+    } else {
+        "customasset://localhost"
+    };
     if let Ok(custom_dir) = custom_assets_dir(&app) {
+        log::info!("[scan_characters] scanning custom: {} (exists={})", custom_dir.display(), custom_dir.exists());
         scan_dir(&custom_dir, custom_prefix, false, &ip_map, &mut results);
     }
 
@@ -1155,24 +1590,62 @@ async fn get_agents(mode: Option<String>, url: Option<String>, token: Option<Str
         return Ok(agents);
     }
 
-    // === local mode (original) ===
-    let output = tokio::process::Command::new("openclaw")
-        .args(["agents", "list", "--json"])
-        .output()
-        .await
-        .map_err(|e| format!("openclaw agents list: {}", e))?;
+    // === local mode ===
+    // On Windows, read ~/.openclaw/agents/ directly (no CLI dependency).
+    // On macOS/Linux, use the original `openclaw agents list --json` CLI.
+    #[cfg(windows)]
+    {
+        let home = home_dir_string();
+        let agents_dir = PathBuf::from(&home).join(".openclaw").join("agents");
+        log::info!("[get_agents] local mode, agents_dir={:?}, exists={}", agents_dir, agents_dir.exists());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("openclaw agents list failed: {}", stderr));
+        let entries = std::fs::read_dir(&agents_dir)
+            .map_err(|e| { log::error!("[get_agents] read_dir failed: {}", e); format!("read agents dir: {}", e) })?;
+
+        let mut agents: Vec<AgentInfo> = Vec::new();
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_dir() { continue; }
+            let id = entry.file_name().to_string_lossy().to_string();
+            let config_path = path.join("agent.json");
+            let (name, emoji) = if config_path.exists() {
+                match std::fs::read_to_string(&config_path) {
+                    Ok(c) => {
+                        let val: serde_json::Value = serde_json::from_str(&c).unwrap_or_default();
+                        (
+                            val.get("identityName").or_else(|| val.get("identity_name")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            val.get("identityEmoji").or_else(|| val.get("identity_emoji")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        )
+                    }
+                    Err(_) => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+            agents.push(AgentInfo { id, identity_name: name, identity_emoji: emoji });
+        }
+        Ok(agents)
     }
+    #[cfg(not(windows))]
+    {
+        let output = tokio::process::Command::new("openclaw")
+            .args(["agents", "list", "--json"])
+            .output()
+            .await
+            .map_err(|e| format!("openclaw agents list: {}", e))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json_start = stdout.find('[').ok_or("no JSON array in agents output")?;
-    let json_end = stdout.rfind(']').ok_or("no closing bracket")? + 1;
-    let agents: Vec<AgentInfo> =
-        serde_json::from_str(&stdout[json_start..json_end]).map_err(|e| e.to_string())?;
-    Ok(agents)
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("openclaw agents list failed: {}", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json_start = stdout.find('[').ok_or("no JSON array in agents output")?;
+        let json_end = stdout.rfind(']').ok_or("no closing bracket")? + 1;
+        let agents: Vec<AgentInfo> =
+            serde_json::from_str(&stdout[json_start..json_end]).map_err(|e| e.to_string())?;
+        Ok(agents)
+    }
 }
 
 #[tauri::command]
@@ -1272,8 +1745,8 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
     }
 
     // === local mode — content-based detection with session-level data ===
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let agents_dir = std::path::PathBuf::from(&home).join(".openclaw/agents");
+    let home = home_dir_string();
+    let agents_dir = std::path::PathBuf::from(&home).join(".openclaw").join("agents");
 
     let mut agents = Vec::new();
     let Ok(entries) = std::fs::read_dir(&agents_dir) else {
@@ -1294,15 +1767,17 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
                     for fe in rd.filter_map(|e| e.ok()) {
                         let p = fe.path();
                         if p.extension().map_or(true, |ext| ext != "jsonl") { continue; }
-                        if let Ok(tail_out) = tokio::process::Command::new("tail")
-                            .args(["-5", &p.to_string_lossy()])
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::null())
-                            .output()
-                            .await
-                        {
-                            let tail_str = String::from_utf8_lossy(&tail_out.stdout);
-                            let lines: Vec<String> = tail_str.lines().map(|l| l.to_string()).collect();
+                        #[cfg(windows)]
+                        let lines = tail_lines_from_file(&p, 5);
+                        #[cfg(not(windows))]
+                        let lines = {
+                            let out = tokio::process::Command::new("tail")
+                                .args(["-5", &p.to_string_lossy()])
+                                .output().await.ok();
+                            out.map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.to_string()).collect::<Vec<_>>())
+                                .unwrap_or_default()
+                        };
+                        if !lines.is_empty() {
                             if let Some(fname) = p.file_name() {
                                 tails.insert(fname.to_string_lossy().to_string(), lines);
                             }
@@ -1321,17 +1796,17 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
                 .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
                 .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok())));
         let active = if let Some(f) = latest {
-            if let Ok(tail_out) = tokio::process::Command::new("tail")
-                .args(["-5", &f.path().to_string_lossy()])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output()
-                .await
-            {
-                let tail_str = String::from_utf8_lossy(&tail_out.stdout);
-                let lines: Vec<String> = tail_str.lines().map(|l| l.to_string()).collect();
-                check_agent_active_from_lines(&lines)
-            } else { false }
+            #[cfg(windows)]
+            let lines = tail_lines_from_file(&f.path(), 5);
+            #[cfg(not(windows))]
+            let lines = {
+                let out = tokio::process::Command::new("tail")
+                    .args(["-5", &f.path().to_string_lossy()])
+                    .output().await.ok();
+                out.map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.to_string()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            };
+            check_agent_active_from_lines(&lines)
         } else { false };
         agents.push(AgentHealth { agent_id, active, sessions: vec![] });
     }
@@ -1977,20 +2452,29 @@ async fn get_agent_metrics(agent_id: String, mode: Option<String>, url: Option<S
 
 #[tauri::command]
 async fn interrupt_agent(agent_id: String, state: tauri::State<'_, ActiveAgentPid>) -> Result<String, String> {
-    // Strategy 1: SIGINT the tracked openclaw agent subprocess (pet-window turns)
+    // Strategy 1: Send interrupt signal to the tracked openclaw agent subprocess (pet-window turns)
     let tracked_pid = *state.pid.lock().unwrap();
     if let Some(pid) = tracked_pid {
+        #[cfg(unix)]
         let killed = unsafe { libc::kill(pid as i32, libc::SIGINT) == 0 };
+        #[cfg(windows)]
+        let killed = {
+            // On Windows, use GenerateConsoleCtrlEvent to send Ctrl+C to the process group,
+            // or TerminateProcess as a fallback.
+            use windows::Win32::System::Console::GenerateConsoleCtrlEvent;
+            use windows::Win32::System::Console::CTRL_BREAK_EVENT;
+            unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid).is_ok() }
+        };
         if killed {
             return Ok(format!("已向 openclaw agent 进程 (pid={}) 发送中断信号", pid));
         }
     }
 
     // Strategy 2: WebSocket chat.abort (channel-based turns like Feishu/Telegram)
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let home = home_dir_string();
 
     // 1. Read gateway config
-    let config_path = format!("{}/.openclaw/openclaw.json", home);
+    let config_path = PathBuf::from(&home).join(".openclaw").join("openclaw.json");
     let config_str = tokio::fs::read_to_string(&config_path).await
         .map_err(|e| format!("读取 openclaw.json 失败: {}", e))?;
     let config: serde_json::Value = serde_json::from_str(&config_str)
@@ -2001,40 +2485,29 @@ async fn interrupt_agent(agent_id: String, state: tauri::State<'_, ActiveAgentPi
         return Err("openclaw.json 中未找到 gateway token".into());
     }
 
-    // 2. Find the ACTIVE session key by checking which .jsonl file is currently open (lsof).
-    //    This is more reliable than using updatedAt, because multiple sessions may exist
-    //    (e.g. Feishu session vs pet-window session) and we need the one with a live run.
+    // 2. Find the ACTIVE session key.
+    //    On macOS/Linux: use lsof to find which .jsonl file is currently held open.
+    //    On Windows: use recently modified .jsonl files as a heuristic.
     let sess_path = sessions_json_path(&agent_id);
     let content = tokio::fs::read_to_string(&sess_path).await
         .map_err(|e| format!("读取 sessions.json 失败: {}", e))?;
     let sess_map: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&content).map_err(|e| e.to_string())?;
 
-    // Use lsof to find which .jsonl file is currently held open (active run)
-    let lsof_bin = if std::path::Path::new("/usr/sbin/lsof").exists() { "/usr/sbin/lsof" } else { "lsof" };
-    let agent_dir_name = if agent_id.is_empty() { "main" } else { &agent_id };
-    let search_path = format!("{}/.openclaw/agents/{}", home, agent_dir_name);
-    let lsof_stdout_owned = tokio::process::Command::new(lsof_bin)
-        .args(["+D", &search_path])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output().await
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    let lsof_stdout = lsof_stdout_owned.as_str();
+    // Get the set of currently active .jsonl file paths
+    let open_jsonl_paths = lsof_open_jsonl_paths().await;
 
-    // Collect open .jsonl file paths from node processes
-    let open_jsonl_paths: std::collections::HashSet<String> = lsof_stdout.lines()
-        .filter(|l| l.contains(".jsonl") && l.split_whitespace().next().map(|c| c.starts_with("node")).unwrap_or(false))
-        .filter_map(|l| l.split_whitespace().last().map(|s| s.to_string()))
-        .collect();
-
-    // Match open .jsonl paths against sessionFile entries in sessions.json
+    // Match open/active .jsonl paths against sessionFile entries in sessions.json
     let session_key = sess_map.iter()
         .find(|(_, v)| {
             if let Some(sf) = v["sessionFile"].as_str() {
                 // sessionFile may be exact path or may contain the uuid; check if any open path starts with or equals it
-                open_jsonl_paths.iter().any(|p| p.starts_with(sf) || sf.starts_with(p.as_str()))
+                open_jsonl_paths.iter().any(|p| {
+                    p.starts_with(sf) || sf.starts_with(p.as_str())
+                    // On Windows, also compare with backslash-normalized paths
+                    || p.replace('\\', "/").starts_with(&sf.replace('\\', "/"))
+                    || sf.replace('\\', "/").starts_with(&p.replace('\\', "/"))
+                })
             } else {
                 false
             }
@@ -2201,7 +2674,7 @@ async fn get_agent_extra_info(agent_id: String, mode: Option<String>, ssh_host: 
         return Ok(AgentExtraInfo { skills: vec![], cron_jobs: vec![], daily_counts: vec![] });
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let home = home_dir_string();
     let agent_dir = if agent_id.is_empty() { "main" } else { &agent_id };
 
     // 1. Skills from sessions.json (most recently updated session)
@@ -2328,10 +2801,24 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 }
             });
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         {
-            win.show().map_err(|e| e.to_string())?;
-            win.set_focus().map_err(|e| e.to_string())?;
+            // Reposition to top-center (simulating macOS notch position), DPI-aware
+            if let Ok(Some(monitor)) = win.primary_monitor() {
+                let scale = monitor.scale_factor();
+                let sw = monitor.size().width as f64 / scale;
+                let ui = win_ui_scale(&monitor);
+                let win_w = (60.0 * ui).round();
+                let win_h = (45.0 * ui).round();
+                let notch_off = (80.0 * ui).round();
+                let x = sw / 2.0 + notch_off;
+                let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
+            }
+            if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+                win.show().map_err(|e| e.to_string())?;
+                win.set_focus().map_err(|e| e.to_string())?;
+            }
         }
         return Ok(());
     }
@@ -2363,14 +2850,12 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
             if let Ok(ns_win) = win_clone.ns_window() {
                 let obj = unsafe { &*(ns_win as *mut AnyObject) };
 
-                // Elevate window level above menu bar first (NSMainMenuWindowLevel=24, +3=27)
                 unsafe {
                     let _: () = msg_send![obj, setLevel: 27isize];
                     let behavior: usize = (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6);
                     let _: () = msg_send![obj, setCollectionBehavior: behavior];
                 }
 
-                // Get screen frame and position window directly via NSWindow setFrame
                 let screen_info: Option<(f64, f64, f64, f64, f64)> = unsafe {
                     let cls = match AnyClass::get(c"NSScreen") {
                         Some(c) => c,
@@ -2388,7 +2873,6 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 };
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
-                    // Start collapsed: small window right of notch
                     let win_w = 60.0;
                     let win_h = 45.0;
                     let x = sx + sw / 2.0 + notch_off;
@@ -2402,12 +2886,30 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                     }
                 }
 
-                // Show after positioning
                 unsafe {
                     let _: () = msg_send![obj, orderFrontRegardless];
                 }
             }
         });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows: position at top-center (simulating macOS notch position), DPI-aware
+        if let Ok(Some(monitor)) = win.primary_monitor() {
+            let scale = monitor.scale_factor();
+            let sw = monitor.size().width as f64 / scale;
+            let ui = win_ui_scale(&monitor);
+            let win_w = (60.0 * ui).round();
+            let win_h = (45.0 * ui).round();
+            let notch_off = (80.0 * ui).round();
+            let x = sw / 2.0 + notch_off;
+            let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+            let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
+        }
+        if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = win.show();
+        }
     }
 
     Ok(())
@@ -2428,6 +2930,86 @@ fn collapsed_x(sx: f64, sw: f64, win_w: f64, position: &str, notch_offset: f64) 
     } else {
         sx + sw / 2.0 + notch_offset
     }
+}
+
+/// Compute a UI-scale multiplier for Windows based on the monitor's logical
+/// resolution. Baseline is 1080 logical height (a typical 1080p or 4K@200%
+/// display). On a 4K@150% display the logical height is 1440, giving
+/// multiplier ≈ 1.33 so all window dimensions grow proportionally.
+/// On macOS this is not needed — the system handles points uniformly.
+#[cfg(target_os = "windows")]
+fn win_ui_scale(monitor: &tauri::Monitor) -> f64 {
+    let scale = monitor.scale_factor();
+    let logical_h = monitor.size().height as f64 / scale;
+    (logical_h / 1080.0).max(1.0)
+}
+
+/// Returns the HMONITOR of the fullscreen foreground window, or None if the
+/// foreground window is not fullscreen.  Excludes desktop shell windows
+/// (Progman, WorkerW, Shell_TrayWnd) which cover the full screen but are
+/// not real fullscreen apps.
+#[cfg(target_os = "windows")]
+fn fullscreen_foreground_monitor() -> Option<windows::Win32::Graphics::Gdi::HMONITOR> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowRect, GetClassNameW,
+    };
+    use windows::Win32::Graphics::Gdi::{
+        MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::Foundation::RECT;
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0 == std::ptr::null_mut() {
+            return None;
+        }
+
+        let mut class_buf = [0u16; 64];
+        let len = GetClassNameW(fg, &mut class_buf) as usize;
+        if len > 0 {
+            let class_name = String::from_utf16_lossy(&class_buf[..len]);
+            if class_name == "Progman"
+                || class_name == "WorkerW"
+                || class_name == "Shell_TrayWnd"
+            {
+                return None;
+            }
+        }
+
+        let mut fg_rect = RECT::default();
+        if GetWindowRect(fg, &mut fg_rect).is_err() {
+            return None;
+        }
+        let monitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
+            return None;
+        }
+        let mr = mi.rcMonitor;
+        if fg_rect.left <= mr.left
+            && fg_rect.top <= mr.top
+            && fg_rect.right >= mr.right
+            && fg_rect.bottom >= mr.bottom
+        {
+            Some(monitor)
+        } else {
+            None
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_ui_scale(app: tauri::AppHandle) -> Result<f64, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let win = app.get_webview_window("mini").ok_or("mini not found")?;
+        if let Ok(Some(m)) = win.current_monitor() {
+            return Ok(win_ui_scale(&m));
+        }
+    }
+    Ok(1.0)
 }
 
 /// Get the notch half-width (distance from screen center to notch edge) using
@@ -2478,10 +3060,23 @@ async fn move_mini_by(app: tauri::AppHandle, dx: f64, dy: f64) -> Result<(), Str
             }
         }).map_err(|e| e.to_string())?;
     }
+    #[cfg(target_os = "windows")]
+    {
+        // outer_position() returns PhysicalPosition; dx/dy are in logical (CSS) pixels.
+        // Convert physical → logical before adding the delta.
+        if let Ok(pos) = win.outer_position() {
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let logical_x = pos.x as f64 / scale;
+            let logical_y = pos.y as f64 / scale;
+            let _ = win.set_position(tauri::LogicalPosition::new(logical_x + dx, logical_y + dy));
+        }
+    }
     Ok(())
 }
 
-/// Get the mini window's origin in macOS logical coordinates (bottom-left origin).
+/// Get the mini window's origin in logical coordinates.
+/// macOS: bottom-left origin (NSWindow frame).
+/// Windows: top-left origin (screen coordinates).
 #[tauri::command]
 async fn get_mini_origin(app: tauri::AppHandle) -> Result<(f64, f64), String> {
     let win = app.get_webview_window("mini").ok_or("mini not found")?;
@@ -2503,10 +3098,19 @@ async fn get_mini_origin(app: tauri::AppHandle) -> Result<(f64, f64), String> {
             return Ok(pos);
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        // outer_position() returns PhysicalPosition; convert to logical for consistency.
+        if let Ok(pos) = win.outer_position() {
+            let scale = win.scale_factor().unwrap_or(1.0);
+            return Ok((pos.x as f64 / scale, pos.y as f64 / scale));
+        }
+    }
     Err("failed to get origin".into())
 }
 
-/// Set the mini window's origin in macOS logical coordinates (bottom-left origin).
+/// Set the mini window's origin in logical coordinates.
+/// macOS: bottom-left origin. Windows: top-left origin.
 #[tauri::command]
 async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini not found")?;
@@ -2530,6 +3134,10 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
             }
         }).map_err(|e| e.to_string())?;
     }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+    }
     Ok(())
 }
 
@@ -2551,11 +3159,9 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
             if let Ok(ns_win) = win_clone.ns_window() {
                 let obj = unsafe { &*(ns_win as *mut AnyObject) };
 
-                // Use the screen the window is currently on (multi-monitor support)
                 let screen_info: Option<(f64, f64, f64, f64, f64)> = unsafe {
                     let screen: *mut AnyObject = msg_send![obj, screen];
                     if screen.is_null() {
-                        // Fallback to main screen
                         let cls = match AnyClass::get(c"NSScreen") {
                             Some(c) => c,
                             None => return,
@@ -2600,13 +3206,53 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
         }).map_err(|e| e.to_string())?;
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows: DPI-aware positioning and sizing.
+        // Use monitor.position() to offset into the correct monitor in the virtual desktop.
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let scale = monitor.scale_factor();
+            let mp = monitor.position();
+            let mx = mp.x as f64 / scale;
+            let my = mp.y as f64 / scale;
+            let sw = monitor.size().width as f64 / scale;
+            let ui = win_ui_scale(&monitor);
+            if expanded {
+                let win_w = (400.0 * ui).round();
+                let win_h = (400.0 * ui).round();
+                let x = mx + (sw - win_w) / 2.0;
+                let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+            } else {
+                let win_w = (60.0 * ui).round();
+                let win_h = (45.0 * ui).round();
+                let notch_off = (80.0 * ui).round();
+                let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
+                let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+            }
+        }
+        if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = win.set_always_on_top(true);
+        }
+    }
+
     Ok(())
 }
 
-/// Resize the expanded mini window height while keeping it bottom-aligned on the current screen.
+/// Resize the expanded mini window height while keeping it top-aligned.
+/// macOS: bottom-left origin, so adjust y to keep bottom aligned.
+/// Windows: top-left origin, so just resize height.
 #[tauri::command]
 async fn resize_mini_height(app: tauri::AppHandle, height: f64) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
+    // Scale height limits on Windows to match DPI-aware window sizes
+    #[cfg(target_os = "windows")]
+    let h = {
+        let ui = if let Ok(Some(m)) = win.current_monitor() { win_ui_scale(&m) } else { 1.0 };
+        (height * ui).round().max(45.0 * ui).min(400.0 * ui)
+    };
+    #[cfg(not(target_os = "windows"))]
     let h = height.max(45.0).min(400.0);
 
     #[cfg(target_os = "macos")]
@@ -2628,7 +3274,6 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64) -> Result<(), St
                 } else { screen };
                 let sf: NSRect = unsafe { msg_send![&*screen_ptr, frame] };
                 let cur: NSRect = unsafe { msg_send![obj, frame] };
-                // Keep same center-x, adjust height from bottom of screen upward
                 let new_frame = NSRect::new(
                     NSPoint::new(cur.origin.x, sf.origin.y + sf.size.height - h),
                     NSSize::new(cur.size.width, h),
@@ -2638,6 +3283,15 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64) -> Result<(), St
                 }
             }
         }).map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows: keep top-left position, just change height
+        if let Ok(size) = win.outer_size() {
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let _ = win.set_size(tauri::LogicalSize::new(size.width as f64 / scale, h));
+        }
     }
 
     Ok(())
@@ -2661,7 +3315,6 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
             if let Ok(ns_win) = win_clone.ns_window() {
                 let obj = unsafe { &*(ns_win as *mut AnyObject) };
 
-                // Use the screen the window is currently on (multi-monitor support)
                 let screen_info: Option<(f64, f64, f64, f64, f64)> = unsafe {
                     let screen: *mut AnyObject = msg_send![obj, screen];
                     if screen.is_null() {
@@ -2683,7 +3336,6 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
                     if restore {
-                        // Restore to collapsed: small window beside notch
                         let win_w = 60.0;
                         let win_h = 45.0;
                         let x = collapsed_x(sx, sw, win_w, &pos, notch_off);
@@ -2695,11 +3347,10 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                             let _: () = msg_send![obj, orderFrontRegardless];
                         }
                     } else {
-                        // Expand to 85% screen, centered, no native animation (CSS handles visuals)
                         let win_w = (sw * 0.85).round();
                         let win_h = (sh * 0.85).round();
                         let x = sx + (sw - win_w) / 2.0;
-                        let y = sy + sh - win_h; // top of screen (macOS y=0 is bottom)
+                        let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setLevel: 0isize];
@@ -2709,6 +3360,37 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                 }
             }
         }).map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let scale = monitor.scale_factor();
+            let mp = monitor.position();
+            let mx = mp.x as f64 / scale;
+            let my = mp.y as f64 / scale;
+            let sw = monitor.size().width as f64 / scale;
+            let sh = monitor.size().height as f64 / scale;
+            let ui = win_ui_scale(&monitor);
+            if restore {
+                let win_w = (60.0 * ui).round();
+                let win_h = (45.0 * ui).round();
+                let notch_off = (80.0 * ui).round();
+                let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
+                let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = win.set_always_on_top(true);
+                }
+                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+            } else {
+                let win_w = (sw * 0.85).round();
+                let win_h = (sh * 0.85).round();
+                let x = mx + (sw - win_w) / 2.0;
+                let _ = win.set_always_on_top(false);
+                let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+            }
+        }
     }
 
     Ok(())
@@ -2987,32 +3669,47 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
 
     // === local mode (original) ===
     let path = sessions_json_path(&agent_id);
+    log::info!("[get_agent_sessions] local mode, path={:?}, exists={}", path, path.exists());
     let content = tokio::fs::read_to_string(&path)
         .await
-        .map_err(|e| format!("read sessions.json: {}", e))?;
+        .map_err(|e| { log::error!("[get_agent_sessions] read sessions.json failed: {}", e); format!("read sessions.json: {}", e) })?;
+    log::info!("[get_agent_sessions] sessions.json len={}, keys count={}", content.len(), content.matches('"').count() / 2);
     let map: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&content).map_err(|e| e.to_string())?;
 
-    // Check which sessions are active via lsof
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    log::info!("[get_agent_sessions] parsed {} top-level keys", map.len());
+
+    let home = home_dir_string();
     let agent_dir = if agent_id.is_empty() { "main" } else { &agent_id };
-    let search_path = format!("{}/.openclaw/agents/{}", home, agent_dir);
 
-    let lsof_bin = if std::path::Path::new("/usr/sbin/lsof").exists() { "/usr/sbin/lsof" } else { "lsof" };
-    let lsof_stdout = tokio::process::Command::new(lsof_bin)
-        .args(["+D", &search_path])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output().await
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-
-    let open_jsonl: std::collections::HashSet<String> = lsof_stdout.lines()
-        .filter(|l| l.contains(".jsonl"))
-        .filter_map(|l| l.split_whitespace().last().map(|s| s.to_string()))
-        .collect();
+    // Check which sessions are active
+    // On macOS: original lsof-based detection scoped to agent dir
+    // On Windows: cross-platform helper + content-based fallback
+    #[cfg(not(windows))]
+    let open_jsonl: std::collections::HashSet<String> = {
+        let search_path = format!("{}/.openclaw/agents/{}", home, agent_dir);
+        let lsof_bin = if std::path::Path::new("/usr/sbin/lsof").exists() { "/usr/sbin/lsof" } else { "lsof" };
+        let lsof_stdout = tokio::process::Command::new(lsof_bin)
+            .args(["+D", &search_path])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output().await
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        lsof_stdout.lines()
+            .filter(|l| l.contains(".jsonl"))
+            .filter_map(|l| l.split_whitespace().last().map(|s| s.to_string()))
+            .collect()
+    };
+    #[cfg(windows)]
+    let open_jsonl = lsof_open_jsonl_paths().await;
 
     let mut sessions: Vec<MiniSessionInfo> = Vec::new();
+    let mut skipped_no_msg = 0u32;
+    let mut skipped_cron = 0u32;
+    let mut skipped_no_file = 0u32;
+    let mut read_ok = 0u32;
+    let mut read_err = 0u32;
     for (key, val) in map.iter() {
         let session_file_raw = val["sessionFile"].as_str().unwrap_or("").to_string();
         let session_id_str = val["sessionId"].as_str().unwrap_or(key.as_str());
@@ -3021,29 +3718,42 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
         let session_file = if !session_file_raw.is_empty() {
             session_file_raw
         } else if !session_id_str.is_empty() {
-            let sessions_dir = format!("{}/.openclaw/agents/{}/sessions", home, agent_dir);
-            format!("{}/{}.jsonl", sessions_dir, session_id_str)
+            let sessions_dir = PathBuf::from(&home).join(".openclaw").join("agents").join(agent_dir).join("sessions");
+            sessions_dir.join(format!("{}.jsonl", session_id_str)).to_string_lossy().to_string()
         } else {
             String::new()
         };
 
-        let is_active = if !session_file.is_empty() {
-            open_jsonl.iter().any(|p| p.starts_with(&session_file) || session_file.starts_with(p.as_str()))
-        } else { false };
+        if session_file.is_empty() { skipped_no_file += 1; continue; }
+
+        // Active detection: macOS uses lsof path matching, Windows adds content-based fallback
+        #[cfg(not(windows))]
+        let is_active = open_jsonl.iter().any(|p| {
+            p.starts_with(&session_file) || session_file.starts_with(p.as_str())
+        });
+        #[cfg(windows)]
+        let is_active = {
+            let mut active = open_jsonl.iter().any(|p| {
+                p.starts_with(&session_file) || session_file.starts_with(p.as_str())
+                || p.replace('\\', "/").starts_with(&session_file.replace('\\', "/"))
+                || session_file.replace('\\', "/").starts_with(&p.replace('\\', "/"))
+            });
+            if !active {
+                let lines = tail_lines_from_file(std::path::Path::new(&session_file), 5);
+                active = check_agent_active_from_lines(&lines);
+            }
+            active
+        };
 
         // Read last messages from .jsonl
-        let (last_user, last_assistant) = if !session_file.is_empty() {
-            match tokio::fs::read_to_string(&session_file).await {
-                Ok(c) => extract_last_messages(&c),
-                Err(_) => (None, None),
-            }
-        } else {
-            (None, None)
+        let (last_user, last_assistant) = match tokio::fs::read_to_string(&session_file).await {
+            Ok(c) => { read_ok += 1; extract_last_messages(&c) }
+            Err(_) => { read_err += 1; (None, None) }
         };
 
         // Skip sessions with no messages or cron task sessions
-        if last_user.is_none() && last_assistant.is_none() { continue; }
-        if key.contains(":cron:") { continue; }
+        if last_user.is_none() && last_assistant.is_none() { skipped_no_msg += 1; continue; }
+        if key.contains(":cron:") { skipped_cron += 1; continue; }
 
         sessions.push(MiniSessionInfo {
             key: key.clone(),
@@ -3059,6 +3769,8 @@ async fn get_agent_sessions(agent_id: String, mode: Option<String>, url: Option<
         });
     }
 
+    log::info!("[get_agent_sessions] results: {} sessions, skipped: no_file={} read_err={} no_msg={} cron={}, read_ok={}", 
+        sessions.len(), skipped_no_file, read_err, skipped_no_msg, skipped_cron, read_ok);
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     sessions.truncate(20);
     Ok(sessions)
@@ -3382,8 +4094,8 @@ async fn get_active_sessions(mode: Option<String>, url: Option<String>, token: O
     // but OC gateway may write-and-close, so we fall back to content-based check.
     let open_paths = lsof_open_jsonl_paths().await;
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let agents_dir = std::path::PathBuf::from(&home).join(".openclaw/agents");
+    let home = home_dir_string();
+    let agents_dir = std::path::PathBuf::from(&home).join(".openclaw").join("agents");
     let mut active_keys: Vec<String> = vec![];
 
     let Ok(entries) = std::fs::read_dir(&agents_dir) else { return Ok(vec![]); };
@@ -3408,19 +4120,21 @@ async fn get_active_sessions(mode: Option<String>, url: Option<String>, token: O
                 active_keys.push(format!("{}:{}", agent_id, key));
                 continue;
             }
-            // Check 2: content-based — read last 5 lines via tail for efficiency
-            if let Ok(tail_out) = tokio::process::Command::new("tail")
-                .args(["-5", &file_path])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output()
-                .await
-            {
-                let tail_str = String::from_utf8_lossy(&tail_out.stdout);
-                let lines: Vec<String> = tail_str.lines().map(|l| l.to_string()).collect();
-                if check_agent_active_from_lines(&lines) {
-                    active_keys.push(format!("{}:{}", agent_id, key));
-                }
+            // Check 2: content-based — read last 5 lines for efficiency
+            #[cfg(windows)]
+            let lines = tail_lines_from_file(std::path::Path::new(&file_path), 5);
+            #[cfg(not(windows))]
+            let lines = {
+                tokio::process::Command::new("tail")
+                    .args(["-5", &file_path])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .output().await.ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.to_string()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            };
+            if check_agent_active_from_lines(&lines) {
+                active_keys.push(format!("{}:{}", agent_id, key));
             }
         }
     }
@@ -3467,7 +4181,7 @@ async fn proxy_post(url: String, body: String) -> Result<String, String> {
     Ok(text)
 }
 
-// ─── Play macOS system sound ───
+// ─── Play system sound ───
 #[tauri::command]
 async fn play_sound(name: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -3488,6 +4202,28 @@ async fn play_sound(name: String) -> Result<(), String> {
                 if !sound.is_null() {
                     let _: () = msg_send![&*sound, play];
                 }
+            }
+        });
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Map macOS system sound names to Windows equivalents.
+        // Windows PlaySound uses registry aliases: SystemAsterisk, SystemExclamation, etc.
+        let win_sound = match name.as_str() {
+            "Blow" | "Basso" | "Funk" | "Sosumi" => "SystemExclamation",
+            "Bottle" | "Pop" | "Purr" | "Tink" => "SystemAsterisk",
+            "Glass" | "Ping" => "SystemDefault",
+            "Hero" | "Morse" | "Submarine" => "SystemNotification",
+            "Frog" => "SystemQuestion",
+            _ => "SystemDefault",
+        };
+        let sound_name = win_sound.to_string();
+        std::thread::spawn(move || {
+            use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
+            use windows::core::PCWSTR;
+            let wide: Vec<u16> = sound_name.encode_utf16().chain(std::iter::once(0)).collect();
+            unsafe {
+                let _ = PlaySoundW(PCWSTR(wide.as_ptr()), None, SND_ALIAS | SND_ASYNC);
             }
         });
     }
@@ -3522,6 +4258,12 @@ struct ClaudeState {
 /// Compute the JSONL session file path (matching notchi's ConversationParser.sessionFilePath)
 fn claude_session_file_path(session_id: &str, cwd: &str) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_default();
+    // On Windows, Claude Code replaces all of / \ : . with "-" when computing
+    // the project directory name (e.g. G:\Desktop\code → G--Desktop-code).
+    // The colon after the drive letter (G:) must also be replaced.
+    #[cfg(windows)]
+    let project_dir = cwd.replace('/', "-").replace('\\', "-").replace(':', "-").replace('.', "-");
+    #[cfg(not(windows))]
     let project_dir = cwd.replace('/', "-").replace('.', "-");
     home.join(".claude").join("projects").join(project_dir).join(format!("{}.jsonl", session_id))
 }
@@ -3846,10 +4588,12 @@ async fn get_claude_stats() -> Result<ClaudeStats, String> {
 
 #[tauri::command]
 async fn open_url(url: String) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(&url)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    { std::process::Command::new("open").arg(&url).spawn().map_err(|e| e.to_string())?; }
+    #[cfg(target_os = "windows")]
+    { std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn().map_err(|e| e.to_string())?; }
+    #[cfg(target_os = "linux")]
+    { std::process::Command::new("xdg-open").arg(&url).spawn().map_err(|e| e.to_string())?; }
     Ok(())
 }
 
@@ -3859,7 +4603,16 @@ async fn open_url(url: String) -> Result<(), String> {
 /// when users see an update prompt (independent of GitHub Releases).
 ///
 /// Expected manifest format:
-///   { "version": "1.6.0", "url": "https://github.com/.../oc-claw_1.6.0_aarch64.dmg", "notes": "..." }
+///   {
+///     "version": "1.6.0",
+///     "notes": "...",
+///     "platforms": {
+///       "macos":   { "url": "https://github.com/.../oc-claw_1.6.0_aarch64.dmg" },
+///       "windows": { "url": "https://github.com/.../oc-claw_1.6.0_x64-setup.exe" }
+///     }
+///   }
+///
+/// Legacy format (single "url" field) is still supported for backward compatibility.
 #[tauri::command]
 async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let current = app.config().version.clone().unwrap_or_default();
@@ -3870,8 +4623,6 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
         "https://www.oc-claw.ai/update/latest.json"
     };
     log::info!("[update] checking {} (current={})", update_url, current);
-    // On macOS, reqwest can inherit system proxies. That breaks local update checks
-    // in dev because localhost requests may be forwarded to the proxy and return 502.
     let mut client_builder = reqwest::Client::builder()
         .user_agent("oc-claw");
     if cfg!(debug_assertions) {
@@ -3892,15 +4643,32 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
     }
     let json: serde_json::Value = resp.json().await
         .map_err(|e| { log::warn!("[update] json parse error: {e}"); format!("json parse error: {e}") })?;
-    log::info!("[update] latest={} hasUpdate={}", json["version"], version_cmp(json["version"].as_str().unwrap_or(""), &current));
-    let latest = json["version"].as_str().unwrap_or("");
+
+    // Per-platform update: each platform has its own version and url under
+    // json["platforms"]["<platform>"]["version"] and ["url"].
+    // Falls back to legacy top-level json["version"] / json["url"] for compatibility.
+    #[cfg(windows)]
+    let platform_key = "windows";
+    #[cfg(target_os = "macos")]
+    let platform_key = "macos";
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let platform_key = "linux";
+
+    let platform = &json["platforms"][platform_key];
+    let latest = platform["version"].as_str()
+        .or_else(|| json["version"].as_str())
+        .unwrap_or("");
+    let url = platform["url"].as_str()
+        .or_else(|| json["url"].as_str())
+        .unwrap_or("");
     let has_update = version_cmp(latest, &current);
+    log::info!("[update] platform={} latest={} current={} hasUpdate={}", platform_key, latest, current, has_update);
+
     Ok(serde_json::json!({
         "current": current,
         "latest": latest,
         "hasUpdate": has_update,
-        // The DMG download URL from the manifest (points to GitHub Release asset)
-        "url": json["url"].as_str().unwrap_or(""),
+        "url": url,
     }))
 }
 
@@ -3954,15 +4722,15 @@ fn emit_update_progress(
     );
 }
 
-/// Run the actual update: download DMG, replace the app, and relaunch.
-/// The `dmg_url` is passed from the frontend (originally from the website manifest),
-/// so we no longer need to query GitHub API at update time.
+/// Run the actual update: download the installer package, install, and relaunch.
+/// On macOS: downloads DMG, runs a bash helper script to swap the .app bundle.
+/// On Windows: downloads MSI/EXE, runs the installer silently.
+/// The `dmg_url` is passed from the frontend (originally from the website manifest).
 #[tauri::command]
 async fn run_update(app: tauri::AppHandle, dmg_url: String) -> Result<(), String> {
     if dmg_url.is_empty() {
         return Err("No download URL provided".to_string());
     }
-    // Download the DMG while the app is still alive so the UI can show progress.
     let client = reqwest::Client::builder()
         .user_agent("oc-claw-updater")
         .build()
@@ -3984,7 +4752,17 @@ async fn run_update(app: tauri::AppHandle, dmg_url: String) -> Result<(), String
         .as_millis();
     let work_dir = std::env::temp_dir().join(format!("oc-claw-update-{stamp}"));
     std::fs::create_dir_all(&work_dir).map_err(|e| format!("failed to create temp dir: {e}"))?;
-    let dmg_path = work_dir.join("oc-claw-update.dmg");
+
+    // Determine installer file extension based on URL and platform
+    #[cfg(target_os = "macos")]
+    let installer_filename = "oc-claw-update.dmg";
+    #[cfg(target_os = "windows")]
+    let installer_filename = if dmg_url.ends_with(".msi") { "oc-claw-update.msi" } else { "oc-claw-update.exe" };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let installer_filename = "oc-claw-update";
+
+    let dmg_path = work_dir.join(installer_filename);
+    #[cfg(target_os = "macos")]
     let helper_path = work_dir.join("install-update.sh");
     let log_path = work_dir.join("install.log");
 
@@ -4031,8 +4809,11 @@ async fn run_update(app: tauri::AppHandle, dmg_url: String) -> Result<(), String
         "下载完成，准备安装更新",
     );
 
-    // Spawn a detached helper that waits for the app to quit, then swaps the bundle.
-    let script = format!(r#"#!/bin/bash
+    // Platform-specific: spawn a detached installer helper
+    #[cfg(target_os = "macos")]
+    {
+        // Spawn a detached helper that waits for the app to quit, then swaps the bundle.
+        let script = format!(r#"#!/bin/bash
 set -euo pipefail
 PID="{pid}"
 APP_BUNDLE="/Applications/oc-claw.app"
@@ -4099,32 +4880,135 @@ xattr -cr "$APP_BUNDLE" || true
 log "Launching updated app"
 open -n "$APP_BUNDLE"
 "#,
-        pid = std::process::id(),
-        dmg_path = dmg_path.display(),
-        log_path = log_path.display(),
-    );
-    std::fs::write(&helper_path, script).map_err(|e| format!("failed to write helper script: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&helper_path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("failed to chmod helper script: {e}"))?;
+            pid = std::process::id(),
+            dmg_path = dmg_path.display(),
+            log_path = log_path.display(),
+        );
+        std::fs::write(&helper_path, script).map_err(|e| format!("failed to write helper script: {e}"))?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&helper_path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("failed to chmod helper script: {e}"))?;
+        }
+
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|e| format!("failed to open helper log: {e}"))?;
+        let log_file_err = log_file
+            .try_clone()
+            .map_err(|e| format!("failed to clone helper log: {e}"))?;
+        std::process::Command::new("bash")
+            .arg(&helper_path)
+            .stdout(std::process::Stdio::from(log_file))
+            .stderr(std::process::Stdio::from(log_file_err))
+            .spawn()
+            .map_err(|e| format!("failed to start installer helper: {e}"))?;
     }
 
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("failed to open helper log: {e}"))?;
-    let log_file_err = log_file
-        .try_clone()
-        .map_err(|e| format!("failed to clone helper log: {e}"))?;
-    std::process::Command::new("bash")
-        .arg(&helper_path)
-        .stdout(std::process::Stdio::from(log_file))
-        .stderr(std::process::Stdio::from(log_file_err))
-        .spawn()
-        .map_err(|e| format!("failed to start installer helper: {e}"))?;
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows: spawn the downloaded installer (MSI or EXE) with silent flags.
+        // The installer will handle replacing the old version and relaunching.
+        let helper_path = work_dir.join("install-update.ps1");
+        let script = format!(r#"
+$ErrorActionPreference = 'Stop'
+# NOTE: $pid is a read-only automatic variable in PowerShell (current process PID).
+# Use $appPid instead to avoid "VariableNotWritable" errors.
+$appPid = {pid}
+$installerPath = '{installer_path}'
+$logPath = '{log_path}'
+
+function Log($msg) {{
+    "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -Append $logPath
+}}
+
+Log "Waiting for app pid $appPid to exit"
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+while ($sw.Elapsed.TotalSeconds -lt 60) {{
+    try {{
+        $p = Get-Process -Id $appPid -ErrorAction SilentlyContinue
+        if (-not $p) {{ break }}
+    }} catch {{ break }}
+    Start-Sleep -Milliseconds 500
+}}
+
+Log "Installing update from $installerPath"
+if ($installerPath.EndsWith('.msi')) {{
+    Start-Process msiexec.exe -ArgumentList '/i', "`"$installerPath`"", '/quiet', '/norestart' -Verb RunAs -Wait
+}} else {{
+    $installDir = $null
+    foreach ($regPath in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )) {{
+        $entry = Get-ItemProperty $regPath -ErrorAction SilentlyContinue |
+            Where-Object {{ $_.DisplayName -eq 'oc-claw' }} | Select-Object -First 1
+        if ($entry -and $entry.InstallLocation) {{
+            $installDir = $entry.InstallLocation.Trim('"')
+            break
+        }}
+    }}
+    $nsisArgs = @('/S')
+    if ($installDir) {{ $nsisArgs += "/D=$installDir" }}
+    Log "Running installer with args: $($nsisArgs -join ' ')"
+    try {{
+        Start-Process $installerPath -ArgumentList $nsisArgs -Verb RunAs -Wait
+    }} catch {{
+        Log "Installer failed (UAC denied or error): $_"
+        exit 1
+    }}
+}}
+
+Log "Launching updated app"
+# Find install location from registry (user may have chosen a custom path).
+# The executable is named ooclaw.exe (productName config produces this binary name).
+$appPath = $null
+foreach ($regPath in @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)) {{
+    $entry = Get-ItemProperty $regPath -ErrorAction SilentlyContinue |
+        Where-Object {{ $_.DisplayName -eq 'oc-claw' }} | Select-Object -First 1
+    if ($entry -and $entry.InstallLocation) {{
+        $loc = $entry.InstallLocation.Trim('"')
+        $candidate = Join-Path $loc 'ooclaw.exe'
+        if (Test-Path $candidate) {{
+            $appPath = $candidate
+            break
+        }}
+    }}
+}}
+if (-not $appPath) {{
+    # Fallback: check common locations
+    foreach ($dir in @("$env:LOCALAPPDATA\oc-claw", "$env:ProgramFiles\oc-claw", "H:\oc-claw")) {{
+        $candidate = Join-Path $dir 'ooclaw.exe'
+        if (Test-Path $candidate) {{ $appPath = $candidate; break }}
+    }}
+}}
+if ($appPath) {{
+    Log "Relaunching from $appPath"
+    Start-Process $appPath
+}} else {{
+    Log "Warning: could not find ooclaw.exe to relaunch"
+}}
+"#,
+            pid = std::process::id(),
+            installer_path = dmg_path.display().to_string().replace('\\', "\\\\").replace('\'', "''"),
+            log_path = log_path.display().to_string().replace('\\', "\\\\").replace('\'', "''"),
+        );
+        std::fs::write(&helper_path, &script).map_err(|e| format!("failed to write helper script: {e}"))?;
+
+        let mut update_cmd = std::process::Command::new("powershell");
+        update_cmd.args(["-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&helper_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        hide_window_cmd(&mut update_cmd);
+        update_cmd.spawn()
+            .map_err(|e| format!("failed to start installer helper: {e}"))?;
+    }
 
     emit_update_progress(
         &app,
@@ -4221,8 +5105,15 @@ async fn install_claude_hooks() -> Result<(), String> {
     let hooks_dir = claude_dir.join("hooks");
     std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
 
-    // Write hook script (matching notchi's notchi-hook.sh)
-    let hook_script = r#"#!/bin/bash
+    // Write hook script — platform-specific
+    #[cfg(unix)]
+    let hook_path = hooks_dir.join("ooclaw-hook.sh");
+    #[cfg(windows)]
+    let hook_path = hooks_dir.join("ooclaw-hook.ps1");
+
+    #[cfg(unix)]
+    {
+        let hook_script = r#"#!/bin/bash
 # ooclaw Claude Code hook - forwards events to /tmp/ooclaw-claude.sock
 SOCKET_PATH="/tmp/ooclaw-claude.sock"
 [ -S "$SOCKET_PATH" ] || exit 0
@@ -4289,16 +5180,46 @@ except:
     pass
 "
 "#;
-
-    let hook_path = hooks_dir.join("ooclaw-hook.sh");
-    std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
-
-    // chmod +x
-    #[cfg(unix)]
-    {
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(windows)]
+    {
+        // Windows hook: uses PowerShell directly (no .cmd wrapper).
+        // Claude Code runs hooks via /usr/bin/bash (Git Bash) on Windows,
+        // so .cmd files and backslash paths don't work. We write a .ps1 file
+        // and register the command as "powershell.exe ... -File '<forward-slash-path>'"
+        // in settings.json so bash can invoke it correctly.
+        // Simplified hook: forward raw CC JSON directly to the TCP server.
+        // Do NOT parse/reconstruct JSON in PowerShell — large payloads (Stop events
+        // with last_assistant_message containing full response text) get truncated by
+        // [Console]::In.ReadToEnd(), breaking ConvertFrom-Json. The Rust side accepts
+        // both processed (sessionId, event) and raw CC field names (session_id, hook_event_name).
+        // Forward raw CC JSON to TCP. Use explicit Socket.Shutdown(Send) to ensure
+        // the server receives EOF immediately — TcpClient.Dispose()/Close() alone on
+        // Windows may delay the FIN packet, causing the server's read to hang or timeout
+        // with incomplete data.
+        let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
+# Force UTF-8 input encoding — Windows CJK editions default to GBK/Shift-JIS,
+# which corrupts multi-byte characters in CC's UTF-8 JSON payload (especially
+# last_assistant_message in Stop events), causing JSON parse failures downstream.
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+try {
+    $raw = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
+    $stream = $client.GetStream()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush()
+    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+    $client.Close()
+} catch {}
+"#;
+        std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
     }
 
     // Update ~/.claude/settings.json to register hooks
@@ -4310,15 +5231,20 @@ except:
         serde_json::json!({})
     };
 
+    // On Windows, Claude Code runs hooks via bash (Git Bash), so the command
+    // must be bash-compatible. We call powershell.exe with forward-slash path.
+    #[cfg(windows)]
+    let hook_path_str = format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+        hook_path.to_string_lossy().replace('\\', "/")
+    );
+    #[cfg(not(windows))]
     let hook_path_str = hook_path.to_string_lossy().to_string();
     let hooks = settings.as_object_mut().ok_or("settings not object")?
         .entry("hooks").or_insert(serde_json::json!({}))
         .as_object_mut().ok_or("hooks not object")?;
 
-    // Hook registration configs matching notchi's HookInstaller approach:
-    // - PreToolUse/PostToolUse/PermissionRequest: matcher "*" (match all tools)
-    // - PreCompact: matcher "auto" + "manual" (both compact types)
-    // - Others: no matcher
+    // Hook registration configs matching notchi's HookInstaller approach
     let hook_entry = serde_json::json!([{"type": "command", "command": hook_path_str}]);
     let without_matcher = vec![serde_json::json!({"hooks": hook_entry})];
     let with_matcher = vec![serde_json::json!({"matcher": "*", "hooks": hook_entry})];
@@ -4339,17 +5265,20 @@ except:
         ("SessionEnd", &without_matcher),
     ];
 
+    // Detect both old (.cmd path) and new (powershell.exe ... .ps1) hook entries for cleanup
     let has_our_hook = |entry: &serde_json::Value| -> bool {
-        entry.get("command").and_then(|c| c.as_str()) == Some(&hook_path_str)
+        let is_ours = |cmd: &str| -> bool {
+            cmd == hook_path_str || cmd.contains("ooclaw-hook")
+        };
+        entry.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c))
         || entry.get("hooks").and_then(|hs| hs.as_array()).map_or(false, |hs| {
-            hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()) == Some(&hook_path_str))
+            hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c)))
         })
     };
 
     for (event, configs) in hook_configs {
         let event_hooks = hooks.entry(event).or_insert(serde_json::json!([]));
         let arr = event_hooks.as_array_mut().ok_or("not array")?;
-        // Remove existing ooclaw entries so they get replaced with latest config
         arr.retain(|h| !has_our_hook(h));
         for config in configs {
             arr.push(config.clone());
@@ -4362,157 +5291,223 @@ except:
     Ok(())
 }
 
-fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>, app_handle: tauri::AppHandle) {
-    std::thread::spawn(move || {
-        let sock_path = "/tmp/ooclaw-claude.sock";
-        let _ = std::fs::remove_file(sock_path);
+/// Process a Claude hook event (shared logic between Unix socket and TCP server).
+fn process_claude_event(
+    buf: &str,
+    state: &Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    app: &tauri::AppHandle,
+) {
+    log::info!("[claude_event] raw buf len={}", buf.len());
+    if let Ok(event) = serde_json::from_str::<serde_json::Value>(buf) {
+        // Accept both processed field names (sessionId, event, claudeStatus) from the old
+        // hook format AND raw CC field names (session_id, hook_event_name, status).
+        // On Windows the hook now forwards raw CC JSON directly to avoid truncation issues
+        // with large payloads (Stop events contain last_assistant_message with full response text).
+        let session_id = event.get("sessionId").or_else(|| event.get("session_id"))
+            .and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if session_id.is_empty() { log::warn!("[claude_event] empty sessionId, ignoring"); return; }
 
-        let listener = match std::os::unix::net::UnixListener::bind(sock_path) {
-            Ok(l) => l,
-            Err(e) => { log::error!("Failed to bind claude socket: {}", e); return; }
+        let hook_event = event.get("event").or_else(|| event.get("hook_event_name"))
+            .and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let claude_status = event.get("claudeStatus").or_else(|| event.get("status"))
+            .and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+
+        let is_processing = claude_status != "waiting_for_input";
+
+        let user_prompt = event.get("userPrompt").or_else(|| event.get("prompt"))
+            .and_then(|v| v.as_str()).unwrap_or("");
+        let is_local_slash = if user_prompt.starts_with('/') {
+            let cmd = user_prompt.split_whitespace().next().unwrap_or("");
+            matches!(cmd, "/clear" | "/compact" | "/help" | "/cost" | "/status" | "/vim" | "/fast" | "/model" | "/login" | "/logout")
+        } else { false };
+
+        let mut status = match hook_event.as_str() {
+            "UserPromptSubmit" => {
+                if is_local_slash { "stopped".to_string() } else { "processing".to_string() }
+            }
+            "PreCompact" => "compacting".to_string(),
+            "PreToolUse" => {
+                let tool = event.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                if tool == "AskUserQuestion" { "waiting".to_string() } else { "tool_running".to_string() }
+            }
+            "PostToolUse" => "processing".to_string(),
+            "Stop" => "stopped".to_string(),
+            "SubagentStop" => "processing".to_string(),
+            "SessionEnd" => "ended".to_string(),
+            "PermissionRequest" => "waiting".to_string(),
+            "SessionStart" => {
+                if is_processing { "processing".to_string() } else { "stopped".to_string() }
+            }
+            _ => {
+                if !is_processing { "stopped".to_string() } else { claude_status.clone() }
+            }
         };
-        log::info!("Claude socket server listening on {}", sock_path);
 
-        for stream in listener.incoming() {
-            match stream {
-                Ok(mut s) => {
-                    let state = claude_state.clone();
-                    let app = app_handle.clone();
-                    std::thread::spawn(move || {
-                        use std::io::Read;
-                        let mut buf = String::new();
-                        let _ = s.read_to_string(&mut buf);
-                        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&buf) {
-                            let session_id = event.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            if session_id.is_empty() { return; }
+        if !is_processing && matches!(status.as_str(), "processing" | "tool_running") {
+            status = "stopped".to_string();
+        }
 
-                            let hook_event = event.get("event").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let claude_status = event.get("claudeStatus").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+        let was_processing;
+        let was_compacting;
 
-                            // Matching notchi's SessionStore.process:
-                            // isProcessing is derived from Claude's own status field
-                            let is_processing = claude_status != "waiting_for_input";
+        {
+            let mut sessions = state.lock().unwrap();
+            let prev_status = sessions.get(&session_id).map(|s| s.status.clone()).unwrap_or_default();
+            was_processing = matches!(prev_status.as_str(), "processing" | "tool_running" | "compacting");
+            was_compacting = prev_status == "compacting";
 
-                            // Local slash commands don't trigger Stop, so treat as idle (matching notchi)
-                            let user_prompt = event.get("userPrompt").and_then(|v| v.as_str()).unwrap_or("");
-                            let is_local_slash = if user_prompt.starts_with('/') {
-                                let cmd = user_prompt.split_whitespace().next().unwrap_or("");
-                                matches!(cmd, "/clear" | "/compact" | "/help" | "/cost" | "/status" | "/vim" | "/fast" | "/model" | "/login" | "/logout")
-                            } else { false };
+            if hook_event == "SessionEnd" {
+                sessions.remove(&session_id);
+            } else {
+                let session = sessions.entry(session_id.clone()).or_insert_with(|| ClaudeSession {
+                    session_id: session_id.clone(),
+                    cwd: String::new(),
+                    status: "idle".to_string(),
+                    tool: None,
+                    tool_input: None,
+                    user_prompt: None,
+                    interactive: true,
+                    updated_at: 0,
+                    is_processing: false,
+                });
 
-                            // Event-based task determination (matching notchi's SessionStore.process)
-                            let mut status = match hook_event.as_str() {
-                                "UserPromptSubmit" => {
-                                    if is_local_slash { "stopped".to_string() } else { "processing".to_string() }
-                                }
-                                "PreCompact" => "compacting".to_string(),
-                                "PreToolUse" => {
-                                    let tool = event.get("tool").and_then(|v| v.as_str()).unwrap_or("");
-                                    if tool == "AskUserQuestion" { "waiting".to_string() } else { "tool_running".to_string() }
-                                }
-                                "PostToolUse" => "processing".to_string(),
-                                "Stop" => "stopped".to_string(),
-                                "SubagentStop" => "processing".to_string(),
-                                "SessionEnd" => "ended".to_string(),
-                                "PermissionRequest" => "waiting".to_string(),
-                                "SessionStart" => {
-                                    if is_processing { "processing".to_string() } else { "stopped".to_string() }
-                                }
-                                _ => {
-                                    if !is_processing { "stopped".to_string() } else { claude_status.clone() }
-                                }
-                            };
+                session.status = status.clone();
+                session.is_processing = is_processing;
+                session.cwd = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                session.interactive = event.get("interactive").and_then(|v| v.as_bool()).unwrap_or(true);
+                session.updated_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
 
-                            // Notchi default: if Claude reports waiting_for_input,
-                            // any active task should be overridden to idle
-                            // (but preserve "compacting" — PreCompact is an explicit state)
-                            if !is_processing && matches!(status.as_str(), "processing" | "tool_running") {
-                                status = "stopped".to_string();
-                            }
-
-                            let was_processing;
-                            let was_compacting;
-
-                            {
-                                let mut sessions = state.lock().unwrap();
-                                let prev_status = sessions.get(&session_id).map(|s| s.status.clone()).unwrap_or_default();
-                                was_processing = matches!(prev_status.as_str(), "processing" | "tool_running" | "compacting");
-                                was_compacting = prev_status == "compacting";
-
-                                // SessionEnd: remove session entirely
-                                if hook_event == "SessionEnd" {
-                                    sessions.remove(&session_id);
-                                } else {
-                                    let session = sessions.entry(session_id.clone()).or_insert_with(|| ClaudeSession {
-                                        session_id: session_id.clone(),
-                                        cwd: String::new(),
-                                        status: "idle".to_string(),
-                                        tool: None,
-                                        tool_input: None,
-                                        user_prompt: None,
-                                        interactive: true,
-                                        updated_at: 0,
-                                        is_processing: false,
-                                    });
-
-                                    session.status = status.clone();
-                                    session.is_processing = is_processing;
-                                    session.cwd = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    session.interactive = event.get("interactive").and_then(|v| v.as_bool()).unwrap_or(true);
-                                    session.updated_at = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-
-                                    if let Some(t) = event.get("tool").and_then(|v| v.as_str()) {
-                                        if !t.is_empty() { session.tool = Some(t.to_string()); }
-                                    }
-                                    if let Some(t) = event.get("toolInput").and_then(|v| v.as_str()) {
-                                        if !t.is_empty() { session.tool_input = Some(t.to_string()); }
-                                    }
-                                    if let Some(t) = event.get("userPrompt").and_then(|v| v.as_str()) {
-                                        if !t.is_empty() { session.user_prompt = Some(t.to_string()); }
-                                    }
-
-                                    // Clear tool info on Stop (task finished)
-                                    if hook_event == "Stop" || hook_event == "SubagentStop" {
-                                        session.tool = None;
-                                        session.tool_input = None;
-                                    }
-                                }
-                            }
-
-                            // Emit event to frontend
-                            let _ = app.emit("claude-session-update", &session_id);
-
-                            // If transitioned from processing to stopped/waiting, emit completion
-                            // Skip sound for compact completion (compacting → stopped)
-                            if was_processing && !was_compacting && (status == "stopped" || status == "waiting" || status == "ended") {
-                                let is_waiting = status == "waiting";
-                                let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting}));
-                            }
-
-                            // File watcher: start on UserPromptSubmit, stop on Stop/SessionEnd
-                            // (matching notchi's NotchiStateMachine approach)
-                            let cwd_str = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            if hook_event == "UserPromptSubmit" && !cwd_str.is_empty() {
-                                let jsonl_path = claude_session_file_path(&session_id, &cwd_str);
-                                if jsonl_path.exists() {
-                                    start_session_file_watcher(
-                                        session_id.clone(),
-                                        jsonl_path,
-                                        state.clone(),
-                                        app.clone(),
-                                    );
-                                }
-                            } else if hook_event == "Stop" || hook_event == "SubagentStop" || hook_event == "SessionEnd" {
-                                stop_session_file_watcher(&session_id);
-                            }
-                        }
-                    });
+                if let Some(t) = event.get("tool").or_else(|| event.get("tool_name")).and_then(|v| v.as_str()) {
+                    if !t.is_empty() { session.tool = Some(t.to_string()); }
                 }
-                Err(e) => { log::error!("Claude socket accept error: {}", e); }
+                if let Some(t) = event.get("toolInput").or_else(|| event.get("tool_input")).and_then(|v| v.as_str()) {
+                    if !t.is_empty() { session.tool_input = Some(t.to_string()); }
+                }
+                if let Some(t) = event.get("userPrompt").and_then(|v| v.as_str()) {
+                    if !t.is_empty() { session.user_prompt = Some(t.to_string()); }
+                }
+
+                if hook_event == "Stop" || hook_event == "SubagentStop" {
+                    session.tool = None;
+                    session.tool_input = None;
+                }
             }
         }
-    });
+
+        let _ = app.emit("claude-session-update", &session_id);
+
+        if was_processing && !was_compacting && (status == "stopped" || status == "waiting" || status == "ended") {
+            let is_waiting = status == "waiting";
+            let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting}));
+        }
+
+        let cwd_str = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        log::info!("[claude_event] session={} event={} status={} cwd={}", session_id, hook_event, status, cwd_str);
+        if hook_event == "UserPromptSubmit" && !cwd_str.is_empty() {
+            let jsonl_path = claude_session_file_path(&session_id, &cwd_str);
+            log::info!("[claude_event] session file path: {} exists={}", jsonl_path.display(), jsonl_path.exists());
+            if jsonl_path.exists() {
+                start_session_file_watcher(
+                    session_id.clone(),
+                    jsonl_path,
+                    state.clone(),
+                    app.clone(),
+                );
+            }
+        } else if hook_event == "Stop" || hook_event == "SubagentStop" || hook_event == "SessionEnd" {
+            stop_session_file_watcher(&session_id);
+        }
+    } else if let Err(e) = serde_json::from_str::<serde_json::Value>(buf) {
+        // Log parse failures with the error and the tail of the payload (the head is
+        // usually fine; the problem is truncation or encoding at the end).
+        let tail: String = buf.chars().rev().take(300).collect::<String>().chars().rev().collect();
+        log::warn!("[claude_event] JSON parse failed: err={}, len={}, tail=...{}", e, buf.len(), tail);
+    }
+}
+
+/// Start the Claude IPC server.
+/// On macOS/Linux: Unix domain socket at /tmp/ooclaw-claude.sock
+/// On Windows: TCP server on localhost:19283
+fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>, app_handle: tauri::AppHandle) {
+    #[cfg(unix)]
+    {
+        let state = claude_state;
+        let app = app_handle;
+        std::thread::spawn(move || {
+            let sock_path = "/tmp/ooclaw-claude.sock";
+            let _ = std::fs::remove_file(sock_path);
+
+            let listener = match std::os::unix::net::UnixListener::bind(sock_path) {
+                Ok(l) => l,
+                Err(e) => { log::error!("Failed to bind claude socket: {}", e); return; }
+            };
+            log::info!("Claude socket server listening on {}", sock_path);
+
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(mut s) => {
+                        let state = state.clone();
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            use std::io::Read;
+                            let mut buf = String::new();
+                            let _ = s.read_to_string(&mut buf);
+                            process_claude_event(&buf, &state, &app);
+                        });
+                    }
+                    Err(e) => { log::error!("Claude socket accept error: {}", e); }
+                }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let state = claude_state;
+        let app = app_handle;
+        std::thread::spawn(move || {
+            use std::net::TcpListener;
+            let listener = match TcpListener::bind("127.0.0.1:19283") {
+                Ok(l) => l,
+                Err(e) => { log::error!("Failed to bind claude TCP socket: {}", e); return; }
+            };
+            log::info!("Claude TCP server listening on 127.0.0.1:19283");
+
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(mut s) => {
+                        let state = state.clone();
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            use std::io::Read;
+                            // Set a read timeout to prevent read_to_string from hanging
+                            // indefinitely if the client (PowerShell TcpClient.Dispose())
+                            // doesn't send FIN promptly on Windows.
+                            s.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                            let mut buf = Vec::new();
+                            let mut chunk = [0u8; 4096];
+                            loop {
+                                match s.read(&mut chunk) {
+                                    Ok(0) => break, // EOF
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                    Err(e) => {
+                                        // Timeout or other error — process whatever we have
+                                        if !buf.is_empty() { break; }
+                                        log::warn!("[claude_tcp] read error with empty buf: {}", e);
+                                        return;
+                                    }
+                                }
+                            }
+                            let text = String::from_utf8_lossy(&buf);
+                            process_claude_event(&text, &state, &app);
+                        });
+                    }
+                    Err(e) => { log::error!("Claude TCP accept error: {}", e); }
+                }
+            }
+        });
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -4524,24 +5519,33 @@ pub fn run() {
             let path = percent_decode_str(raw_path).decode_utf8_lossy();
             let resource_dir = ctx.app_handle().path().resource_dir().unwrap_or_default();
             let file_path = resource_dir.join("assets").join("builtin").join(path.trim_start_matches('/'));
+            log::info!("[localasset] request={} resolved={}", raw_path, file_path.display());
             match std::fs::read(&file_path) {
                 Ok(data) => {
                     let mime = if path.ends_with(".gif") { "image/gif" }
                         else if path.ends_with(".png") { "image/png" }
                         else { "application/octet-stream" };
+                    let mut resp = tauri::http::Response::builder()
+                        .header("Content-Type", mime);
+                    // WebView2 on Windows requires CORS headers for custom scheme responses
+                    if cfg!(target_os = "windows") {
+                        resp = resp.header("Access-Control-Allow-Origin", "*");
+                    }
+                    resp.body(data).unwrap()
+                }
+                Err(e) => {
+                    log::warn!("[localasset] 404: {} err={}", file_path.display(), e);
                     tauri::http::Response::builder()
-                        .header("Content-Type", mime)
-                        .body(data)
+                        .status(404)
+                        .body(Vec::new())
                         .unwrap()
                 }
-                Err(_) => tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap(),
             }
         })
         .register_uri_scheme_protocol("customasset", |ctx, req| {
-            let path = req.uri().path();
+            let raw_path = req.uri().path();
+            // Percent-decode path for Chinese character names etc.
+            let path = percent_decode_str(raw_path).decode_utf8_lossy();
             let data_dir = ctx.app_handle().path().app_data_dir().unwrap_or_default();
             let file_path = data_dir.join("characters").join(path.trim_start_matches('/'));
             match std::fs::read(&file_path) {
@@ -4549,10 +5553,12 @@ pub fn run() {
                     let mime = if path.ends_with(".gif") { "image/gif" }
                         else if path.ends_with(".png") { "image/png" }
                         else { "application/octet-stream" };
-                    tauri::http::Response::builder()
-                        .header("Content-Type", mime)
-                        .body(data)
-                        .unwrap()
+                    let mut resp = tauri::http::Response::builder()
+                        .header("Content-Type", mime);
+                    if cfg!(target_os = "windows") {
+                        resp = resp.header("Access-Control-Allow-Origin", "*");
+                    }
+                    resp.body(data).unwrap()
                 }
                 Err(_) => tauri::http::Response::builder()
                     .status(404)
@@ -4569,15 +5575,13 @@ pub fn run() {
                 log::warn!("Failed to install Claude hooks on startup: {}", e);
             }
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
 
-            // Hide from Dock, show only in menu bar
+            // Hide from Dock, show only in menu bar (macOS only)
             #[cfg(target_os = "macos")]
             {
                 use objc2::runtime::{AnyClass, AnyObject};
@@ -4590,7 +5594,7 @@ pub fn run() {
                 }
             }
 
-            // Position mini window to right of notch (collapsed state)
+            // Position mini window initially
             #[cfg(target_os = "macos")]
             if let Some(win) = app.get_webview_window("mini") {
                 let win_clone = win.clone();
@@ -4602,7 +5606,6 @@ pub fn run() {
                     if let Ok(ns_win) = win_clone.ns_window() {
                         let obj = unsafe { &*(ns_win as *mut AnyObject) };
 
-                        // Elevate window level above menu bar
                         unsafe {
                             let _: () = msg_send![obj, setLevel: 27isize];
                             let behavior: usize = (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6);
@@ -4640,6 +5643,82 @@ pub fn run() {
                 });
             }
 
+            // Windows: position mini window at top-center of primary monitor
+            #[cfg(target_os = "windows")]
+            if let Some(win) = app.get_webview_window("mini") {
+                let _ = win.set_always_on_top(true);
+                let _ = win.set_skip_taskbar(true);
+                if let Ok(Some(monitor)) = win.primary_monitor() {
+                    let screen = monitor.size();
+                    let scale = monitor.scale_factor();
+                    let sw = screen.width as f64 / scale;
+                    let x = sw / 2.0 + 40.0;
+                    let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
+                }
+                let _ = win.show();
+            }
+
+            // Windows: move window off-screen when a fullscreen app is on the SAME
+            // monitor as the mini window.  We avoid hide()/show() because show()
+            // triggers a focus event which causes the panel to expand.
+            #[cfg(target_os = "windows")]
+            {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+                    use windows::Win32::Foundation::POINT;
+
+                    let mut was_hidden = false;
+                    let mut saved_pos: Option<tauri::LogicalPosition<f64>> = None;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        let fs_monitor = fullscreen_foreground_monitor();
+
+                        if let Some(win) = app_handle.get_webview_window("mini") {
+                            let same_monitor = if let Some(fs_mon) = fs_monitor {
+                                if let Ok(pos) = win.outer_position() {
+                                    let mini_mon = unsafe {
+                                        MonitorFromPoint(
+                                            POINT { x: pos.x, y: pos.y },
+                                            MONITOR_DEFAULTTONEAREST,
+                                        )
+                                    };
+                                    mini_mon == fs_mon
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
+                            if same_monitor && !was_hidden {
+                                log::info!("[fullscreen] detected fullscreen app on same monitor, moving mini off-screen");
+                                FULLSCREEN_HIDING.store(true, std::sync::atomic::Ordering::SeqCst);
+                                if let Ok(Some(pos)) = win.outer_position().map(|p| {
+                                    win.current_monitor().ok().flatten().map(|m| {
+                                        let s = m.scale_factor();
+                                        tauri::LogicalPosition::new(p.x as f64 / s, p.y as f64 / s)
+                                    })
+                                }) {
+                                    saved_pos = Some(pos);
+                                }
+                                let _ = win.set_always_on_top(false);
+                                let _ = win.set_position(tauri::LogicalPosition::new(-9999.0_f64, -9999.0_f64));
+                                was_hidden = true;
+                            } else if !same_monitor && was_hidden {
+                                log::info!("[fullscreen] fullscreen exited or on different monitor, restoring mini position");
+                                FULLSCREEN_HIDING.store(false, std::sync::atomic::Ordering::SeqCst);
+                                if let Some(pos) = saved_pos.take() {
+                                    let _ = win.set_position(pos);
+                                }
+                                let _ = win.set_always_on_top(true);
+                                was_hidden = false;
+                            }
+                        }
+                    }
+                });
+            }
+
             // Start Claude Code socket server
             {
                 let claude_state = app.state::<ClaudeState>();
@@ -4659,6 +5738,18 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(win) = app.get_webview_window("mini") {
+                            #[cfg(target_os = "windows")]
+                            {
+                                FULLSCREEN_HIDING.store(false, std::sync::atomic::Ordering::SeqCst);
+                                if let Ok(Some(monitor)) = win.primary_monitor() {
+                                    let scale = monitor.scale_factor();
+                                    let sw = monitor.size().width as f64 / scale;
+                                    let ui = win_ui_scale(&monitor);
+                                    let x = sw / 2.0 + (80.0 * ui).round();
+                                    let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
+                                }
+                                let _ = win.set_always_on_top(true);
+                            }
                             let _ = win.show();
                             let _ = win.set_focus();
                         }
@@ -4677,7 +5768,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

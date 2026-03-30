@@ -1,5 +1,13 @@
 {
-  "version": "1.5.2",
-  "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.5.2/oc-claw_1.5.2_aarch64.dmg",
-  "notes": ""
+  "notes": "",
+  "platforms": {
+    "macos": {
+      "version": "1.5.2",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.5.2/oc-claw_1.5.2_aarch64.dmg"
+    },
+    "windows": {
+      "version": "1.6.0",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.6.0/oc-claw_1.6.0_x64-setup.exe"
+    }
+  }
 }

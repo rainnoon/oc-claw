@@ -7,8 +7,15 @@ export async function getStore() {
   return load('settings.json', { defaults: {}, autoSave: true })
 }
 
-const ASSET_PREFIX = import.meta.env.DEV ? '/assets/builtin' : 'localasset://localhost'
-export const CUSTOM_ASSET_PREFIX = import.meta.env.DEV ? '/assets/custom' : 'customasset://localhost'
+// On Windows, WebView2 maps custom URI schemes to http://<scheme>.localhost/
+// instead of <scheme>://localhost/. Detect platform to use the correct prefix.
+const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+const ASSET_PREFIX = import.meta.env.DEV
+  ? '/assets/builtin'
+  : isWindows ? 'http://localasset.localhost' : 'localasset://localhost'
+export const CUSTOM_ASSET_PREFIX = import.meta.env.DEV
+  ? '/assets/custom'
+  : isWindows ? 'http://customasset.localhost' : 'customasset://localhost'
 
 export const DEFAULT_CHAR_NAME = '诗歌剧'
 

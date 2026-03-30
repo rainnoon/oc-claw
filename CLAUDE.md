@@ -77,6 +77,72 @@ Write thorough comments for any non-trivial logic, especially:
 
 This prevents re-introducing bugs when context from previous conversations is lost.
 
+# Windows Platform
+
+## SSH on Windows
+
+Windows OpenSSH does NOT support `ControlMaster` / `ControlPath` (Unix domain sockets). The project uses a custom `win_ssh_mux` module in `lib.rs` that maintains a persistent `ssh -T` subprocess per host. Commands are serialized over stdin/stdout using unique marker strings. Key points:
+
+- `win_ssh_mux::ensure()` spawns the persistent SSH subprocess if not already running.
+- `win_ssh_mux::exec()` sends a command via stdin with markers and reads stdout until the end marker appears.
+- `win_ssh_mux::kill()` / `kill_all()` cleans up subprocesses.
+- On transport errors, the caller should kill the mux session and respawn before retrying.
+- SSH marker files are stored under `~/.ssh/oc-claw-ctl/` to fast-path connection checks.
+
+## Window Management on Windows
+
+- **DPI scaling**: Windows does not automatically scale webview content like macOS. A `win_ui_scale()` function calculates a scale factor based on the monitor's logical height relative to 1080p. This factor is exposed to the frontend via the `get_ui_scale` Tauri command. The frontend applies CSS `zoom: uiScale` to the expanded panel (but NOT to the settings page, which uses `100vw`/`100vh`).
+- **Window positioning**: Windows uses top-left origin (unlike macOS bottom-left). The mini window is positioned at top-center to simulate macOS notch placement. The `set_mini_expanded` and `resize_mini_height` commands handle DPI-aware sizing and positioning.
+- **Fullscreen detection**: A background thread polls every 500ms using `MonitorFromWindow` + `GetMonitorInfoW` to check if the foreground window covers its entire monitor. When detected:
+  - The mini window is moved off-screen (`-9999, -9999`) instead of using `hide()/show()`, because `show()` triggers a `window.focus` event that causes the frontend panel to auto-expand.
+  - A global `FULLSCREEN_HIDING` `AtomicBool` flag is set to `true`, preventing other code paths (`set_mini_expanded`, `open_mini`, `resize_mini_height`) from calling `set_always_on_top(true)` or `show()` which would override the hidden state.
+  - When fullscreen exits, the saved position is restored and `always_on_top` is re-enabled.
+  - The system tray "show" menu item clears the `FULLSCREEN_HIDING` flag and resets position, allowing manual override.
+- **Always-on-top**: On Windows, `set_always_on_top(true)` is called in multiple places (`set_mini_expanded`, `open_mini`, setup). All of these must check `FULLSCREEN_HIDING` before calling to avoid fighting with the fullscreen detection thread.
+
+## Custom URI Schemes on Windows (Asset Loading)
+
+- **WebView2 does NOT support true custom URI schemes** like `localasset://localhost/path`. Instead, it maps them to `http://<scheme>.localhost/path`. This means:
+  - macOS (WebKit): `localasset://localhost/path` ✓
+  - Windows (WebView2): `http://localasset.localhost/path` ✓, `localasset://localhost/path` ✗
+- Both `scan_characters()` in `lib.rs` (Rust) and `ASSET_PREFIX` / `CUSTOM_ASSET_PREFIX` in `store.ts` (frontend) must use the platform-correct URL prefix. The Rust side uses `cfg!(target_os = "windows")`, the frontend uses `navigator.userAgent.includes('Windows')`.
+- The same applies to `customasset://` for user-uploaded characters.
+- All custom protocol responses must include `Access-Control-Allow-Origin: *` header for WebView2 CORS compatibility.
+- `tauri_plugin_log` is only registered in debug mode — production builds have no Rust-side log output. When debugging asset issues on Windows, either enable the log plugin in release or use the WebView2 DevTools console.
+
+## Claude Code Hooks on Windows
+
+- **Claude Code runs hook commands via `/usr/bin/bash` (Git Bash), NOT `cmd.exe`.** This means:
+  - `.cmd` / `.bat` files cannot be used as hook scripts — bash doesn't understand them.
+  - Backslash paths (`C:\Users\...`) get mangled — bash treats `\` as escape characters.
+  - The hook command in `~/.claude/settings.json` must be bash-compatible.
+- The correct approach: write a `.ps1` file and register the command as `powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:/Users/xxx/.claude/hooks/ooclaw-hook.ps1'` (forward slashes).
+- `install_claude_hooks()` in `lib.rs` handles this automatically on startup. It also cleans up old `.cmd`-format hook entries.
+- The cleanup logic (`has_our_hook`) matches any command containing `"ooclaw-hook"` to remove both old and new formats.
+- **PowerShell stdin encoding on CJK Windows**: Chinese/Japanese/Korean editions of Windows default to GBK/Shift-JIS for PowerShell's `[Console]::In`. CC sends UTF-8 JSON, so multi-byte characters (Chinese text in `last_assistant_message` of Stop events) get corrupted, breaking JSON parsing. The hook MUST set `[Console]::InputEncoding = [System.Text.Encoding]::UTF8` before reading stdin.
+- **The hook forwards raw CC JSON directly** — do NOT parse/reconstruct JSON in PowerShell. Large payloads (Stop events) are prone to encoding and truncation issues. Let the Rust side handle parsing. `process_claude_event()` accepts both CC's raw field names (`session_id`, `hook_event_name`, `status`, `tool_name`, `prompt`) and the old processed names (`sessionId`, `event`, `claudeStatus`).
+- **TCP socket shutdown**: The hook must call `$client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)` before `$client.Close()`. Without explicit shutdown, Windows may delay the TCP FIN packet, causing the Rust TCP server's read to hang. The server also uses a 5-second read timeout as a safety net.
+
+## Claude Code Session File Paths on Windows
+
+- Claude Code stores session JSONL files under `~/.claude/projects/<project_dir>/<session_id>.jsonl`.
+- `<project_dir>` is derived from the working directory by replacing all path separators and special characters with `-`.
+- **On Windows, the drive letter colon must also be replaced**: `G:\Desktop\code` → `G--Desktop-code` (colon becomes `-`, backslash becomes `-`).
+- `claude_session_file_path()` in `lib.rs` does: `.replace('/', "-").replace('\\', "-").replace(':', "-").replace('.', "-")`.
+- If this path computation doesn't match what Claude Code uses, the session file watcher won't start and activity status won't update (character stays idle/sleeping).
+
+## Audio on Windows
+
+- macOS uses `NSSound` via `invoke('play_sound', { name })` for system sounds.
+- Windows cannot play macOS system sounds. The frontend detects `navigator.userAgent.includes('Windows')` and plays bundled audio files from `/audio/` (e.g. `glass.mp3`) via `new Audio()` instead.
+- The macOS default notification sound is "Purr"; on Windows the default is "Glass" (`/audio/glass.mp3`).
+
+## Build
+
+- `npx tauri build` produces an NSIS installer `.exe` in `src-tauri/target/release/bundle/nsis/` and a standalone binary in `src-tauri/target/release/ooclaw.exe`.
+- Windows builds do not require code signing (users may see SmartScreen warnings).
+- When `npx tauri dev` fails with "拒绝访问 (os error 5)", it means the old `ooclaw.exe` process is still running and must be killed before recompilation can replace the binary.
+
 # Code Style
 
 - Prefer simple, minimal fixes.
