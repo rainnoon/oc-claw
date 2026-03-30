@@ -9,43 +9,28 @@
   <a href="./README.md">English</a> | <a href="./README.zh.md">中文</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.ko.md">한국어</a> | <b>Español</b> | <a href="./README.fr.md">Français</a>
 </p>
 <p align="center">
-  Un compañero del notch de macOS que monitorea tus agentes de programación con IA en tiempo real.
+  Mascota de escritorio que monitorea agentes de programación con IA, compatible con macOS y Windows.
 </p>
 
 ## Funciones
 
 - Reacciona en tiempo real a la actividad de agentes OpenClaw / Claude Code (trabajando, inactivo, esperando)
-- Un personaje vive junto al notch del MacBook, se anima cuando los agentes trabajan y duerme cuando están inactivos
+- Un personaje vive en tu escritorio (macOS / Windows), se anima cuando los agentes trabajan y duerme cuando están inactivos
 - Detecta automáticamente agentes OpenClaw locales, muestra listas de sesiones, historial de chat y gráficos de llamadas/tokens diarios
 - Escucha sesiones locales de Claude Code mediante hooks, visualiza conversaciones en vivo
 - Conecta a instancias de OpenClaw en servidores remotos vía SSH
 - Animaciones GIF personalizadas, empareja diferentes agentes con diferentes personajes
 - Fondos de isla personalizables con herramienta de recorte
 - Efectos de sonido de finalización y espera
-- Solo barra de menú — sin icono en el Dock
 
 ## Requisitos
 
-- macOS (MacBook con notch recomendado)
+- macOS o Windows
 - [OpenClaw](https://github.com/nicepkg/openclaw) y/o [Claude Code](https://docs.anthropic.com/en/docs/claude-code) instalado
 
 ## Instalación
 
-> [!TIP]
-> **Dile a tu agente de IA (OpenClaw / Claude Code):**
->
-> ```
-> Instala oc-claw: curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash
-> ```
-
-> [!NOTE]
-> **O ejecútalo tú mismo en la Terminal:**
->
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash
-> ```
->
-> También puedes descargar el DMG desde [Releases](https://github.com/rainnoon/oc-claw/releases). Después de instalar, ejecuta `xattr -cr /Applications/oc-claw.app` para evitar el Gatekeeper de macOS.
+Descárgalo desde **[oc-claw.ai](https://www.oc-claw.ai)**.
 
 ## Cómo funciona
 
@@ -62,7 +47,7 @@ OC-Claw sondea los archivos de sesión de OpenClaw para detectar actividad de ag
 
 - **Tauri v2** + **React** + **TypeScript** — frontend
 - **Rust** — backend para interacción con el sistema, túneles SSH y comunicación API
-- APIs nativas de macOS para posicionamiento del notch y gestión de ventanas
+- APIs nativas de macOS / Windows para gestión de ventanas
 
 ## Desarrollo
 

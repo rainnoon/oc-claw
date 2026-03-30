@@ -9,43 +9,28 @@
   <b>English</b> | <a href="./README.zh.md">中文</a> | <a href="./README.ja.md">日本語</a> | <a href="./README.ko.md">한국어</a> | <a href="./README.es.md">Español</a> | <a href="./README.fr.md">Français</a>
 </p>
 <p align="center">
-  A macOS notch companion that monitors your AI coding agents in real time.
+  A desktop pet that monitors your AI coding agents in real time. Supports macOS and Windows.
 </p>
 
 ## What it does
 
 - Reacts to OpenClaw / Claude Code agent activity in real time (working, idle, waiting)
-- Character lives beside the MacBook notch, animating when agents work and sleeping when idle
+- Desktop pet character animates when agents work and sleeps when idle (macOS notch or Windows taskbar)
 - Auto-discovers local OpenClaw agents with session lists, chat history, and daily calls/tokens charts
 - Listens to local Claude Code sessions via hooks, view live conversations
 - Connect to remote OpenClaw instances running on servers via SSH
 - Custom GIF character animations, pair different agents with different characters
 - Customizable island backgrounds with crop tool
 - Completion & waiting sound effects
-- Menu bar only — no dock icon
 
 ## Requirements
 
-- macOS (MacBook with notch recommended)
+- macOS or Windows
 - [OpenClaw](https://github.com/nicepkg/openclaw) and/or [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 
 ## Install
 
-> [!TIP]
-> **Tell your AI agent (OpenClaw / Claude Code):**
->
-> ```
-> Install oc-claw: curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash
-> ```
-
-> [!NOTE]
-> **Or run it yourself in Terminal:**
->
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/rainnoon/oc-claw/main/install.sh | bash
-> ```
->
-> You can also download the DMG from [Releases](https://github.com/rainnoon/oc-claw/releases). After installing, run `xattr -cr /Applications/oc-claw.app` to bypass macOS Gatekeeper.
+Download the latest version from the official website: **[oc-claw.ai](https://www.oc-claw.ai)**
 
 ## How it works
 
@@ -62,7 +47,7 @@ OC-Claw polls OpenClaw session files to detect agent activity, and listens to Cl
 
 - **Tauri v2** + **React** + **TypeScript** — frontend
 - **Rust** — backend for system interaction, SSH tunneling, and API communication
-- macOS native APIs for notch positioning and window management
+- macOS / Windows native APIs for window management and positioning
 
 ## Development
 
