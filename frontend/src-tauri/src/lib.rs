@@ -1804,6 +1804,12 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
     let home = home_dir_string();
     let agents_dir = std::path::PathBuf::from(&home).join(".openclaw").join("agents");
 
+    // If the OpenClaw gateway process is not running, every session's "active"
+    // state in the JSONL files is stale — the gateway was killed mid-turn and
+    // never wrote a final inactive message. Force all agents to inactive.
+    let gateway_alive = is_openclaw_gateway_alive();
+    log::info!("[get_health] local mode, gateway_alive={}", gateway_alive);
+
     let mut agents = Vec::new();
     let Ok(entries) = std::fs::read_dir(&agents_dir) else {
         return Err("read agents dir".into());
@@ -1840,7 +1846,12 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
                         }
                     }
                 }
-                let agent = build_agent_health_from_meta(&agent_id, &meta_str, &tails);
+                let mut agent = build_agent_health_from_meta(&agent_id, &meta_str, &tails);
+                // Gateway dead → all sessions are stale, force everything inactive
+                if !gateway_alive {
+                    agent.active = false;
+                    for s in &mut agent.sessions { s.active = false; }
+                }
                 agents.push(agent);
                 continue;
             }
@@ -1862,7 +1873,8 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
                 out.map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.to_string()).collect::<Vec<_>>())
                     .unwrap_or_default()
             };
-            check_agent_active_from_lines(&lines)
+            // Only trust JSONL content if gateway is still running
+            gateway_alive && check_agent_active_from_lines(&lines)
         } else { false };
         agents.push(AgentHealth { agent_id, active, sessions: vec![] });
     }
