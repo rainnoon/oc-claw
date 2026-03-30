@@ -4412,6 +4412,7 @@ fn start_session_file_watcher(
                     }
                 }
 
+
                 if changed {
                     session.updated_at = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
@@ -4447,6 +4448,24 @@ fn stop_session_file_watcher(session_id: &str) {
 
 #[tauri::command]
 async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec<ClaudeSession>, String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+    // Waiting-state guard (matching notchi's waitingClearGuard = 2s).
+    // When CC fires PermissionRequest / AskUserQuestion the status becomes
+    // "waiting". If the user ESCs the dialog CC may not fire a follow-up
+    // hook event, leaving the status stuck. Clear stale "waiting" back to
+    // "stopped" if no new hook event has arrived within 2 seconds.
+    {
+        let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        for session in sessions.values_mut() {
+            if session.status == "waiting" && now_ms.saturating_sub(session.updated_at) > 2000 {
+                log::info!("[get_claude_sessions] clearing stale waiting for {}", session.session_id);
+                session.status = "stopped".to_string();
+            }
+        }
+    }
+
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let mut list: Vec<ClaudeSession> = sessions.values()
         .filter(|s| !s.cwd.is_empty())
@@ -5465,7 +5484,11 @@ fn process_claude_event(
 
         let _ = app.emit("claude-session-update", &session_id);
 
-        if was_processing && !was_compacting && (status == "stopped" || status == "waiting" || status == "ended") {
+        // Only emit completion sound for real task endings, not sub-agent stops.
+        // SubagentStop has claudeStatus="waiting_for_input" which causes status to
+        // be rewritten to "stopped" (line 5414), falsely triggering this branch.
+        if was_processing && !was_compacting && hook_event != "SubagentStop"
+            && (status == "stopped" || status == "waiting" || status == "ended") {
             let is_waiting = status == "waiting";
             let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting}));
         }
