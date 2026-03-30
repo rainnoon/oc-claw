@@ -4314,6 +4314,11 @@ pub struct ClaudeSession {
     /// Derived from Claude's own status field: true when status != "waiting_for_input"
     #[serde(rename = "isProcessing")]
     pub is_processing: bool,
+    /// PID of the Claude Code process that owns this session.
+    /// Used to detect Ctrl+C exits: if the PID is dead and status is "waiting",
+    /// the session is stale and should be cleared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 struct ClaudeState {
@@ -4336,10 +4341,18 @@ fn claude_session_file_path(session_id: &str, cwd: &str) -> PathBuf {
 /// Check if a JSONL file indicates an interrupted session
 fn check_interrupted(path: &std::path::Path) -> bool {
     if let Ok(content) = std::fs::read_to_string(path) {
-        // Check last few lines for interruption marker (like notchi's ConversationParser)
-        for line in content.lines().rev().take(20) {
-            if line.contains("\"type\":\"user\"") && line.contains("[Request interrupted by user") {
-                return true;
+        // Find the LAST user-type line and check only that one for the
+        // interruption marker. Previous versions checked any of the last 20
+        // lines, which meant an old ESC interruption marker would persist
+        // even after the user submitted a new prompt — the file watcher
+        // would keep resetting "processing"/"tool_running" → "stopped",
+        // fighting with the hook events that correctly set the status.
+        for line in content.lines().rev().take(50) {
+            if line.contains("\"type\":\"user\"") {
+                // This is the most recent user message in the file.
+                // Only consider the session interrupted if THIS message
+                // is the interruption marker, not an earlier one.
+                return line.contains("[Request interrupted by user");
             }
         }
     }
@@ -4443,22 +4456,51 @@ fn stop_session_file_watcher(session_id: &str) {
     }
 }
 
+/// Check whether a process with the given PID is still alive.
+/// Uses kill(pid, 0) on Unix — a zero-cost syscall that checks existence
+/// without sending any signal. On Windows, uses OpenProcess.
+fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // kill(pid, 0) returns 0 if the process exists and we have permission
+        // to signal it; returns -1 with ESRCH if the process doesn't exist.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        use windows::Win32::Foundation::CloseHandle;
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            match handle {
+                Ok(h) => { let _ = CloseHandle(h); true }
+                Err(_) => false,
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec<ClaudeSession>, String> {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-
-    // Waiting-state guard (matching notchi's waitingClearGuard = 2s).
-    // When CC fires PermissionRequest / AskUserQuestion the status becomes
-    // "waiting". If the user ESCs the dialog CC may not fire a follow-up
-    // hook event, leaving the status stuck. Clear stale "waiting" back to
-    // "stopped" if no new hook event has arrived within 2 seconds.
+    // Stale session guard: if the CC process was killed (Ctrl+C / SIGKILL)
+    // without sending a follow-up hook event, any active status (waiting,
+    // processing, tool_running, compacting) would get stuck forever.
+    // Check PID liveness for all non-terminal statuses and clear to "stopped".
+    // Uses per-session PID tracking + kill(pid, 0) — a zero-cost syscall.
     {
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         for session in sessions.values_mut() {
-            if session.status == "waiting" && now_ms.saturating_sub(session.updated_at) > 2000 {
-                log::info!("[get_claude_sessions] clearing stale waiting for {}", session.session_id);
-                session.status = "stopped".to_string();
+            let dominated = matches!(session.status.as_str(),
+                "waiting" | "processing" | "tool_running" | "compacting");
+            if dominated {
+                if let Some(pid) = session.pid {
+                    if !is_pid_alive(pid) {
+                        log::info!("[get_claude_sessions] CC pid {} dead, clearing {} for {}", pid, session.status, session.session_id);
+                        session.status = "stopped".to_string();
+                    }
+                }
+                // No pid recorded → can't verify, keep current status (CC is
+                // likely using an older hook that doesn't send pid)
             }
         }
     }
@@ -5211,6 +5253,10 @@ for CHECK_PID in $PPID $(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' '); do
     fi
 done
 export OOCLAW_INTERACTIVE=$IS_INTERACTIVE
+# $PPID is the PID of the process that spawned this bash (i.e. Claude Code).
+# Forwarded to oc-claw so it can detect when CC exits (Ctrl+C / SIGKILL)
+# and clear stale "waiting" sessions.
+export CC_PID=$PPID
 
 /usr/bin/python3 -c "
 import json, os, socket, sys
@@ -5240,6 +5286,7 @@ output = {
     'event': hook_event,
     'claudeStatus': input_data.get('status', status_map.get(hook_event, 'unknown')),
     'interactive': os.environ.get('OOCLAW_INTERACTIVE', 'true') == 'true',
+    'pid': int(os.environ.get('CC_PID', '0')) or None,
 }
 
 if hook_event == 'UserPromptSubmit':
@@ -5294,6 +5341,14 @@ except:
 try {
     $raw = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
+    # Inject CC process PID into the raw JSON without parsing it (large
+    # Stop events break ConvertFrom-Json due to truncation). Prepend
+    # "pid":N right after the opening brace via string manipulation.
+    # Process tree: PowerShell → bash (Git Bash) → CC
+    $ccPid = (Get-Process -Id $PID).Parent.Parent.Id
+    if ($ccPid -and $raw.StartsWith('{')) {
+        $raw = '{"pid":' + $ccPid + ',' + $raw.Substring(1)
+    }
     $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
     $stream = $client.GetStream()
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
@@ -5381,7 +5436,7 @@ fn process_claude_event(
     state: &Arc<Mutex<HashMap<String, ClaudeSession>>>,
     app: &tauri::AppHandle,
 ) {
-    log::info!("[claude_event] raw buf len={}", buf.len());
+    log::info!("[claude_event] raw buf len={} content={}", buf.len(), &buf[..buf.len().min(500)]);
     if let Ok(event) = serde_json::from_str::<serde_json::Value>(buf) {
         // Accept both processed field names (sessionId, event, claudeStatus) from the old
         // hook format AND raw CC field names (session_id, hook_event_name, status).
@@ -5427,9 +5482,20 @@ fn process_claude_event(
             }
         };
 
-        if !is_processing && matches!(status.as_str(), "processing" | "tool_running") {
+        // Guard: if CC's own status is "waiting_for_input" but our event-derived
+        // status says "processing"/"tool_running", something is out of sync.
+        // Override to "stopped" — EXCEPT for UserPromptSubmit, where CC's status
+        // field may still say "waiting_for_input" because the hook fires before
+        // CC's internal state transitions. A new prompt always means processing.
+        if !is_processing
+            && matches!(status.as_str(), "processing" | "tool_running")
+            && hook_event != "UserPromptSubmit"
+        {
+            log::info!("[claude_event] guard override: {} → stopped (is_processing=false)", status);
             status = "stopped".to_string();
         }
+        log::info!("[claude_event] session={} event={} claude_status={} is_processing={} → final_status={}",
+            &session_id[..session_id.len().min(8)], hook_event, claude_status, is_processing, status);
 
         let was_processing;
         let was_compacting;
@@ -5453,6 +5519,7 @@ fn process_claude_event(
                     interactive: true,
                     updated_at: 0,
                     is_processing: false,
+                    pid: None,
                 });
 
                 session.status = status.clone();
@@ -5470,6 +5537,10 @@ fn process_claude_event(
                 }
                 if let Some(t) = event.get("userPrompt").and_then(|v| v.as_str()) {
                     if !t.is_empty() { session.user_prompt = Some(t.to_string()); }
+                }
+                // Store CC process PID from hook event for stale-session detection
+                if let Some(p) = event.get("pid").and_then(|v| v.as_u64()) {
+                    session.pid = Some(p as u32);
                 }
 
                 if hook_event == "Stop" || hook_event == "SubagentStop" {

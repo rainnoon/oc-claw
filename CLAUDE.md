@@ -44,6 +44,14 @@ When modifying anything related to OpenClaw session activity detection, health p
 5. **Sub-agent sessions**: OpenClaw sub-agent session keys contain `:subagent:` (e.g. `agent:main:subagent:uuid`). Use this to identify and filter them — do NOT rely on message content like `[Subagent Context]` which requires preview data that may not be loaded yet. Sub-agent sessions should be hidden from the UI session list and should NOT trigger completion sounds.
 6. **OpenClaw source code** is installed at `~/Library/pnpm/global/5/.pnpm/openclaw@*/node_modules/openclaw/`. Check `dist/session-key-*.js` for session key format, `dist/health-*.js` for health endpoint logic. Always verify assumptions against real data at `~/.openclaw/` and the source code.
 
+# Claude Code Session Status & File Watcher
+
+The CC hook system and the session file watcher BOTH update session status. They can fight each other if not careful:
+
+1. **`check_interrupted()` must only check the LAST user message.** The JSONL file accumulates all messages. If it scans multiple lines for `[Request interrupted by user`, an old ESC interruption marker persists after the user submits a new prompt. The file watcher then keeps resetting "processing"/"tool_running" → "stopped" on every file change, overriding hook events. Fix: find the most recent `"type":"user"` line and only check that one.
+2. **PID-alive check must cover ALL active statuses**, not just "waiting". If CC is killed (Ctrl+C / SIGKILL) during thinking (no tool calls yet), no Stop/SessionEnd hook fires. Without the PID check on "processing"/"tool_running"/"compacting", the character gets stuck in working state forever.
+3. **Hook events are the primary status source; the file watcher is a fallback.** Hook events arrive in real-time via the Unix/TCP socket. The file watcher (200ms debounce) only handles edge cases the hooks miss: ESC interruption and session file truncation (compact). Do not add file-watcher logic that competes with hook-derived status.
+
 # Polling & Remote SSH
 
 Mini.tsx has multiple polling loops (`fetchAgents` 5s, `pollHealth` 1s, `fetchAllSessions` 5s, Claude Code 2s). When modifying polling logic:
