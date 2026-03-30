@@ -361,7 +361,14 @@ pub struct AgentHealth {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthResult {
     pub agents: Vec<AgentHealth>,
+    /// Whether the local OpenClaw gateway process is running.
+    /// Always `true` for remote connections (we can't check remote process).
+    /// Frontend uses this to auto-remove the local connection when gateway is dead.
+    #[serde(default = "default_true", rename = "gatewayAlive")]
+    pub gateway_alive: bool,
 }
+
+fn default_true() -> bool { true }
 
 /// Check whether the local OpenClaw gateway process is alive.
 ///
@@ -1775,7 +1782,7 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
                 let agent = build_agent_health_from_meta(&prev_id, &meta_buf, &tails);
                 agents.push(agent);
             }
-            return Ok(HealthResult { agents });
+            return Ok(HealthResult { agents, gateway_alive: true });
         }
         // Gateway API fallback
         let url = url.as_deref().unwrap_or("");
@@ -1797,7 +1804,7 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
             if active { *entry = true; }
         }
         let agents = agent_active.into_iter().map(|(agent_id, active)| AgentHealth { agent_id, active, sessions: vec![] }).collect();
-        return Ok(HealthResult { agents });
+        return Ok(HealthResult { agents, gateway_alive: true });
     }
 
     // === local mode — content-based detection with session-level data ===
@@ -1879,7 +1886,7 @@ async fn get_health(mode: Option<String>, url: Option<String>, token: Option<Str
         agents.push(AgentHealth { agent_id, active, sessions: vec![] });
     }
 
-    Ok(HealthResult { agents })
+    Ok(HealthResult { agents, gateway_alive })
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

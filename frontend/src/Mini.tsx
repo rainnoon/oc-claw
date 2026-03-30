@@ -10,7 +10,7 @@ import { SettingsTab } from './components/SettingsTab'
 import { AgentDetailView } from './components/AgentDetailView'
 import { CreateCharacterModal } from './components/CreateCharacterModal'
 import { ClaudeStatsView } from './components/ClaudeStatsView'
-import { getStore, DEFAULT_CHAR, DEFAULT_CHAR_NAME, loadCharacters, loadOcConnections } from './lib/store'
+import { getStore, DEFAULT_CHAR, DEFAULT_CHAR_NAME, loadCharacters, loadOcConnections, saveOcConnections } from './lib/store'
 import { saveAgentCharMap } from './lib/agents'
 import type { AgentMetrics, OcConnection } from './lib/types'
 
@@ -636,7 +636,22 @@ export default function Mini() {
             }
             return
           }
-          const health = (await invoke('get_health', oc)) as { agents: AgentHealth[] }
+          const health = (await invoke('get_health', oc)) as { agents: AgentHealth[]; gatewayAlive?: boolean }
+          // Gateway dead (local OpenClaw process not running) — remove this
+          // connection from settings so the character cleanly goes idle instead
+          // of flickering between stale "working" and "idle" states.
+          if (health.gatewayAlive === false) {
+            console.warn('[pollHealth] gateway dead, removing connection:', conn.id)
+            const remaining = connections.filter(c => c.id !== conn.id)
+            saveOcConnections(remaining)
+            for (const k of Object.keys(hMap)) {
+              if (prefix === '' || k.startsWith(prefix)) delete hMap[k]
+            }
+            for (const k of Object.keys(sMap)) {
+              if (prefix === '' || k.startsWith(prefix)) delete sMap[k]
+            }
+            return
+          }
           // Clear old entries for this connection, then fill fresh data
           for (const k of Object.keys(hMap)) {
             if (prefix === '' || k.startsWith(prefix)) delete hMap[k]
@@ -654,7 +669,7 @@ export default function Mini() {
               })
             }
           })
-        } catch { /* SSH failed — previous data preserved */ }
+        } catch { /* SSH/invoke failed — previous data preserved */ }
       }))
 
       // Detect session active→inactive transitions (only for fresh data)
