@@ -117,7 +117,11 @@
     "language": "Language",
     "languageDesc": "Select the display language",
     "langZh": "中文",
-    "langEn": "English"
+    "langEn": "English",
+    "langJa": "日本語",
+    "langKo": "한국어",
+    "langEs": "Español",
+    "langFr": "Français"
   },
 
   "character": {

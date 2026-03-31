@@ -691,14 +691,14 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               <span className="text-sm font-medium text-white/90">{t('settings.language')}</span>
               <span className="text-xs text-white/40">{t('settings.languageDesc')}</span>
             </div>
-            <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
-              {(['zh', 'en'] as const).map((lng) => (
+            <div className="flex flex-wrap bg-black/50 p-0.5 rounded-lg border border-white/5 gap-0.5">
+              {(['zh', 'en', 'ja', 'ko', 'es', 'fr'] as const).map((lng) => (
                 <button
                   key={lng}
                   onClick={() => { i18n.changeLanguage(lng); localStorage.setItem('oc-claw-lang', lng) }}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${i18n.language === lng ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
+                  className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${i18n.language === lng ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
                 >
-                  {lng === 'zh' ? t('settings.langZh') : t('settings.langEn')}
+                  {t(`settings.lang${lng.charAt(0).toUpperCase() + lng.slice(1)}`)}
                 </button>
               ))}
             </div>

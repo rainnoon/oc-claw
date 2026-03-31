@@ -117,7 +117,11 @@
     "language": "语言",
     "languageDesc": "选择界面显示语言",
     "langZh": "中文",
-    "langEn": "English"
+    "langEn": "English",
+    "langJa": "日本語",
+    "langKo": "한국어",
+    "langEs": "Español",
+    "langFr": "Français"
   },
 
   "character": {

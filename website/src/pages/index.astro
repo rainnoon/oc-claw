@@ -1,5 +1,5 @@
 ---
-// Root page: redirect to /en/ or /zh/ based on browser language.
+// Root page: redirect to language-specific page based on browser language.
 // Since Astro is static, we use a client-side redirect.
 ---
 
@@ -7,7 +7,13 @@
   <head>
     <meta charset="utf-8" />
     <script is:inline>
-      const lang = navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+      const nav = navigator.language.toLowerCase();
+      let lang = 'en';
+      if (nav.startsWith('zh')) lang = 'zh';
+      else if (nav.startsWith('ja')) lang = 'ja';
+      else if (nav.startsWith('ko')) lang = 'ko';
+      else if (nav.startsWith('es')) lang = 'es';
+      else if (nav.startsWith('fr')) lang = 'fr';
       window.location.replace('/' + lang + '/');
     </script>
     <meta http-equiv="refresh" content="0;url=/en/" />

@@ -1,14 +1,11 @@
 ---
-import type { Lang } from '../i18n/index';
+import { languages, langLabels, type Lang } from '../i18n/index';
 
 interface Props {
   lang?: Lang;
 }
 
 const { lang = 'en' } = Astro.props;
-const otherLang = lang === 'zh' ? 'en' : 'zh';
-const otherLabel = lang === 'zh' ? 'EN' : '中文';
-const switchHref = `/${otherLang}/`;
 ---
 
 <nav>
@@ -17,7 +14,11 @@ const switchHref = `/${otherLang}/`;
     <span class="logo-label">OC-Claw</span>
   </a>
   <div class="nav-right">
-    <a href={switchHref} class="nav-link lang-switch">{otherLabel}</a>
+    <div class="lang-switcher">
+      {languages.filter(l => l !== lang).map(l => (
+        <a href={`/${l}/`} class="nav-link lang-switch">{langLabels[l]}</a>
+      ))}
+    </div>
     <a href="https://github.com/rainnoon/oc-claw" class="nav-link">GitHub</a>
   </div>
 </nav>
@@ -27,6 +28,11 @@ const switchHref = `/${otherLang}/`;
     display: flex;
     align-items: center;
     gap: 1rem;
+  }
+  .lang-switcher {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
   .lang-switch {
     font-size: 0.85rem;
