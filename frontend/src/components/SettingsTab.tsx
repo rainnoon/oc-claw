@@ -482,6 +482,15 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
 
             {/* Background thumbnails */}
             <div className="flex gap-2 flex-wrap mb-3">
+              {/* Anime grid background */}
+              <button
+                onClick={() => onChangeIslandBg('__anime__')}
+                className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === '__anime__' ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
+              >
+                <div style={{ width: '100%', height: '100%', background: '#F0D140' }}>
+                  <div style={{ width: '100%', height: '100%', backgroundImage: 'linear-gradient(to right, #00000015 1px, transparent 1px), linear-gradient(to bottom, #00000015 1px, transparent 1px)', backgroundSize: '8px 8px' }} />
+                </div>
+              </button>
               {backgrounds.map((bg) => (
                 <button
                   key={bg}
@@ -498,8 +507,8 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               </label>
             </div>
 
-            {/* Crop preview */}
-            {bgPreviewUrl && bgNaturalSize && (
+            {/* Crop preview — hidden for anime grid background */}
+            {islandBg !== '__anime__' && bgPreviewUrl && bgNaturalSize && (
               <div className="flex flex-col items-center gap-2">
                 {/* Full image with crop overlay */}
                 <div
