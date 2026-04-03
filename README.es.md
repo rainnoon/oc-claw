@@ -19,7 +19,7 @@
 - Detecta automáticamente agentes OpenClaw locales, muestra listas de sesiones, historial de chat y gráficos de llamadas/tokens diarios
 - Escucha sesiones locales de Claude Code mediante hooks, visualiza conversaciones en vivo
 - Conecta a instancias de OpenClaw en servidores remotos vía SSH
-- Animaciones GIF personalizadas, empareja diferentes agentes con diferentes personajes
+- Animaciones personalizadas, empareja diferentes agentes con diferentes personajes
 - Fondos de isla personalizables con herramienta de recorte
 - Efectos de sonido de finalización y espera
 

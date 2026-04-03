@@ -19,7 +19,7 @@
 - Auto-discovers local OpenClaw agents with session lists, chat history, and daily calls/tokens charts
 - Listens to local Claude Code sessions via hooks, view live conversations
 - Connect to remote OpenClaw instances running on servers via SSH
-- Custom GIF character animations, pair different agents with different characters
+- Custom character animations, pair different agents with different characters
 - Customizable island backgrounds with crop tool
 - Completion & waiting sound effects
 

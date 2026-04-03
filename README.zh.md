@@ -19,7 +19,7 @@
 - 自动发现本地 OpenClaw agent，显示 session 列表、聊天记录、调用量/token 统计图表
 - 通过 Hook 监听本地 Claude Code 会话，查看实时对话
 - 通过 SSH 连接远程服务器上的 OpenClaw 实例
-- 自定义角色 GIF 动画，将不同 agent 配对不同角色
+- 自定义角色动画，将不同 agent 配对不同角色
 - 可自定义岛屿背景，支持裁剪工具
 - 完成提示音 & 等待提示音
 
