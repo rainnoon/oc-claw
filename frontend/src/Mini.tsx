@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, Check, Loader2, Pen, Plus, X, Pin, Bell, Move, Settings, Terminal, Asterisk, Trash2, Cloud } from 'lucide-react'
+import { ChevronDown, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Terminal, Asterisk, Trash2, Cloud } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
@@ -1370,7 +1370,7 @@ export default function Mini() {
                 {(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) ? (
                   <button data-no-drag
                     onClick={(e) => { e.stopPropagation(); setSelectedAgentId(null); setSelectedClaudeSession(null); setSelectedSessionKey(null); setShowClaudeStats(false) }}
-                    className="text-slate-400 hover:text-[#F0D140] transition-colors"
+                    className="text-slate-400 hover:text-slate-200 transition-colors"
                   >
                     <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
                   </button>
@@ -1401,7 +1401,7 @@ export default function Mini() {
                   className={`transition-colors ${soundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
                   title={soundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
                 >
-                  <Bell className="w-4 h-4" strokeWidth={2.5} />
+                  {soundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
                 </button>
                 <button data-no-drag
                   onClick={(e) => { e.stopPropagation(); enterMoveMode() }}
