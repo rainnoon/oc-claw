@@ -5885,10 +5885,34 @@ pub fn run() {
                 start_claude_socket_server(sessions_arc, app.handle().clone());
             }
 
-            // System tray
-            let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
-            let hide = MenuItem::with_id(app, "hide", "隐藏", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            // System tray — detect system language for menu labels
+            let is_zh = {
+                let lang = std::env::var("LANG").unwrap_or_default().to_lowercase();
+                let lc = std::env::var("LC_ALL").unwrap_or_default().to_lowercase();
+                lang.starts_with("zh") || lc.starts_with("zh")
+            };
+            let is_ja = {
+                let lang = std::env::var("LANG").unwrap_or_default().to_lowercase();
+                let lc = std::env::var("LC_ALL").unwrap_or_default().to_lowercase();
+                lang.starts_with("ja") || lc.starts_with("ja")
+            };
+            let is_ko = {
+                let lang = std::env::var("LANG").unwrap_or_default().to_lowercase();
+                let lc = std::env::var("LC_ALL").unwrap_or_default().to_lowercase();
+                lang.starts_with("ko") || lc.starts_with("ko")
+            };
+            let (show_label, hide_label, quit_label) = if is_zh {
+                ("显示", "隐藏", "退出")
+            } else if is_ja {
+                ("表示", "非表示", "終了")
+            } else if is_ko {
+                ("표시", "숨기기", "종료")
+            } else {
+                ("Show", "Hide", "Quit")
+            };
+            let show = MenuItem::with_id(app, "show", show_label, true, None::<&str>)?;
+            let hide = MenuItem::with_id(app, "hide", hide_label, true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
 
             TrayIconBuilder::new()
