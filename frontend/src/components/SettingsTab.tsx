@@ -704,7 +704,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               {(['zh', 'en', 'ja', 'ko', 'es', 'fr'] as const).map((lng) => (
                 <button
                   key={lng}
-                  onClick={() => { i18n.changeLanguage(lng); localStorage.setItem('oc-claw-lang', lng); invoke('update_tray_language', { lang: lng }).catch(() => {}) }}
+                  onClick={async () => { i18n.changeLanguage(lng); localStorage.setItem('oc-claw-lang', lng); const store = await getStore(); await store.set('oc-claw-lang', lng); await store.save(); invoke('update_tray_language', { lang: lng }).catch(() => {}) }}
                   className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${i18n.language === lng ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
                 >
                   {t(`settings.lang${lng.charAt(0).toUpperCase() + lng.slice(1)}`)}
