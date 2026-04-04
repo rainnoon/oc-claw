@@ -274,7 +274,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
           </div>
         </div>
         <div className="flex items-center gap-2 text-sm text-white/50 group-hover:text-white/80 transition-colors pr-2">
-          <span>{currentChar || t('mini.unassigned')}</span>
+          <span>{currentChar ? (characters.find(c => c.name === currentChar)?.builtin ? t(`charNames.${currentChar}`, currentChar) : currentChar) : t('mini.unassigned')}</span>
           <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
         </div>
       </div>
