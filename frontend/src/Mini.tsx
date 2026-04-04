@@ -1254,7 +1254,7 @@ export default function Mini() {
   // Panel dimensions — CSS uses fixed base sizes (380/400); on Windows high-DPI
   // screens the panel root applies `zoom: uiScale` so all content (text, icons,
   // spacing) scales uniformly to match the Rust-side window enlargement.
-  const panelW = 380
+  const panelW = 475
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -1353,19 +1353,13 @@ export default function Mini() {
             ? 'clip-path 0.45s cubic-bezier(0.22, 1.2, 0.36, 1), box-shadow 0.3s ease'
             : 'clip-path 0.25s cubic-bezier(0.4, 0, 0, 1), box-shadow 0.15s ease',
         }}>
-          <div style={{
-            position: 'relative', zIndex: 1,
+          {/* Top Control Bar — outside the transform wrapper so sticky works correctly */}
+          <div className="flex items-center justify-between px-4 py-2.5 shrink-0 sticky top-0 z-20 bg-black text-white" style={{
             opacity: showPanel ? 1 : 0,
-            transform: showPanel ? 'scale(1) translateY(0)' : 'scale(0.9) translateY(-20px)',
-            filter: showPanel ? 'blur(0px)' : 'blur(8px)',
-            transformOrigin: 'top center',
             transition: showPanel
-              ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s, transform 0.4s cubic-bezier(0.2, 1, 0.3, 1), filter 0.25s ease 0.05s'
-              : 'opacity 0.08s ease-out, transform 0.08s ease-out, filter 0.08s ease-out',
-            height: 'auto',
+              ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s'
+              : 'opacity 0.08s ease-out',
           }}>
-            {/* Top Control Bar */}
-            <div className="flex items-center justify-between px-4 py-2.5 shrink-0 sticky top-0 z-10 bg-black text-white">
               <div className="flex items-center gap-6 min-w-0 flex-1">
                 {(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) ? (
                   <button data-no-drag
@@ -1424,8 +1418,19 @@ export default function Mini() {
                   <X className="w-4.5 h-4.5" strokeWidth={2.5} />
                 </button>
               </div>
-            </div>
+          </div>
 
+          <div style={{
+            position: 'relative', zIndex: 1,
+            opacity: showPanel ? 1 : 0,
+            transform: showPanel ? 'scale(1) translateY(0)' : 'scale(0.9) translateY(-20px)',
+            filter: showPanel ? 'blur(0px)' : 'blur(8px)',
+            transformOrigin: 'top center',
+            transition: showPanel
+              ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s, transform 0.4s cubic-bezier(0.2, 1, 0.3, 1), filter 0.25s ease 0.05s'
+              : 'opacity 0.08s ease-out, transform 0.08s ease-out, filter 0.08s ease-out',
+            height: 'auto',
+          }}>
             {/* ===== Normal content (always rendered when expanded) ===== */}
               <AnimatePresence mode="wait">
               {(!inAgentDetail && !selectedClaudeSession && !selectedSessionKey && !showClaudeStats) ? (
@@ -1459,7 +1464,7 @@ export default function Mini() {
                 </AnimatePresence>
                 {/* Banner Area */}
                 <div className="border-b-[3px] border-black relative overflow-hidden select-none" style={{
-                  height: 100,
+                  height: 125,
                   ...(islandBg === '__anime__' ? {
                     background: '#F0D140',
                   } : {
@@ -1502,7 +1507,7 @@ export default function Mini() {
                           <img
                             src={emptyGif}
                             style={{
-                              width: 56, height: 56, objectFit: 'contain',
+                              width: 68, height: 68, objectFit: 'contain',
                               animation: 'bob 2s ease-in-out infinite',
                               opacity: 0.8,
                             }}
@@ -1529,12 +1534,12 @@ export default function Mini() {
                     const row = sortedIdx < 6 ? 0 : 1
                     const col = row === 0 ? sortedIdx : sortedIdx - 6
                     const cols = row === 0 ? Math.min(sessionSlots.length, 6) : Math.min(sessionSlots.length - 6, 4)
-                    const slotW = 380 / Math.max(cols, 1)
-                    const xBase = slotW * col + slotW / 2 - 22 + (row === 1 ? slotW * 0.4 : 0)
-                    const yBase = row === 0 ? (singleRow ? 20 : 4) : 52
-                    const jx = ((seed * 7) % 13) - 6
-                    const jy = singleRow ? ((seed * 11) % 41) - 20 : ((seed * 11) % 9) - 4
-                    const x = Math.max(2, Math.min(332, xBase + jx))
+                    const slotW = 475 / Math.max(cols, 1)
+                    const xBase = slotW * col + slotW / 2 - 28 + (row === 1 ? slotW * 0.4 : 0)
+                    const yBase = row === 0 ? (singleRow ? 16 : 0) : 48
+                    const jx = ((seed * 7) % 17) - 8
+                    const jy = singleRow ? ((seed * 11) % 45) - 22 : ((seed * 11) % 11) - 5
+                    const x = Math.max(2, Math.min(415, xBase + jx))
                     const y = yBase + jy
                     return (
                       <div
@@ -1559,11 +1564,11 @@ export default function Mini() {
                         <div style={{ position: 'relative' }}>
                           {gif ? (
                             <img src={gif} alt={slot.char?.name}
-                              style={{ width: 44, height: 44, objectFit: 'contain' }}
+                              style={{ width: 56, height: 56, objectFit: 'contain' }}
                               draggable={false} />
                           ) : (
                             <div style={{
-                              width: 44, height: 44, borderRadius: 8,
+                              width: 56, height: 56, borderRadius: 8,
                               background: 'rgba(255,255,255,0.1)',
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
                               color: '#555', fontSize: 13,
@@ -1796,7 +1801,7 @@ export default function Mini() {
             exit="exit"
             style={{
               position: 'fixed',
-              top: 12,
+              top: 4,
               left: 12,
               right: 12,
               bottom: 12,

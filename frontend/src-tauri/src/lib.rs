@@ -3258,7 +3258,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         let _: () = msg_send![obj, setLevel: 27isize];
                     }
                     if expanded {
-                        let win_w = 400.0;
+                        let win_w = 500.0;
                         let win_h = 400.0;
                         let x = sx + (sw - win_w) / 2.0;
                         let y = sy + sh - win_h;
@@ -3293,7 +3293,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
             let sw = monitor.size().width as f64 / scale;
             let ui = win_ui_scale(&monitor);
             if expanded {
-                let win_w = (400.0 * ui).round();
+                let win_w = (500.0 * ui).round();
                 let win_h = (400.0 * ui).round();
                 let x = mx + (sw - win_w) / 2.0;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
