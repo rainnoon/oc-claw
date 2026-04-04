@@ -16,6 +16,10 @@
   <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
 </p>
 
+## Installation
+
+Téléchargez la dernière version depuis **[oc-claw.ai](https://www.oc-claw.ai)**.
+
 ## Fonctionnalités
 
 - Réagit en temps réel à l'activité des agents OpenClaw / Claude Code (en cours, inactif, en attente)
@@ -31,10 +35,6 @@
 
 - macOS ou Windows
 - [OpenClaw](https://github.com/nicepkg/openclaw) et/ou [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installé
-
-## Installation
-
-Téléchargez la dernière version depuis **[oc-claw.ai](https://www.oc-claw.ai)**.
 
 ## Comment ça marche
 

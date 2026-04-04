@@ -16,6 +16,10 @@
   <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
 </p>
 
+## 安装
+
+从官网下载最新版本：**[oc-claw.ai](https://www.oc-claw.ai)**
+
 ## 功能
 
 - 实时响应 OpenClaw / Claude Code agent 活动状态（工作、空闲、等待）
@@ -31,10 +35,6 @@
 
 - macOS 或 Windows
 - 已安装 [OpenClaw](https://github.com/nicepkg/openclaw) 和/或 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-
-## 安装
-
-从官网下载最新版本：**[oc-claw.ai](https://www.oc-claw.ai)**
 
 ## 工作原理
 

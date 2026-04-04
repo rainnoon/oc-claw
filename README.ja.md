@@ -16,6 +16,10 @@
   <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
 </p>
 
+## インストール
+
+**[oc-claw.ai](https://www.oc-claw.ai)** からダウンロードしてください。
+
 ## 機能
 
 - OpenClaw / Claude Code エージェントの活動にリアルタイムで反応（稼働中・アイドル・待機中）
@@ -31,10 +35,6 @@
 
 - macOS または Windows
 - [OpenClaw](https://github.com/nicepkg/openclaw) および/または [Claude Code](https://docs.anthropic.com/en/docs/claude-code) がインストール済み
-
-## インストール
-
-**[oc-claw.ai](https://www.oc-claw.ai)** からダウンロードしてください。
 
 ## 仕組み
 

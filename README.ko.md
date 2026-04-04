@@ -16,6 +16,10 @@
   <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
 </p>
 
+## 설치
+
+**[oc-claw.ai](https://www.oc-claw.ai)** 에서 다운로드하세요.
+
 ## 기능
 
 - OpenClaw / Claude Code 에이전트 활동에 실시간 반응 (작업 중, 유휴, 대기)
@@ -31,10 +35,6 @@
 
 - macOS 또는 Windows
 - [OpenClaw](https://github.com/nicepkg/openclaw) 및/또는 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 설치 필요
-
-## 설치
-
-**[oc-claw.ai](https://www.oc-claw.ai)** 에서 다운로드하세요.
 
 ## 작동 방식
 

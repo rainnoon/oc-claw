@@ -16,6 +16,10 @@
   <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
 </p>
 
+## Install
+
+Download the latest version from the official website: **[oc-claw.ai](https://www.oc-claw.ai)**
+
 ## What it does
 
 - Reacts to OpenClaw / Claude Code agent activity in real time (working, idle, waiting)
@@ -31,10 +35,6 @@
 
 - macOS or Windows
 - [OpenClaw](https://github.com/nicepkg/openclaw) and/or [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
-
-## Install
-
-Download the latest version from the official website: **[oc-claw.ai](https://www.oc-claw.ai)**
 
 ## How it works
 
