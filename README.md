@@ -12,6 +12,10 @@
   A desktop pet that monitors your AI coding agents in real time. Supports macOS and Windows.
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" width="600" />
+</p>
+
 ## What it does
 
 - Reacts to OpenClaw / Claude Code agent activity in real time (working, idle, waiting)

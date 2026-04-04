@@ -12,6 +12,10 @@
   Mascota de escritorio que monitorea agentes de programación con IA, compatible con macOS y Windows.
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" width="600" />
+</p>
+
 ## Funciones
 
 - Reacciona en tiempo real a la actividad de agentes OpenClaw / Claude Code (trabajando, inactivo, esperando)

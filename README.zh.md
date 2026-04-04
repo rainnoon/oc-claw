@@ -12,6 +12,10 @@
   桌面宠物应用，实时监控你的 AI 编程 agent 工作状态。支持 macOS 和 Windows。
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" width="600" />
+</p>
+
 ## 功能
 
 - 实时响应 OpenClaw / Claude Code agent 活动状态（工作、空闲、等待）

@@ -12,6 +12,10 @@
   AI コーディングエージェントを監視するデスクトップペット、macOS と Windows に対応。
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" width="600" />
+</p>
+
 ## 機能
 
 - OpenClaw / Claude Code エージェントの活動にリアルタイムで反応（稼働中・アイドル・待機中）

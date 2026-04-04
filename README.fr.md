@@ -12,6 +12,10 @@
   Animal de bureau qui surveille vos agents de programmation IA, compatible macOS et Windows.
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" width="600" />
+</p>
+
 ## Fonctionnalités
 
 - Réagit en temps réel à l'activité des agents OpenClaw / Claude Code (en cours, inactif, en attente)

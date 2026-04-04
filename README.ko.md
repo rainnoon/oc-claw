@@ -12,6 +12,10 @@
   AI 코딩 에이전트를 모니터링하는 데스크톱 펫, macOS와 Windows 지원.
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" width="600" />
+</p>
+
 ## 기능
 
 - OpenClaw / Claude Code 에이전트 활동에 실시간 반응 (작업 중, 유휴, 대기)
