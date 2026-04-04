@@ -1483,20 +1483,20 @@ export default function Mini() {
                     <>
                       <div className="absolute inset-0 bg-[linear-gradient(to_right,#00000015_2px,transparent_2px),linear-gradient(to_bottom,#00000015_2px,transparent_2px)] bg-[size:16px_16px]" />
                       <motion.div
-                        animate={{ x: [-60, 400] }}
+                        animate={{ x: [-80, panelW + 80] }}
                         transition={{ repeat: Infinity, duration: 18, ease: "linear" }}
-                        className="absolute top-1 left-0 text-black"
+                        className="absolute top-1 left-0 text-black p-4 -m-4"
                         style={{ filter: 'drop-shadow(2px 2px 0px #000)' }}
                       >
-                        <Cloud className="w-12 h-12 fill-white" strokeWidth={2} />
+                        <Cloud className="w-12 h-12 fill-white" strokeWidth={2} style={{ overflow: 'visible' }} />
                       </motion.div>
                       <motion.div
-                        animate={{ x: [-60, 400] }}
+                        animate={{ x: [-60, panelW + 60] }}
                         transition={{ repeat: Infinity, duration: 25, ease: "linear", delay: 4 }}
-                        className="absolute top-10 left-0 text-black"
+                        className="absolute top-10 left-0 text-black p-4 -m-4"
                         style={{ filter: 'drop-shadow(2px 2px 0px #000)' }}
                       >
-                        <Cloud className="w-8 h-8 fill-white" strokeWidth={2} />
+                        <Cloud className="w-8 h-8 fill-white" strokeWidth={2} style={{ overflow: 'visible' }} />
                       </motion.div>
                     </>
                   )}
