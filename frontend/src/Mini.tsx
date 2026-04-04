@@ -1346,7 +1346,7 @@ export default function Mini() {
           width: panelW,
           height: 'auto',
           maxHeight: 400,
-          overflowY: 'auto',
+          overflowY: 'hidden',
           overflowX: 'hidden',
           background: '#18181c',
           clipPath: showPanel
@@ -1542,7 +1542,7 @@ export default function Mini() {
                     const cols = row === 0 ? Math.min(sessionSlots.length, 6) : Math.min(sessionSlots.length - 6, 4)
                     const slotW = 475 / Math.max(cols, 1)
                     const xBase = slotW * col + slotW / 2 - 28 + (row === 1 ? slotW * 0.4 : 0)
-                    const yBase = row === 0 ? (singleRow ? 16 : 0) : 48
+                    const yBase = row === 0 ? (singleRow ? 16 : 10) : 64
                     const jx = ((seed * 7) % 17) - 8
                     const jy = singleRow ? ((seed * 11) % 45) - 22 : ((seed * 11) % 11) - 5
                     const x = Math.max(2, Math.min(415, xBase + jx))
@@ -1703,13 +1703,13 @@ export default function Mini() {
                   </div>
 
                   {/* Trademark / Footer */}
-                  <div className="mt-auto pt-4 pb-1 flex justify-center items-center select-none">
+                  <div className="mt-auto pt-1.5 pb-1 flex justify-center items-center select-none">
                     <span
                       data-no-drag
                       onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
                       className="text-[10px] font-black tracking-[0.25em] text-slate-500 uppercase cursor-pointer hover:text-slate-300 transition-colors"
                     >
-                      oc-claw.ai
+                      oc–claw.ai
                     </span>
                   </div>
                 </div>
@@ -1915,7 +1915,7 @@ export default function Mini() {
                           <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">Claude Code</h2>
                           <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
                             <AgentAccordionItem
-                              agent={{ id: 'claude-code', identityName: 'Claude Code', identityEmoji: '🤖' }}
+                              agent={{ id: 'claude-code', identityName: 'Claude Code' }}
                               characters={characters}
                               currentChar={claudeCharName}
                               isOpen={openAccordionId === 'claude-code'}
