@@ -138,7 +138,6 @@ export function ClaudeStatsView() {
       <div className="flex items-center justify-between">
         <div className="flex flex-col">
           <h1 className="text-lg font-semibold text-white tracking-tight">{t('claudeStats.title')}</h1>
-          {stats.model && <span className="text-xs text-white/40">{stats.model}</span>}
         </div>
         <span className="text-xs text-white/40">{t('claudeStats.last14Days')}</span>
       </div>
