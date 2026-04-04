@@ -8,6 +8,7 @@ interface Props {
 }
 
 import '../styles/global.css';
+import Analytics from '@vercel/analytics/astro';
 
 const { title, description = 'A desktop pet that monitors your AI coding agents in real time.', lang = 'en' } = Astro.props;
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
@@ -61,5 +62,6 @@ const jsonLd = {
     <div class="container">
       <slot />
     </div>
+    <Analytics />
   </body>
 </html>
