@@ -303,7 +303,7 @@ function PetCharacterCard({
     >
       <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
         <div className="flex items-center space-x-3">
-          <h3 className="text-sm font-semibold text-gray-900">{character.name}</h3>
+          <h3 className="text-sm font-semibold text-gray-900">{character.builtin ? t(`charNames.${character.name}`, character.name) : character.name}</h3>
           {isActive && (
             <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-600 border border-emerald-200/60">
               {t('character.inUse')}
@@ -543,7 +543,7 @@ function MiniCharacterCard({ character, isEditing, onDeleteGif, onDeleteCharacte
         </button>
       )}
       <div className="px-5 py-3 border-b border-gray-100 bg-gray-50/50">
-        <h3 className="text-sm font-semibold text-gray-900">{character.name}</h3>
+        <h3 className="text-sm font-semibold text-gray-900">{character.builtin ? t(`charNames.${character.name}`, character.name) : character.name}</h3>
       </div>
       <div className="p-5 space-y-5">
         {character.miniActions && Object.entries(character.miniActions).map(([cat, gifs]) => (
@@ -698,7 +698,7 @@ function MiniCharSelect({ characters, value, onChange }: {
 
   const options = [
     { name: '', label: t('character.autoSelect'), gif: undefined as string | undefined },
-    ...characters.map((c) => ({ name: c.name, label: c.name, gif: getPreviewGif(c) })),
+    ...characters.map((c) => ({ name: c.name, label: c.builtin ? t(`charNames.${c.name}`, c.name) : c.name, gif: getPreviewGif(c) })),
   ]
   const selected = options.find((o) => o.name === value) || options[0]
 

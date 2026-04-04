@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
+import { Loader2 } from 'lucide-react'
+import { motion } from 'motion/react'
 import { formatTokens } from '../lib/agents'
 
 interface DailyStats {
@@ -114,8 +116,16 @@ export function ClaudeStatsView() {
 
   if (!stats) {
     return (
-      <div className="flex items-center justify-center py-20 text-white/30 text-sm">
-        {t('common.loading')}
+      <div className="flex flex-col items-center justify-center py-24 gap-3">
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+        >
+          <Loader2 className="w-5 h-5 text-white/30" />
+        </motion.div>
+        <span className="text-white/30 text-xs font-medium tracking-wide animate-pulse">
+          {t('common.loading')}
+        </span>
       </div>
     )
   }
@@ -123,12 +133,11 @@ export function ClaudeStatsView() {
   const totalTokens = stats.totalInputTokens + stats.totalOutputTokens + stats.totalCacheReadTokens + stats.totalCacheWriteTokens
 
   return (
-    <div className="px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin" style={{ maxHeight: 524 }}>
+    <div className="px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin" style={{ maxHeight: 'calc(400px - 44px)' }}>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex flex-col">
           <h1 className="text-lg font-semibold text-white tracking-tight">{t('claudeStats.title')}</h1>
-          {stats.model && <span className="text-xs text-white/40">{stats.model}</span>}
         </div>
         <span className="text-xs text-white/40">{t('claudeStats.last14Days')}</span>
       </div>

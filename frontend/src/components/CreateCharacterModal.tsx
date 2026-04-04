@@ -270,7 +270,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
                   {t('createChar.step1Desc')}
                 </p>
                 <button
-                  onClick={() => invoke('open_url', { url: 'https://gemini.google.com/gem/f30e7b9be50d' })}
+                  onClick={() => invoke('open_url', { url: 'https://gemini.google.com/gem/1u6jUKpIGtX5RyHTt01fm7AWUqTPY4sRC?usp=sharing' })}
                   className="ml-7 inline-flex items-center gap-1.5 text-xs bg-white/10 hover:bg-white/20 text-white/80 w-fit px-3 py-1.5 rounded-lg transition-colors mt-1 border border-white/5"
                 >
                   {t('createChar.openGemini')} <ExternalLink className="w-3 h-3" />

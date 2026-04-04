@@ -12,6 +12,14 @@
   AI 코딩 에이전트를 모니터링하는 데스크톱 펫, macOS와 Windows 지원.
 </p>
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
+</p>
+
+## 설치
+
+**[oc-claw.ai](https://www.oc-claw.ai)** 에서 다운로드하세요.
+
 ## 기능
 
 - OpenClaw / Claude Code 에이전트 활동에 실시간 반응 (작업 중, 유휴, 대기)
@@ -19,7 +27,7 @@
 - 로컬 OpenClaw 에이전트를 자동 감지하고, 세션 목록, 채팅 기록, 일일 호출/토큰 통계 표시
 - Hook을 통해 로컬 Claude Code 세션을 수신하고 실시간 대화 표시
 - SSH를 통해 원격 서버의 OpenClaw 인스턴스에 연결
-- 커스텀 GIF 캐릭터 애니메이션, 에이전트별로 다른 캐릭터 페어링
+- 커스텀 캐릭터 애니메이션, 에이전트별로 다른 캐릭터 페어링
 - 섬 배경 커스터마이즈 가능, 크롭 도구 지원
 - 완료 알림음 & 대기 알림음
 
@@ -27,10 +35,6 @@
 
 - macOS 또는 Windows
 - [OpenClaw](https://github.com/nicepkg/openclaw) 및/또는 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 설치 필요
-
-## 설치
-
-**[oc-claw.ai](https://www.oc-claw.ai)** 에서 다운로드하세요.
 
 ## 작동 방식
 

@@ -12,6 +12,14 @@
   桌面宠物应用，实时监控你的 AI 编程 agent 工作状态。支持 macOS 和 Windows。
 </p>
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
+</p>
+
+## 安装
+
+从官网下载最新版本：**[oc-claw.ai](https://www.oc-claw.ai)**
+
 ## 功能
 
 - 实时响应 OpenClaw / Claude Code agent 活动状态（工作、空闲、等待）
@@ -19,7 +27,7 @@
 - 自动发现本地 OpenClaw agent，显示 session 列表、聊天记录、调用量/token 统计图表
 - 通过 Hook 监听本地 Claude Code 会话，查看实时对话
 - 通过 SSH 连接远程服务器上的 OpenClaw 实例
-- 自定义角色 GIF 动画，将不同 agent 配对不同角色
+- 自定义角色动画，将不同 agent 配对不同角色
 - 可自定义岛屿背景，支持裁剪工具
 - 完成提示音 & 等待提示音
 
@@ -27,10 +35,6 @@
 
 - macOS 或 Windows
 - 已安装 [OpenClaw](https://github.com/nicepkg/openclaw) 和/或 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-
-## 安装
-
-从官网下载最新版本：**[oc-claw.ai](https://www.oc-claw.ai)**
 
 ## 工作原理
 

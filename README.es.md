@@ -12,6 +12,14 @@
   Mascota de escritorio que monitorea agentes de programación con IA, compatible con macOS y Windows.
 </p>
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
+</p>
+
+## Instalación
+
+Descárgalo desde **[oc-claw.ai](https://www.oc-claw.ai)**.
+
 ## Funciones
 
 - Reacciona en tiempo real a la actividad de agentes OpenClaw / Claude Code (trabajando, inactivo, esperando)
@@ -19,7 +27,7 @@
 - Detecta automáticamente agentes OpenClaw locales, muestra listas de sesiones, historial de chat y gráficos de llamadas/tokens diarios
 - Escucha sesiones locales de Claude Code mediante hooks, visualiza conversaciones en vivo
 - Conecta a instancias de OpenClaw en servidores remotos vía SSH
-- Animaciones GIF personalizadas, empareja diferentes agentes con diferentes personajes
+- Animaciones personalizadas, empareja diferentes agentes con diferentes personajes
 - Fondos de isla personalizables con herramienta de recorte
 - Efectos de sonido de finalización y espera
 
@@ -27,10 +35,6 @@
 
 - macOS o Windows
 - [OpenClaw](https://github.com/nicepkg/openclaw) y/o [Claude Code](https://docs.anthropic.com/en/docs/claude-code) instalado
-
-## Instalación
-
-Descárgalo desde **[oc-claw.ai](https://www.oc-claw.ai)**.
 
 ## Cómo funciona
 

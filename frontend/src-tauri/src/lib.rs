@@ -1017,6 +1017,30 @@ async fn close_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> 
     Ok(())
 }
 
+fn tray_labels(lang: &str) -> (&'static str, &'static str, &'static str) {
+    match lang {
+        "zh" => ("显示", "隐藏", "退出"),
+        "ja" => ("表示", "非表示", "終了"),
+        "ko" => ("표시", "숨기기", "종료"),
+        "es" => ("Mostrar", "Ocultar", "Salir"),
+        "fr" => ("Afficher", "Masquer", "Quitter"),
+        _ => ("Show", "Hide", "Quit"),
+    }
+}
+
+#[tauri::command]
+fn update_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), String> {
+    let (show_label, hide_label, quit_label) = tray_labels(&lang);
+    let show = MenuItem::with_id(&app, "show", show_label, true, None::<&str>).map_err(|e| e.to_string())?;
+    let hide = MenuItem::with_id(&app, "hide", hide_label, true, None::<&str>).map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(&app, "quit", quit_label, true, None::<&str>).map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(&app, &[&show, &hide, &quit]).map_err(|e| e.to_string())?;
+    if let Some(tray) = app.tray_by_id("main") {
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
@@ -3258,7 +3282,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         let _: () = msg_send![obj, setLevel: 27isize];
                     }
                     if expanded {
-                        let win_w = 400.0;
+                        let win_w = 500.0;
                         let win_h = 400.0;
                         let x = sx + (sw - win_w) / 2.0;
                         let y = sy + sh - win_h;
@@ -3293,7 +3317,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
             let sw = monitor.size().width as f64 / scale;
             let ui = win_ui_scale(&monitor);
             if expanded {
-                let win_w = (400.0 * ui).round();
+                let win_w = (500.0 * ui).round();
                 let win_h = (400.0 * ui).round();
                 let x = mx + (sw - win_w) / 2.0;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
@@ -5552,12 +5576,12 @@ fn process_claude_event(
 
         let _ = app.emit("claude-session-update", &session_id);
 
-        // Only emit completion sound for real task endings, not sub-agent stops.
-        // SubagentStop has claudeStatus="waiting_for_input" which causes status to
-        // be rewritten to "stopped" (line 5414), falsely triggering this branch.
-        if was_processing && !was_compacting && hook_event != "SubagentStop"
-            && (status == "stopped" || status == "waiting" || status == "ended") {
-            let is_waiting = status == "waiting";
+        // Only emit completion sound on explicit Stop or PermissionRequest events.
+        // Previously we checked status transitions, but guard overrides on PostToolUse
+        // could falsely trigger "stopped" mid-task when CC's status field lags behind.
+        if was_processing && !was_compacting
+            && (hook_event == "Stop" || hook_event == "PermissionRequest") {
+            let is_waiting = hook_event == "PermissionRequest";
             let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting}));
         }
 
@@ -5885,13 +5909,34 @@ pub fn run() {
                 start_claude_socket_server(sessions_arc, app.handle().clone());
             }
 
-            // System tray
-            let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
-            let hide = MenuItem::with_id(app, "hide", "隐藏", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            // System tray — use saved language, fallback to system language
+            let initial_lang = {
+                let store_path = app.path().app_data_dir().ok().map(|p| p.join("settings.json"));
+                let mut lang = None;
+                if let Some(ref sp) = store_path {
+                    if let Ok(data) = std::fs::read_to_string(sp) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                            lang = val.get("oc-claw-lang").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        }
+                    }
+                }
+                lang.unwrap_or_else(|| {
+                    let sys = std::env::var("LANG").unwrap_or_default().to_lowercase();
+                    if sys.starts_with("zh") { "zh".into() }
+                    else if sys.starts_with("ja") { "ja".into() }
+                    else if sys.starts_with("ko") { "ko".into() }
+                    else if sys.starts_with("es") { "es".into() }
+                    else if sys.starts_with("fr") { "fr".into() }
+                    else { "en".into() }
+                })
+            };
+            let (show_label, hide_label, quit_label) = tray_labels(&initial_lang);
+            let show = MenuItem::with_id(app, "show", show_label, true, None::<&str>)?;
+            let hide = MenuItem::with_id(app, "hide", hide_label, true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
 
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -5927,7 +5972,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

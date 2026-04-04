@@ -12,6 +12,14 @@
   AI コーディングエージェントを監視するデスクトップペット、macOS と Windows に対応。
 </p>
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
+</p>
+
+## インストール
+
+**[oc-claw.ai](https://www.oc-claw.ai)** からダウンロードしてください。
+
 ## 機能
 
 - OpenClaw / Claude Code エージェントの活動にリアルタイムで反応（稼働中・アイドル・待機中）
@@ -19,7 +27,7 @@
 - ローカルの OpenClaw エージェントを自動検出し、セッション一覧・チャット履歴・呼び出し数/トークン統計を表示
 - Hook 経由でローカル Claude Code セッションをリッスンし、リアルタイム会話を表示
 - SSH 経由でリモートサーバー上の OpenClaw インスタンスに接続
-- カスタム GIF アニメーション、エージェントごとに異なるキャラクターを割り当て
+- カスタムアニメーション、エージェントごとに異なるキャラクターを割り当て
 - 島の背景をカスタマイズ可能、クロップツール対応
 - 完了音＆待機音
 
@@ -27,10 +35,6 @@
 
 - macOS または Windows
 - [OpenClaw](https://github.com/nicepkg/openclaw) および/または [Claude Code](https://docs.anthropic.com/en/docs/claude-code) がインストール済み
-
-## インストール
-
-**[oc-claw.ai](https://www.oc-claw.ai)** からダウンロードしてください。
 
 ## 仕組み
 

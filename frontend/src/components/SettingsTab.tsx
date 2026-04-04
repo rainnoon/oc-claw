@@ -482,6 +482,15 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
 
             {/* Background thumbnails */}
             <div className="flex gap-2 flex-wrap mb-3">
+              {/* Anime grid background */}
+              <button
+                onClick={() => onChangeIslandBg('__anime__')}
+                className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === '__anime__' ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
+              >
+                <div style={{ width: '100%', height: '100%', background: '#F0D140' }}>
+                  <div style={{ width: '100%', height: '100%', backgroundImage: 'linear-gradient(to right, #00000015 1px, transparent 1px), linear-gradient(to bottom, #00000015 1px, transparent 1px)', backgroundSize: '8px 8px' }} />
+                </div>
+              </button>
               {backgrounds.map((bg) => (
                 <button
                   key={bg}
@@ -498,8 +507,8 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               </label>
             </div>
 
-            {/* Crop preview */}
-            {bgPreviewUrl && bgNaturalSize && (
+            {/* Crop preview — hidden for anime grid background */}
+            {islandBg !== '__anime__' && bgPreviewUrl && bgNaturalSize && (
               <div className="flex flex-col items-center gap-2">
                 {/* Full image with crop overlay */}
                 <div
@@ -695,7 +704,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               {(['zh', 'en', 'ja', 'ko', 'es', 'fr'] as const).map((lng) => (
                 <button
                   key={lng}
-                  onClick={() => { i18n.changeLanguage(lng); localStorage.setItem('oc-claw-lang', lng) }}
+                  onClick={async () => { i18n.changeLanguage(lng); localStorage.setItem('oc-claw-lang', lng); const store = await getStore(); await store.set('oc-claw-lang', lng); await store.save(); invoke('update_tray_language', { lang: lng }).catch(() => {}) }}
                   className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${i18n.language === lng ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
                 >
                   {t(`settings.lang${lng.charAt(0).toUpperCase() + lng.slice(1)}`)}

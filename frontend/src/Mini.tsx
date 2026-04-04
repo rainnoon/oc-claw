@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, Check, Loader2, Pen, Plus, X } from 'lucide-react'
+import { ChevronDown, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Terminal, Asterisk, Trash2, Cloud } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
@@ -274,7 +274,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
           </div>
         </div>
         <div className="flex items-center gap-2 text-sm text-white/50 group-hover:text-white/80 transition-colors pr-2">
-          <span>{currentChar || t('mini.unassigned')}</span>
+          <span>{currentChar ? (characters.find(c => c.name === currentChar)?.builtin ? t(`charNames.${currentChar}`, currentChar) : currentChar) : t('mini.unassigned')}</span>
           <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
         </div>
       </div>
@@ -334,7 +334,13 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                   }
                   return groups.map(({ ip, chars }) => (
                     <div key={ip} className="mb-3 last:mb-0">
-                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">{ip === '自定义' ? t('mini.custom') : ip === '其他' ? t('mini.other') : ip}</div>
+                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">{
+                        ip === '自定义' ? t('mini.custom')
+                        : ip === '其他' ? t('mini.other')
+                        : ip === '原神' ? t('mini.ipGenshin')
+                        : ip === '赛马娘' ? t('mini.ipUmaMusume')
+                        : ip
+                      }</div>
                       <div className="grid grid-cols-3 gap-3">
                         {chars.map((c) => {
                           const isSelected = c.name === currentChar
@@ -373,7 +379,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                                   <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
                                 )}
                               </div>
-                              <span className="text-sm text-white/80 truncate flex-1">{c.name}</span>
+                              <span className="text-sm text-white/80 truncate flex-1">{c.builtin ? t(`charNames.${c.name}`, c.name) : c.name}</span>
                               {isEditing && !isDefault && (
                                 <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center shadow-md z-10 hover:bg-red-600 transition-colors">
                                   <X className="w-3 h-3 text-white" />
@@ -458,13 +464,16 @@ export default function Mini() {
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
   const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
   const mascotPositionRef = useRef<'left' | 'right'>('right')
-  const [islandBg, setIslandBg] = useState('beach.png')
+  const [islandBg, setIslandBg] = useState('__anime__')
   const [uiScale, setUiScale] = useState(1.0)
   const [bgPos, setBgPos] = useState({ x: 50, y: 50 })
 
-  // Settings mode: panel becomes wider, shows settings content
+  // Settings mode: native window grows, then a separate settings card animates in.
   const [settingsMode, setSettingsMode] = useState(false)
   const settingsModeRef = useRef(false)
+  const [showSettingsOverlay, setShowSettingsOverlay] = useState(false)
+  const [settingsTransitioning, setSettingsTransitioning] = useState(false)
+  const settingsTransitioningRef = useRef(false)
   const filePickerOpenRef = useRef(false)
   const [settingsNav, setSettingsNav] = useState<'pairing' | 'settings'>('pairing')
   const [openAccordionId, setOpenAccordionId] = useState<string | null>(null)
@@ -1094,16 +1103,20 @@ export default function Mini() {
     setSelectedClaudeSession(null)
     setSelectedSessionKey(null)
     const wasSettings = settingsModeRef.current
+    if (wasSettings) {
+      setShowSettingsOverlay(false)
+      setSettingsTransitioning(true)
+    }
     const delay = wasSettings ? 280 : 350
     setTimeout(async () => {
       settingsModeRef.current = false
       setSettingsMode(false)
+      setShowSettingsOverlay(false)
       // If exiting settings via collapse (click outside), trigger immediate
       // refresh so config changes are detected right away, not after 5s poll.
       if (wasSettings) fetchAgents()
       // Hide mascot first to avoid flicker at old position
       setHiding(true)
-      setExpanded(false)
       // Use setTimeout instead of rAF (rAF may not fire when window is blurred)
       try {
         await new Promise<void>((r) => setTimeout(r, 50))
@@ -1112,6 +1125,7 @@ export default function Mini() {
         } else {
           await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current })
         }
+        setExpanded(false)
         await new Promise<void>((r) => setTimeout(r, 50))
         // Restore custom drag position if set
         if (customPosRef.current) {
@@ -1119,55 +1133,62 @@ export default function Mini() {
         }
       } catch { /* ensure hiding is always cleared */ }
       setHiding(false)
+      setSettingsTransitioning(false)
       // Brief cooldown to prevent focus event from immediately re-expanding
-      setTimeout(() => { collapsingRef.current = false }, 300)
+      setTimeout(() => {
+        collapsingRef.current = false
+        settingsTransitioningRef.current = false
+      }, 300)
     }, delay)
   }, [fetchAgents])
 
   const enterSettings = useCallback(async () => {
-    // 1. Collapse current panel
-    setShowPanel(false)
+    if (settingsModeRef.current || settingsTransitioningRef.current) return
+    settingsTransitioningRef.current = true
     setSelectedAgentId(null)
     setSelectedClaudeSession(null)
-    // 2. After collapse, switch to settings mode + resize window + re-expand
-    setTimeout(async () => {
-      settingsModeRef.current = true
-      setSettingsMode(true)
-      try { await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current }) } catch {}
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => setShowPanel(true))
-      })
-    }, 300)
+    setSelectedSessionKey(null)
+    setShowClaudeStats(false)
+    setShowSettingsOverlay(false)
+    setSettingsTransitioning(true)
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+    try {
+      await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current })
+    } catch {}
+    settingsModeRef.current = true
+    setSettingsMode(true)
+    setShowSettingsOverlay(true)
+    setSettingsTransitioning(false)
+    settingsTransitioningRef.current = false
   }, [])
 
   const exitSettings = useCallback(async () => {
-    // 1. Collapse panel
-    setShowPanel(false)
-    // 2. After collapse, switch back to normal mode + resize + re-expand
-    setTimeout(async () => {
-      settingsModeRef.current = false
-      setSettingsMode(false)
-      setSettingsNav('pairing')
-      // Trigger immediate refresh — fetchAgents detects config changes via
-      // snapshot comparison and shows loading overlay automatically
-      fetchAgents()
-      try { await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current }) } catch {}
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => setShowPanel(true))
-      })
-    }, 300)
+    if (!settingsModeRef.current || settingsTransitioningRef.current) return
+    settingsTransitioningRef.current = true
+    setShowSettingsOverlay(false)
+    await new Promise<void>((r) => setTimeout(r, 220))
+    setSettingsTransitioning(true)
+    settingsModeRef.current = false
+    setSettingsMode(false)
+    setSettingsNav('pairing')
+    fetchAgents()
+    try {
+      await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current })
+    } catch {}
+    setSettingsTransitioning(false)
+    settingsTransitioningRef.current = false
   }, [fetchAgents])
 
   // Click outside to collapse (only when not pinned)
   useEffect(() => {
-    if (!expanded || pinned) return
+    if (!expanded || pinned || settingsMode || settingsTransitioning) return
     const onClick = (e: MouseEvent) => {
       if (isCreateModalOpenRef.current) return
       if (!(e.target as HTMLElement).closest('#mini-panel')) collapse()
     }
     window.addEventListener('mousedown', onClick)
     return () => window.removeEventListener('mousedown', onClick)
-  }, [expanded, pinned, collapse])
+  }, [expanded, pinned, settingsMode, settingsTransitioning, collapse])
 
   // Window blur: collapse when user clicks outside the app (when not pinned, or in settings mode)
   // Skip blur when a file picker dialog is open
@@ -1239,12 +1260,11 @@ export default function Mini() {
   // Panel dimensions — CSS uses fixed base sizes (380/400); on Windows high-DPI
   // screens the panel root applies `zoom: uiScale` so all content (text, icons,
   // spacing) scales uniformly to match the Rust-side window enlargement.
-  const panelW = settingsMode ? '100vw' : 380
-  const panelH = settingsMode ? '100vh' : 560
+  const panelW = 475
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!expanded || settingsMode || !showPanel) return
+    if (!expanded || settingsMode || settingsTransitioning || !showPanel) return
     const el = panelRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => {
@@ -1253,12 +1273,13 @@ export default function Mini() {
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [expanded, settingsMode, showPanel, uiScale])
+  }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale])
 
   return (
     <div style={{
       width: '100vw', height: '100vh',
-      background: 'transparent', overflow: 'hidden', userSelect: 'none',
+      background: 'transparent',
+      overflow: 'hidden', userSelect: 'none',
     }}>
       {/* Collapsed */}
       {!expanded && !hiding && (
@@ -1315,309 +1336,108 @@ export default function Mini() {
       )}
 
       {/* Expanded panel */}
-      {expanded && (
-        <div id="mini-panel" ref={panelRef} className={settingsMode ? '' : 'scrollbar-hidden'} style={{
+      {expanded && !settingsMode && !settingsTransitioning && (
+        <div id="mini-panel" ref={panelRef} className="scrollbar-hidden" style={{
           position: 'absolute', top: 0,
           left: '50%',
           transform: 'translateX(-50%)',
           transformOrigin: 'top center',
-          zoom: uiScale !== 1 && !settingsMode ? uiScale : undefined,
+          zoom: uiScale !== 1 ? uiScale : undefined,
           width: panelW,
-          height: settingsMode ? panelH : 'auto',
-          maxHeight: settingsMode ? undefined : 400,
-          overflowY: settingsMode ? 'hidden' : 'auto',
+          height: 'auto',
+          maxHeight: 400,
+          overflowY: 'hidden',
           overflowX: 'hidden',
-          background: '#1a1a1a',
+          background: '#18181c',
           clipPath: showPanel
-            ? `inset(0 0 0 0 round 0 0 ${settingsMode ? '16px 16px' : '24px 24px'})`
-            : `inset(0 calc(50% - 30px) calc(100% + 200px) calc(50% - 30px) round 0 0 8px 8px)`,
+            ? 'inset(0 0 0 0 round 0 0 24px 24px)'
+            : 'inset(0 calc(50% - 30px) calc(100% + 200px) calc(50% - 30px) round 0 0 8px 8px)',
           boxShadow: showPanel
-            ? '0 0 12px rgba(0,0,0,0.7)'
+            ? '0 8px 32px rgba(0,0,0,0.8)'
             : '0 2px 8px rgba(0,0,0,0.3)',
           transition: showPanel
-            ? 'clip-path 0.4s cubic-bezier(0.2, 1, 0.3, 1), box-shadow 0.3s ease'
-            : settingsMode
-              ? 'clip-path 0.25s cubic-bezier(0.3, 0, 0, 1), box-shadow 0.15s ease'
-              : 'clip-path 0.3s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.2s ease',
+            ? 'clip-path 0.45s cubic-bezier(0.22, 1.2, 0.36, 1), box-shadow 0.3s ease'
+            : 'clip-path 0.25s cubic-bezier(0.4, 0, 0, 1), box-shadow 0.15s ease',
         }}>
-          {/* Grass background layer - only visible during panel collapse animation */}
-          {!settingsMode && (
-            <div style={{
-              position: 'absolute', top: 36, left: 0, right: 0,
-              height: 30,
-              backgroundImage: `url(/assets/backgrounds/${islandBg})`,
-              backgroundSize: 'cover',
-              backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
-              pointerEvents: 'none',
-              zIndex: 0,
-              filter: showPanel ? 'blur(0px)' : 'blur(8px)',
-              opacity: showPanel ? 0 : 1,
-              transition: showPanel
-                ? 'filter 0.2s ease, opacity 0.15s ease'
-                : 'filter 0.4s cubic-bezier(0.2, 0, 0, 1), opacity 0.15s ease 0.05s',
-            }} />
-          )}
-          <div style={{
-            position: 'relative', zIndex: 1,
+          {/* Top Control Bar — outside the transform wrapper so sticky works correctly */}
+          <div className="flex items-center justify-between px-4 py-2.5 shrink-0 sticky top-0 z-20 bg-black text-white" style={{
             opacity: showPanel ? 1 : 0,
-            transform: showPanel ? 'scale(1) translateY(0)' : 'scale(0.92) translateY(-8px)',
-            transformOrigin: 'top center',
             transition: showPanel
-              ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.08s, transform 0.4s cubic-bezier(0.2, 1, 0.3, 1)'
-              : 'opacity 0.08s ease-out, transform 0.08s ease-out',
-            height: settingsMode ? '100vh' : 'auto',
-            display: settingsMode ? 'flex' : 'block',
-            flexDirection: 'column',
+              ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s'
+              : 'opacity 0.08s ease-out',
           }}>
-            {/* Header */}
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              height: 36, padding: '0 14px', flexShrink: 0,
-              background: '#1a1a1a',
-              borderBottom: '1px solid rgba(255,255,255,0.06)',
-              position: 'sticky', top: 0, zIndex: 10,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
-                {settingsMode ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button data-no-drag
-                      onClick={(e) => { e.stopPropagation(); exitSettings() }}
-                      style={{
-                        background: 'rgba(255,255,255,0.06)', border: 'none',
-                        color: 'rgba(255,255,255,0.6)', fontSize: 11,
-                        cursor: 'pointer', padding: '3px 8px',
-                        borderRadius: 6, display: 'flex', alignItems: 'center', gap: 4,
-                      }}>
-                      <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
-                    </button>
-                    {(['pairing', 'settings'] as const).map((nav) => (
-                      <button key={nav} data-no-drag
-                        onClick={(e) => { e.stopPropagation(); setSettingsNav(nav) }}
-                        style={{
-                          background: settingsNav === nav ? 'rgba(255,255,255,0.12)' : 'none',
-                          border: 'none',
-                          color: settingsNav === nav ? '#fff' : 'rgba(255,255,255,0.4)',
-                          fontSize: 11, cursor: 'pointer', padding: '3px 10px',
-                          borderRadius: 6, fontWeight: settingsNav === nav ? 600 : 400,
-                        }}>
-                        {nav === 'pairing' ? t('mini.pairing') : t('mini.settings')}
-                      </button>
-                    ))}
-                  </div>
-                ) : (inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) ? (
+              <div className="flex items-center gap-4 min-w-0 flex-1">
+                {(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) ? (
                   <button data-no-drag
                     onClick={(e) => { e.stopPropagation(); setSelectedAgentId(null); setSelectedClaudeSession(null); setSelectedSessionKey(null); setShowClaudeStats(false) }}
-                    style={{
-                      background: 'rgba(255,255,255,0.06)', border: 'none',
-                      color: 'rgba(255,255,255,0.6)', fontSize: 11,
-                      cursor: 'pointer', padding: '3px 8px',
-                      borderRadius: 6, display: 'flex', alignItems: 'center', gap: 4,
-                    }}>
+                    className="text-slate-400 hover:text-slate-200 transition-colors"
+                  >
                     <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
                   </button>
                 ) : (
                   <button data-no-drag
                     onClick={(e) => { e.stopPropagation(); setPinned(!pinned) }}
-                    style={{
-                      background: 'none', border: 'none',
-                      color: pinned ? '#fff' : 'rgba(255,255,255,0.25)',
-                      fontSize: 12, cursor: 'pointer', padding: '2px 6px',
-                      transform: pinned ? 'rotate(0deg)' : 'rotate(45deg)',
-                      transition: 'transform 0.2s, color 0.2s',
-                    }}
+                    className={`transition-colors ${pinned ? 'text-[#F0D140]' : 'text-slate-400 hover:text-slate-200'}`}
                     title={pinned ? t('mini.unpin') : t('mini.pin')}
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill={pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M12 17v5"/>
-                      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
-                    </svg>
+                    <Pin className="w-4 h-4" strokeWidth={2.5} />
                   </button>
-                )}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                {!settingsMode && (
-                  <button data-no-drag
-                    onClick={async (e) => {
-                      e.stopPropagation()
-                      const next = !soundEnabled
-                      setSoundEnabled(next)
-                      const store = await load('settings.json', { defaults: {}, autoSave: true })
-                      await store.set('sound_enabled', next)
-                      await store.save()
-                      if (next) {
-                        if (notifySound === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {})
-                        else playDefaultSound()
-                      }
-                    }}
-                    style={{
-                      background: 'none', border: 'none',
-                      color: soundEnabled ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.15)', fontSize: 14,
-                      cursor: 'pointer', padding: '4px 6px', paddingTop: '5px',
-                      position: 'relative',
-                    }}
-                    title={soundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
-                  >
-                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-                      {!soundEnabled && <line x1="1" y1="1" x2="23" y2="23" strokeWidth="3"/>}
-                    </svg>
-                  </button>
-                )}
-                {!settingsMode && (
-                  <button data-no-drag
-                    onClick={(e) => { e.stopPropagation(); enterMoveMode() }}
-                    style={{
-                      background: 'none', border: 'none',
-                      color: 'rgba(255,255,255,0.35)', fontSize: 14,
-                      cursor: 'pointer', padding: '4px 6px',
-                    }}
-                    title={t('mini.moveMascot')}
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><path d="M2 12h20"/><path d="M12 2v20"/>
-                    </svg>
-                  </button>
-                )}
-                {!settingsMode && (
-                  <button data-no-drag
-                    onClick={(e) => { e.stopPropagation(); enterSettings() }}
-                    style={{
-                      background: 'none', border: 'none',
-                      color: 'rgba(255,255,255,0.35)', fontSize: 14,
-                      cursor: 'pointer', padding: '4px 6px',
-                    }}
-                    title={t('mini.settings')}
-                  >&#9881;</button>
                 )}
                 <button data-no-drag
+                  onClick={async (e) => {
+                    e.stopPropagation()
+                    const next = !soundEnabled
+                    setSoundEnabled(next)
+                    const store = await load('settings.json', { defaults: {}, autoSave: true })
+                    await store.set('sound_enabled', next)
+                    await store.save()
+                    if (next) {
+                      if (notifySound === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {})
+                      else playDefaultSound()
+                    }
+                  }}
+                  className={`transition-colors ${soundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
+                  title={soundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
+                >
+                  {soundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
+                </button>
+              </div>
+              <div className="flex items-center gap-4">
+                <button data-no-drag
+                  onClick={(e) => { e.stopPropagation(); enterMoveMode() }}
+                  className="text-slate-400 hover:text-[#F0D140] transition-colors"
+                  title={t('mini.moveMascot')}
+                >
+                  <Move className="w-4 h-4" strokeWidth={2.5} />
+                </button>
+                <button data-no-drag
+                  onClick={(e) => { e.stopPropagation(); enterSettings() }}
+                  className="text-slate-400 hover:text-[#F0D140] transition-colors"
+                  title={t('mini.settings')}
+                >
+                  <Settings className="w-4 h-4" strokeWidth={2.5} />
+                </button>
+                <button data-no-drag
                   onClick={(e) => { e.stopPropagation(); window.blur(); collapse() }}
-                  style={{
-                    background: 'none', border: 'none',
-                    color: 'rgba(255,255,255,0.35)', fontSize: 13,
-                    cursor: 'pointer', padding: '4px 6px',
-                  }}>x</button>
+                  className="text-slate-400 hover:text-rose-500 transition-colors ml-1"
+                >
+                  <X className="w-4.5 h-4.5" strokeWidth={2.5} />
+                </button>
               </div>
-            </div>
+          </div>
 
-            {/* ===== Settings content ===== */}
-            {settingsMode ? (
-              <div data-no-drag className="scrollbar-hidden" style={{ flex: 1, overflow: 'hidden', margin: 8, marginTop: 0, borderRadius: 12, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                <div className="bg-[#151515] text-white font-sans antialiased scrollbar-hidden" style={{ borderRadius: '12px 12px 0 0', overflow: 'auto', flex: 1, minHeight: 0 }}>
-                  {settingsNav === 'pairing' && (
-                    <div className="h-full overflow-y-auto bg-[#151515] pt-6 px-6 pb-10 scrollbar-hidden">
-                      <div className="max-w-3xl mx-auto">
-                        <p className="text-sm text-white/50 mb-10">
-                          {t('mini.pairingDesc')}
-                        </p>
-
-                        {/* System (看板娘) */}
-                        <div className="mb-8">
-                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">{t('mini.mascot')}</h2>
-                          <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                            <AgentAccordionItem
-                              agent={{ id: '__mini__', identityName: t('mini.mascot') }}
-                              characters={characters}
-                              currentChar={miniChar?.name || ''}
-                              isOpen={openAccordionId === '__mini__'}
-                              onToggle={() => setOpenAccordionId(openAccordionId === '__mini__' ? null : '__mini__')}
-                              onOpenCreate={() => setIsCreateModalOpen(true)}
-                              onDeleteChar={handleDeleteChar}
-                              onSelect={async (name) => {
-                                const store = await load('settings.json', { defaults: {}, autoSave: true })
-                                await store.set('mini_character', name)
-                                await store.save()
-                                loadMiniChar()
-                              }}
-                            />
-                          </div>
-                        </div>
-
-                        {/* OpenClaw Agents */}
-                        {agents.length > 0 && (
-                          <div className="mb-8">
-                            <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">OpenClaw Agents</h2>
-                            <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                              {agents.map((agent) => (
-                                  <AgentAccordionItem
-                                    key={agent.id}
-                                    agent={agent}
-                                    characters={characters}
-                                    currentChar={agentCharMap[agent.id] || DEFAULT_CHAR_NAME}
-                                    isOpen={openAccordionId === agent.id}
-                                    onToggle={() => setOpenAccordionId(openAccordionId === agent.id ? null : agent.id)}
-                                    sourceLabel={agentSourceLabels[agent.id]}
-                                    onOpenCreate={() => setIsCreateModalOpen(true)}
-                                    onDeleteChar={handleDeleteChar}
-                                    onSelect={async (charName) => {
-                                      const updated = { ...agentCharMap, [agent.id]: charName }
-                                      setAgentCharMap(updated)
-                                      await saveAgentCharMap(updated)
-                                    }}
-                                  />
-                                ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Claude Code */}
-                        {enableClaudeCode && (
-                          <div className="mb-8">
-                            <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">Claude Code</h2>
-                            <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                              <AgentAccordionItem
-                                agent={{ id: 'claude-code', identityName: 'Claude Code', identityEmoji: '🤖' }}
-                                characters={characters}
-                                currentChar={claudeCharName}
-                                isOpen={openAccordionId === 'claude-code'}
-                                onToggle={() => setOpenAccordionId(openAccordionId === 'claude-code' ? null : 'claude-code')}
-                                onOpenCreate={() => setIsCreateModalOpen(true)}
-                                onDeleteChar={handleDeleteChar}
-                                onSelect={async (charName) => {
-                                  setClaudeCharName(charName)
-                                  const store = await load('settings.json', { defaults: {}, autoSave: true })
-                                  await store.set('claude_char', charName)
-                                  await store.save()
-                                }}
-                              />
-                            </div>
-                          </div>
-                        )}
-
-                        {agents.length > 0 && characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0).length < agents.length && (
-                          <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
-                            {t('mini.notEnoughChars')}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  {settingsNav === 'settings' && (
-                    <div className="h-full overflow-y-auto bg-[#151515] scrollbar-hidden">
-                      <SettingsTab disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} notifySound={notifySound} onChangeNotifySound={async (v) => { setNotifySound(v); const store = await getStore(); await store.set('notify_sound', v); await store.save() }} waitingSound={waitingSound} onToggleWaitingSound={async (v) => { setWaitingSound(v); const store = await getStore(); await store.set('waiting_sound', v); await store.save() }} mascotPosition={mascotPosition} onChangeMascotPosition={async (v) => { setMascotPosition(v); mascotPositionRef.current = v; const store = await getStore(); await store.set('mascot_position', v); await store.save() }} islandBg={islandBg} onChangeIslandBg={async (v) => { setIslandBg(v); const store = await getStore(); await store.set('island_bg', v); await store.save() }} bgPos={bgPos} onChangeBgPos={async (v) => { setBgPos(v); const store = await getStore(); await store.set('island_bg_pos', v); await store.save() }} />
-                    </div>
-                  )}
-                </div>
-                <div style={{
-                  background: '#1a1a1a', padding: '10px 14px',
-                  borderRadius: '0 0 12px 12px', flexShrink: 0,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <span
-                    onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
-                    style={{
-                      color: 'rgba(255,255,255,0.35)', fontSize: 11, cursor: 'pointer',
-                      transition: 'color 0.25s, transform 0.25s, letter-spacing 0.25s',
-                      display: 'inline-flex', alignItems: 'center', gap: 4,
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = '#f5c542'; e.currentTarget.style.transform = 'scale(1.04)'; e.currentTarget.style.letterSpacing = '0.3px' }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.35)'; e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.letterSpacing = '0px' }}
-                  >
-                    {t('mini.starPrompt')} <span style={{ fontSize: 13, lineHeight: 1 }}>⭐</span> {t('mini.starPromptSuffix')}
-                  </span>
-                </div>
-              </div>
-            ) : (
+          <div style={{
+            position: 'relative', zIndex: 1,
+            opacity: showPanel ? 1 : 0,
+            transform: showPanel ? 'scale(1) translateY(0)' : 'scale(0.9) translateY(-20px)',
+            filter: showPanel ? 'blur(0px)' : 'blur(8px)',
+            transformOrigin: 'top center',
+            transition: showPanel
+              ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s, transform 0.4s cubic-bezier(0.2, 1, 0.3, 1), filter 0.25s ease 0.05s'
+              : 'opacity 0.08s ease-out, transform 0.08s ease-out, filter 0.08s ease-out',
+            height: 'auto',
+          }}>
+            {/* ===== Normal content (always rendered when expanded) ===== */}
               <AnimatePresence mode="wait">
               {(!inAgentDetail && !selectedClaudeSession && !selectedSessionKey && !showClaudeStats) ? (
               /* ===== Normal: character island + sessions ===== */
@@ -1638,7 +1458,7 @@ export default function Mini() {
                       transition={{ duration: 0.15 }}
                       style={{
                         position: 'absolute', inset: 0, zIndex: 10,
-                        background: 'rgba(26,26,26,0.85)',
+                        background: 'rgba(15,15,19,0.9)',
                         display: 'flex', flexDirection: 'column',
                         alignItems: 'center', justifyContent: 'center', gap: 8,
                       }}
@@ -1648,16 +1468,40 @@ export default function Mini() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-                {/* Character island */}
-                <div style={{
-                  position: 'relative', height: 100,
-                  backgroundImage: `url(/assets/backgrounds/${islandBg})`,
-                  backgroundSize: 'cover',
-                  backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
-                  overflow: 'hidden',
+                {/* Banner Area */}
+                <div className="border-b-[3px] border-black relative overflow-hidden select-none" style={{
+                  height: 125,
+                  ...(islandBg === '__anime__' ? {
+                    background: '#F0D140',
+                  } : {
+                    backgroundImage: `url(/assets/backgrounds/${islandBg})`,
+                    backgroundSize: 'cover',
+                    backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
+                  }),
                 }}>
+                  {islandBg === '__anime__' && (
+                    <>
+                      <div className="absolute inset-0 bg-[linear-gradient(to_right,#00000015_2px,transparent_2px),linear-gradient(to_bottom,#00000015_2px,transparent_2px)] bg-[size:16px_16px]" />
+                      <motion.div
+                        animate={{ x: [-80, panelW + 80] }}
+                        transition={{ repeat: Infinity, duration: 18, ease: "linear" }}
+                        className="absolute top-1 left-0 text-black p-4 -m-4"
+                        style={{ filter: 'drop-shadow(2px 2px 0px #000)' }}
+                      >
+                        <Cloud className="w-12 h-12 fill-white" strokeWidth={2} style={{ overflow: 'visible' }} />
+                      </motion.div>
+                      <motion.div
+                        animate={{ x: [-60, panelW + 60] }}
+                        transition={{ repeat: Infinity, duration: 25, ease: "linear", delay: 4 }}
+                        className="absolute top-10 left-0 text-black p-4 -m-4"
+                        style={{ filter: 'drop-shadow(2px 2px 0px #000)' }}
+                      >
+                        <Cloud className="w-8 h-8 fill-white" strokeWidth={2} style={{ overflow: 'visible' }} />
+                      </motion.div>
+                    </>
+                  )}
+
                   {sessionSlots.length === 0 && (() => {
-                    // Show mascot idle GIF when no sessions, fall back to text
                     const emptyGif = getMiniGif(miniChar ?? undefined, 'idle', true)
                     return (
                       <div style={{
@@ -1669,7 +1513,7 @@ export default function Mini() {
                           <img
                             src={emptyGif}
                             style={{
-                              width: 56, height: 56, objectFit: 'contain',
+                              width: 68, height: 68, objectFit: 'contain',
                               animation: 'bob 2s ease-in-out infinite',
                               opacity: 0.8,
                             }}
@@ -1685,7 +1529,6 @@ export default function Mini() {
                   })()}
 
                   {(() => {
-                    // Shuffle slots by seed for random x positions
                     const shuffled = sessionSlots.map((slot, idx) => {
                       const seed = (slot.agentId + slot.sessionIdx).split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0)
                       return { slot, idx, seed }
@@ -1697,12 +1540,12 @@ export default function Mini() {
                     const row = sortedIdx < 6 ? 0 : 1
                     const col = row === 0 ? sortedIdx : sortedIdx - 6
                     const cols = row === 0 ? Math.min(sessionSlots.length, 6) : Math.min(sessionSlots.length - 6, 4)
-                    const slotW = 380 / Math.max(cols, 1)
-                    const xBase = slotW * col + slotW / 2 - 22 + (row === 1 ? slotW * 0.4 : 0)
-                    const yBase = row === 0 ? (singleRow ? 20 : 4) : 52
-                    const jx = ((seed * 7) % 13) - 6
-                    const jy = singleRow ? ((seed * 11) % 41) - 20 : ((seed * 11) % 9) - 4
-                    const x = Math.max(2, Math.min(332, xBase + jx))
+                    const slotW = 475 / Math.max(cols, 1)
+                    const xBase = slotW * col + slotW / 2 - 28 + (row === 1 ? slotW * 0.4 : 0)
+                    const yBase = row === 0 ? (singleRow ? 16 : 10) : 64
+                    const jx = ((seed * 7) % 17) - 8
+                    const jy = singleRow ? ((seed * 11) % 45) - 22 : ((seed * 11) % 11) - 5
+                    const x = Math.max(2, Math.min(415, xBase + jx))
                     const y = yBase + jy
                     return (
                       <div
@@ -1727,11 +1570,11 @@ export default function Mini() {
                         <div style={{ position: 'relative' }}>
                           {gif ? (
                             <img src={gif} alt={slot.char?.name}
-                              style={{ width: 44, height: 44, objectFit: 'contain' }}
+                              style={{ width: 56, height: 56, objectFit: 'contain' }}
                               draggable={false} />
                           ) : (
                             <div style={{
-                              width: 44, height: 44, borderRadius: 8,
+                              width: 56, height: 56, borderRadius: 8,
                               background: 'rgba(255,255,255,0.1)',
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
                               color: '#555', fontSize: 13,
@@ -1744,158 +1587,130 @@ export default function Mini() {
                   })()}
                 </div>
 
-                {/* Session bars */}
-                <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', background: '#1a1a1a' }}>
+                {/* Task List */}
+                <div className="p-2 bg-[#0f0f13] min-h-[120px] flex flex-col gap-0.5">
                   {allSessions.length === 0 && claudeSessions.length === 0 && !refreshingAgents && (
-                    <div style={{
-                      color: 'rgba(255,255,255,0.25)', fontSize: 11,
-                      textAlign: 'center', padding: '20px 16px',
-                      display: 'flex', flexDirection: 'column', gap: 6,
-                      alignItems: 'center',
-                    }}>
-                      {enableClaudeCode && <span>{t('mini.ccStartTracking')}</span>}
-                      <span
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="text-center py-10 px-4 flex flex-col items-center gap-2.5"
+                    >
+                      {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
+                      <button
                         data-no-drag
                         onClick={(e) => { e.stopPropagation(); enterSettings() }}
-                        style={{ color: 'rgba(255,255,255,0.4)', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 2 }}
+                        className="text-slate-400 text-sm font-medium underline decoration-slate-500 underline-offset-4 hover:text-slate-200 transition-colors"
                       >
                         {t('mini.goToSettings')}
-                      </span>
-                    </div>
+                      </button>
+                    </motion.div>
                   )}
 
-                  <div className="scrollbar-thin" style={{ maxHeight: 4 * 56, overflowY: 'auto' }}>
+                  <div className="scrollbar-hidden" style={{ maxHeight: 4 * 50, overflowY: 'auto' }}>
+                    <AnimatePresence mode="popLayout">
                     {(() => {
-                      // Merge OpenClaw + Claude sessions into unified list, sort by active first
                       const unified: { type: 'oc', data: MiniSessionInfo, active: boolean, updatedAt: number }[] = allSessions.map(s => ({ type: 'oc' as const, data: s, active: s.active, updatedAt: s.updatedAt }))
                       const claudeUnified = claudeSessions.map(cs => ({ type: 'claude' as const, data: cs, active: cs.status === 'processing' || cs.status === 'tool_running', updatedAt: cs.updatedAt || 0 }))
                       const merged = [...unified, ...claudeUnified].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
 
                       const agentSeqCount: Record<string, number> = {}
-                      return merged.map((item) => {
+                      return merged.map((item, index) => {
                         if (item.type === 'oc') {
                           const s = item.data
                           const agent = agents.find(a => a.id === s.agentId)
                           const seq = (agentSeqCount[s.agentId] = (agentSeqCount[s.agentId] || 0) + 1)
                           const agentName = `${agent?.identityEmoji || ''} ${agent?.identityName || s.agentId}`.trim()
+                          const label = `${agentName} #${seq}${s.lastUserMsg ? ` - ${s.lastUserMsg}` : ''}`
                           return (
-                            <div
+                            <motion.div
                               key={`oc-${s.agentId}-${s.key}`}
+                              layout
+                              initial={{ opacity: 0, x: -10 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              exit={{ opacity: 0, filter: 'blur(4px)' }}
+                              transition={{ duration: 0.2, delay: index * 0.05 }}
                               data-no-drag
                               onClick={() => { setSelectedClaudeSession(null); setSelectedAgentId(null); setSelectedSessionKey({ agentId: s.agentId, key: s.key }) }}
-                              style={{
-                                padding: '8px 12px 8px 16px',
-                                cursor: 'pointer',
-                                borderBottom: '1px solid rgba(255,255,255,0.04)',
-                                transition: 'background 0.12s',
-                                display: 'flex', alignItems: 'center', gap: 10,
-                              }}
-                              onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
-                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                              className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors cursor-pointer"
                             >
-                              <div style={{
-                                width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                                background: s.active ? '#2ecc71' : 'rgba(255,255,255,0.15)',
-                                boxShadow: s.active ? '0 0 6px rgba(46,204,113,0.6)' : 'none',
-                                animation: s.active ? 'miniPulse 1.5s ease-in-out infinite' : 'none',
-                              }} />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{
-                                  color: '#e0e0e0', fontSize: 11,
-                                  overflow: 'hidden', textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap', lineHeight: 1.5,
-                                }}>
-                                  <span style={{ fontWeight: 600 }}>{agentName}</span>
-                                  <span style={{ marginLeft: 4, fontSize: 10 }}>#{seq}</span>
-                                  {s.lastUserMsg && (
-                                    <span style={{ marginLeft: 8 }}>{s.lastUserMsg}</span>
-                                  )}
-                                </div>
-                                <div style={{
-                                  color: 'rgba(255,255,255,0.35)', fontSize: 10,
-                                  overflow: 'hidden', textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap', lineHeight: 1.5,
-                                  marginTop: 1,
-                                }}>
-                                  {s.lastAssistantMsg || '\u00A0'}
-                                </div>
+                              <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                {s.active ? (
+                                  <Asterisk className="w-4 h-4 text-emerald-400 animate-[spin_4s_linear_infinite]" strokeWidth={2.5} />
+                                ) : (
+                                  <span className="w-1 h-1 rounded-full bg-slate-600" />
+                                )}
+                              </div>
+                              <div className="flex items-baseline gap-2 min-w-0 flex-1">
+                                <span className={`text-sm font-bold tracking-wide truncate ${s.active ? 'text-slate-200' : 'text-slate-400'}`}>
+                                  {label}
+                                </span>
                               </div>
                               <button
                                 data-no-drag
                                 onClick={(e) => { e.stopPropagation(); dismissedSessionsRef.current.set(`${s.agentId}:${s.key}`, s.updatedAt); setAllSessions(prev => prev.filter(ss => !(ss.agentId === s.agentId && ss.key === s.key))) }}
-                                style={{
-                                  background: 'none', border: 'none', color: 'rgba(255,255,255,0.15)',
-                                  fontSize: 14, cursor: 'pointer', padding: '8px 10px', flexShrink: 0,
-                                  lineHeight: 1, margin: '-6px -6px -6px 0',
-                                }}
-                                onMouseEnter={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.5)'}
-                                onMouseLeave={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.15)'}
+                                className="shrink-0 text-slate-600 hover:text-rose-500 transition-colors outline-none"
                                 title={t('mini.remove')}
-                              >×</button>
-                            </div>
+                              >
+                                <Trash2 className="w-4 h-4" strokeWidth={2} />
+                              </button>
+                            </motion.div>
                           )
                         } else {
                           const cs = item.data
                           const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
                           const isActive = item.active
                           const isWaiting = cs.status === 'waiting'
+                          const statusText = cs.tool ? `🔧 ${cs.tool}` : cs.status === 'stopped' ? t('mini.idle') : cs.status === 'waiting' ? '⏳ ' + t('mini.waiting') : cs.status === 'processing' ? t('mini.thinking') : cs.status === 'tool_running' ? t('mini.working') : cs.status === 'compacting' ? t('mini.compacting') : cs.status
+                          const label = `${projectName}${cs.userPrompt ? ` - ${cs.userPrompt}` : ` - ${statusText}`}`
                           return (
-                            <div
+                            <motion.div
                               key={`claude-${cs.sessionId}`}
+                              layout
+                              initial={{ opacity: 0, x: -10 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              exit={{ opacity: 0, filter: 'blur(4px)' }}
+                              transition={{ duration: 0.2, delay: index * 0.05 }}
                               data-no-drag
                               onClick={() => { setSelectedAgentId(null); setSelectedSessionKey(null); setSelectedClaudeSession(cs.sessionId) }}
-                              style={{
-                                padding: '8px 12px 8px 16px',
-                                cursor: 'pointer',
-                                borderBottom: '1px solid rgba(255,255,255,0.04)',
-                                transition: 'background 0.12s',
-                                display: 'flex', alignItems: 'center', gap: 10,
-                              }}
-                              onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
-                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                              className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors cursor-pointer"
                             >
-                              <div style={{
-                                width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                                background: isWaiting ? '#f59e0b' : isActive ? '#3b82f6' : 'rgba(255,255,255,0.15)',
-                                boxShadow: isWaiting ? '0 0 6px rgba(245,158,11,0.6)' : isActive ? '0 0 6px rgba(59,130,246,0.6)' : 'none',
-                                animation: (isActive || isWaiting) ? 'miniPulse 1.5s ease-in-out infinite' : 'none',
-                              }} />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{
-                                  color: '#e0e0e0', fontSize: 11,
-                                  overflow: 'hidden', textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap', lineHeight: 1.5,
-                                }}>
-                                  <span style={{ fontWeight: 600 }}>🤖 Claude</span>
-                                  <span style={{ marginLeft: 6, color: 'rgba(255,255,255,0.4)', fontSize: 10 }}>{projectName}</span>
-                                </div>
-                                <div style={{
-                                  color: 'rgba(255,255,255,0.35)', fontSize: 10,
-                                  overflow: 'hidden', textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap', lineHeight: 1.5,
-                                  marginTop: 1,
-                                }}>
-                                  {cs.tool ? `🔧 ${cs.tool}` : cs.status === 'stopped' ? t('mini.idle') : cs.status === 'waiting' ? '⏳ ' + t('mini.waiting') : cs.status === 'processing' ? t('mini.thinking') : cs.status === 'tool_running' ? t('mini.working') : cs.status === 'compacting' ? t('mini.compacting') : cs.status}
-                                  {cs.userPrompt ? ` · ${cs.userPrompt}` : ''}
-                                </div>
+                              <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                {(isActive || isWaiting) ? (
+                                  <Asterisk className={`w-4 h-4 animate-[spin_4s_linear_infinite] ${isWaiting ? 'text-amber-400' : 'text-emerald-400'}`} strokeWidth={2.5} />
+                                ) : (
+                                  <span className="w-1 h-1 rounded-full bg-slate-600" />
+                                )}
+                              </div>
+                              <div className="flex items-baseline gap-2 min-w-0 flex-1">
+                                <span className={`text-sm font-bold tracking-wide truncate ${(isActive || isWaiting) ? 'text-slate-200' : 'text-slate-400'}`}>
+                                  {label}
+                                </span>
                               </div>
                               <button
                                 data-no-drag
                                 onClick={(e) => { e.stopPropagation(); invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {}); setClaudeSessions(prev => prev.filter(s => s.sessionId !== cs.sessionId)) }}
-                                style={{
-                                  background: 'none', border: 'none', color: 'rgba(255,255,255,0.15)',
-                                  fontSize: 14, cursor: 'pointer', padding: '8px 10px', flexShrink: 0,
-                                  lineHeight: 1, margin: '-6px -6px -6px 0',
-                                }}
-                                onMouseEnter={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.5)'}
-                                onMouseLeave={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.15)'}
+                                className="shrink-0 text-slate-600 hover:text-rose-500 transition-colors outline-none"
                                 title={t('mini.remove')}
-                              >×</button>
-                            </div>
+                              >
+                                <Trash2 className="w-4 h-4" strokeWidth={2} />
+                              </button>
+                            </motion.div>
                           )
                         }
                       })
                     })()}
+                    </AnimatePresence>
+                  </div>
+
+                  {/* Trademark / Footer */}
+                  <div className="mt-auto pt-1.5 pb-1 flex justify-center items-center select-none">
+                    <span
+                      data-no-drag
+                      onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
+                      className="text-[10px] font-black tracking-[0.25em] text-slate-500 uppercase cursor-pointer hover:text-slate-300 transition-colors"
+                    >
+                      oc–claw.ai
+                    </span>
                   </div>
                 </div>
               </motion.div>
@@ -1958,10 +1773,202 @@ export default function Mini() {
               </motion.div>
             )}
               </AnimatePresence>
-            )}
           </div>
+
         </div>
       )}
+
+      {/* ===== Settings overlay (independent fixed layer) ===== */}
+      <AnimatePresence>
+      {showSettingsOverlay && (
+        <>
+          <div
+            data-no-drag
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) exitSettings()
+            }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 40,
+            }}
+          />
+          <motion.div
+            key="settings-overlay"
+            data-no-drag
+            className="scrollbar-hidden"
+            variants={{
+              hidden: { opacity: 0, scale: 0.96, y: -24, filter: "blur(10px)" },
+              visible: { opacity: 1, scale: 1, y: 0, filter: "blur(0px)", transition: { type: "spring", damping: 22, stiffness: 150, mass: 1.2 } },
+              exit: { opacity: 0, scale: 0.96, y: -24, filter: "blur(10px)", transition: { type: "spring", damping: 25, stiffness: 300 } },
+            }}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+            style={{
+              position: 'fixed',
+              top: 4,
+              left: 12,
+              right: 12,
+              bottom: 12,
+              zIndex: 50,
+              background: '#0f0f13',
+              border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: 24,
+              display: 'flex',
+              flexDirection: 'column',
+              transformOrigin: 'top center',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Settings header */}
+            <div id="settings-overlay" className="flex items-center justify-between px-4 py-2.5 shrink-0 bg-[#18181c] border-b border-white/[0.06]">
+              <div className="flex items-center gap-6 min-w-0 flex-1">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button data-no-drag
+                    onClick={(e) => { e.stopPropagation(); exitSettings() }}
+                    style={{
+                      background: 'rgba(255,255,255,0.06)', border: 'none',
+                      color: 'rgba(255,255,255,0.6)', fontSize: 11,
+                      cursor: 'pointer', padding: '3px 8px',
+                      borderRadius: 6, display: 'flex', alignItems: 'center', gap: 4,
+                    }}>
+                    <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
+                  </button>
+                  {(['pairing', 'settings'] as const).map((nav) => (
+                    <button key={nav} data-no-drag
+                      onClick={(e) => { e.stopPropagation(); setSettingsNav(nav) }}
+                      style={{
+                        background: settingsNav === nav ? 'rgba(255,255,255,0.12)' : 'none',
+                        border: 'none',
+                        color: settingsNav === nav ? '#fff' : 'rgba(255,255,255,0.4)',
+                        fontSize: 11, cursor: 'pointer', padding: '3px 10px',
+                        borderRadius: 6, fontWeight: settingsNav === nav ? 600 : 400,
+                      }}>
+                      {nav === 'pairing' ? t('mini.pairing') : t('mini.settings')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button data-no-drag
+                onClick={(e) => { e.stopPropagation(); exitSettings() }}
+                className="text-slate-400 hover:text-rose-500 transition-colors ml-1"
+              >
+                <X className="w-4.5 h-4.5" strokeWidth={2.5} />
+              </button>
+            </div>
+            <div style={{ flex: 1, overflow: 'hidden', margin: 8, marginTop: 0, borderRadius: 12, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              <div className="bg-[#151515] text-white font-sans antialiased scrollbar-hidden" style={{ borderRadius: '12px 12px 0 0', overflow: 'auto', flex: 1, minHeight: 0 }}>
+                {settingsNav === 'pairing' && (
+                  <div className="h-full overflow-y-auto bg-[#151515] pt-6 px-6 pb-10 scrollbar-hidden">
+                    <div className="max-w-3xl mx-auto">
+                      <p className="text-sm text-white/50 mb-10">
+                        {t('mini.pairingDesc')}
+                      </p>
+                      <div className="mb-8">
+                        <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">{t('mini.mascot')}</h2>
+                        <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
+                          <AgentAccordionItem
+                            agent={{ id: '__mini__', identityName: t('mini.mascot') }}
+                            characters={characters}
+                            currentChar={miniChar?.name || ''}
+                            isOpen={openAccordionId === '__mini__'}
+                            onToggle={() => setOpenAccordionId(openAccordionId === '__mini__' ? null : '__mini__')}
+                            onOpenCreate={() => setIsCreateModalOpen(true)}
+                            onDeleteChar={handleDeleteChar}
+                            onSelect={async (name) => {
+                              const store = await load('settings.json', { defaults: {}, autoSave: true })
+                              await store.set('mini_character', name)
+                              await store.save()
+                              loadMiniChar()
+                            }}
+                          />
+                        </div>
+                      </div>
+                      {agents.length > 0 && (
+                        <div className="mb-8">
+                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">OpenClaw Agents</h2>
+                          <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
+                            {agents.map((agent) => (
+                              <AgentAccordionItem
+                                key={agent.id}
+                                agent={agent}
+                                characters={characters}
+                                currentChar={agentCharMap[agent.id] || DEFAULT_CHAR_NAME}
+                                isOpen={openAccordionId === agent.id}
+                                onToggle={() => setOpenAccordionId(openAccordionId === agent.id ? null : agent.id)}
+                                sourceLabel={agentSourceLabels[agent.id]}
+                                onOpenCreate={() => setIsCreateModalOpen(true)}
+                                onDeleteChar={handleDeleteChar}
+                                onSelect={async (charName) => {
+                                  const updated = { ...agentCharMap, [agent.id]: charName }
+                                  setAgentCharMap(updated)
+                                  await saveAgentCharMap(updated)
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {enableClaudeCode && (
+                        <div className="mb-8">
+                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">Claude Code</h2>
+                          <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
+                            <AgentAccordionItem
+                              agent={{ id: 'claude-code', identityName: 'Claude Code' }}
+                              characters={characters}
+                              currentChar={claudeCharName}
+                              isOpen={openAccordionId === 'claude-code'}
+                              onToggle={() => setOpenAccordionId(openAccordionId === 'claude-code' ? null : 'claude-code')}
+                              onOpenCreate={() => setIsCreateModalOpen(true)}
+                              onDeleteChar={handleDeleteChar}
+                              onSelect={async (charName) => {
+                                setClaudeCharName(charName)
+                                const store = await load('settings.json', { defaults: {}, autoSave: true })
+                                await store.set('claude_char', charName)
+                                await store.save()
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                      {agents.length > 0 && characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0).length < agents.length && (
+                        <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+                          {t('mini.notEnoughChars')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {settingsNav === 'settings' && (
+                  <div className="h-full overflow-y-auto bg-[#151515] scrollbar-hidden">
+                    <SettingsTab disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} notifySound={notifySound} onChangeNotifySound={async (v) => { setNotifySound(v); const store = await getStore(); await store.set('notify_sound', v); await store.save() }} waitingSound={waitingSound} onToggleWaitingSound={async (v) => { setWaitingSound(v); const store = await getStore(); await store.set('waiting_sound', v); await store.save() }} mascotPosition={mascotPosition} onChangeMascotPosition={async (v) => { setMascotPosition(v); mascotPositionRef.current = v; const store = await getStore(); await store.set('mascot_position', v); await store.save() }} islandBg={islandBg} onChangeIslandBg={async (v) => { setIslandBg(v); const store = await getStore(); await store.set('island_bg', v); await store.save() }} bgPos={bgPos} onChangeBgPos={async (v) => { setBgPos(v); const store = await getStore(); await store.set('island_bg_pos', v); await store.save() }} />
+                  </div>
+                )}
+              </div>
+              <div style={{
+                background: '#1a1a1a', padding: '10px 14px',
+                borderRadius: '0 0 12px 12px', flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <span
+                  onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
+                  style={{
+                    color: 'rgba(255,255,255,0.35)', fontSize: 11, cursor: 'pointer',
+                    transition: 'color 0.25s, transform 0.25s, letter-spacing 0.25s',
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = '#f5c542'; e.currentTarget.style.transform = 'scale(1.04)'; e.currentTarget.style.letterSpacing = '0.3px' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.35)'; e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.letterSpacing = '0px' }}
+                >
+                  {t('mini.starPrompt')} <span style={{ fontSize: 13, lineHeight: 1 }}>⭐</span> {t('mini.starPromptSuffix')}
+                </span>
+              </div>
+            </div>
+          </motion.div>
+        </>
+      )}
+      </AnimatePresence>
 
       <CreateCharacterModal
         isOpen={isCreateModalOpen}
