@@ -75,6 +75,27 @@ When modifying the macOS update flow, keep these rules in mind:
 8. **Every real user-facing macOS release still needs signing and notarization.** The helper-based installer does not replace Apple signing/notarization requirements. `xattr -cr` is only cleanup, not a substitute for notarization.
 9. **Version bumps and public rollout are intentionally decoupled.** The app source version can move to the next release (for example `1.5.2`) while the website manifest and download button stay on the previous public build (for example `1.5.1`) until rollout is ready.
 
+## Release Workflow
+
+When cutting a new release (e.g. v1.6.1):
+
+1. **Ensure version is bumped** in `frontend/src-tauri/tauri.conf.json` (the `"version"` field). This is the source of truth for the build output filename.
+2. **Build platform installers**:
+   - **Windows**: `npx tauri build` in `frontend/`. Output: `frontend/src-tauri/target/release/bundle/nsis/oc-claw_<ver>_x64-setup.exe` (~35 MB).
+   - **macOS**: `npx tauri build` on a Mac. Output: `frontend/src-tauri/target/release/bundle/dmg/oc-claw_<ver>_aarch64.dmg`. Requires signing & notarization for public distribution.
+3. **Create / upload to GitHub Release**:
+   - Create: `gh release create v<ver> --title "v<ver>" --notes "v<ver> release"` (skip if tag already exists).
+   - Upload: `gh release upload v<ver> <path-to-installer> --clobber`.
+4. **Update website manifests** (three places):
+   - `website/public/update/latest.json` — update `version` and `url` for each platform. This controls in-app update detection.
+   - `website/src/components/Hero.astro` — update the Windows download URL in the `<script>` block (the `btn.setAttribute('href', ...)` line). The macOS URL is in the `<a>` tag's `href` attribute.
+5. **Commit & push** the website changes, then deploy the website so `oc-claw.ai/update/latest.json` serves the new version.
+
+Key files:
+- Version: `frontend/src-tauri/tauri.conf.json`
+- Update manifest: `website/public/update/latest.json`
+- Download buttons: `website/src/components/Hero.astro`
+
 # Comments
 
 Write thorough comments for any non-trivial logic, especially:
