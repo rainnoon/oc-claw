@@ -334,7 +334,13 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                   }
                   return groups.map(({ ip, chars }) => (
                     <div key={ip} className="mb-3 last:mb-0">
-                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">{ip === '自定义' ? t('mini.custom') : ip === '其他' ? t('mini.other') : ip}</div>
+                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">{
+                        ip === '自定义' ? t('mini.custom')
+                        : ip === '其他' ? t('mini.other')
+                        : ip === '原神' ? t('mini.ipGenshin')
+                        : ip === '赛马娘' ? t('mini.ipUmaMusume')
+                        : ip
+                      }</div>
                       <div className="grid grid-cols-3 gap-3">
                         {chars.map((c) => {
                           const isSelected = c.name === currentChar
@@ -373,7 +379,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                                   <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
                                 )}
                               </div>
-                              <span className="text-sm text-white/80 truncate flex-1">{c.name}</span>
+                              <span className="text-sm text-white/80 truncate flex-1">{c.builtin ? t(`charNames.${c.name}`, c.name) : c.name}</span>
                               {isEditing && !isDefault && (
                                 <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center shadow-md z-10 hover:bg-red-600 transition-colors">
                                   <X className="w-3 h-3 text-white" />
@@ -1360,7 +1366,7 @@ export default function Mini() {
               ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s'
               : 'opacity 0.08s ease-out',
           }}>
-              <div className="flex items-center gap-6 min-w-0 flex-1">
+              <div className="flex items-center gap-4 min-w-0 flex-1">
                 {(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) ? (
                   <button data-no-drag
                     onClick={(e) => { e.stopPropagation(); setSelectedAgentId(null); setSelectedClaudeSession(null); setSelectedSessionKey(null); setShowClaudeStats(false) }}
@@ -1371,14 +1377,12 @@ export default function Mini() {
                 ) : (
                   <button data-no-drag
                     onClick={(e) => { e.stopPropagation(); setPinned(!pinned) }}
-                    className={`transition-colors ${pinned ? 'text-[#F0D140]' : 'text-slate-400 hover:text-[#F0D140]'}`}
+                    className={`transition-colors ${pinned ? 'text-[#F0D140]' : 'text-slate-400 hover:text-slate-200'}`}
                     title={pinned ? t('mini.unpin') : t('mini.pin')}
                   >
                     <Pin className="w-4 h-4" strokeWidth={2.5} />
                   </button>
                 )}
-              </div>
-              <div className="flex items-center gap-4">
                 <button data-no-drag
                   onClick={async (e) => {
                     e.stopPropagation()
@@ -1397,6 +1401,8 @@ export default function Mini() {
                 >
                   {soundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
                 </button>
+              </div>
+              <div className="flex items-center gap-4">
                 <button data-no-drag
                   onClick={(e) => { e.stopPropagation(); enterMoveMode() }}
                   className="text-slate-400 hover:text-[#F0D140] transition-colors"

@@ -50,7 +50,29 @@
     "remote": "Remote",
     "custom": "Custom",
     "other": "Other",
-    "createChar": "Create character"
+    "createChar": "Create character",
+    "ipGenshin": "Genshin Impact",
+    "ipUmaMusume": "Uma Musume"
+  },
+
+  "charNames": {
+    "派蒙": "Paimon",
+    "温迪": "Venti",
+    "胡桃": "Hu Tao",
+    "雷电将军": "Raiden Shogun",
+    "纳西妲": "Nahida",
+    "流浪者": "Wanderer",
+    "芙宁娜": "Furina",
+    "那维莱特": "Neuvillette",
+    "甘雨": "Ganyu",
+    "刻晴": "Keqing",
+    "可莉": "Klee",
+    "七七": "Qiqi",
+    "特别周": "Special Week",
+    "东海帝王": "T.M. Opera O",
+    "黄金船": "Gold Ship",
+    "香企鹅": "Penguingum",
+    "诗歌剧": "Shigeki"
   },
 
   "settings": {
