@@ -209,14 +209,14 @@ nav {
   display: inline-flex;
   align-items: center;
   gap: 0.65rem;
-  background: linear-gradient(180deg, #e8762e 0%, #c55a1a 100%);
+  background: linear-gradient(180deg, #F3C90D 0%, #d4af0b 100%);
   color: #fff;
   font-weight: 700;
   font-size: 1rem;
   padding: 1rem 1.6rem;
   border-radius: 1rem;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 20px 40px rgba(244, 123, 56, 0.26);
+  box-shadow: 0 20px 40px rgba(243, 201, 13, 0.26);
   transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
   white-space: nowrap;
   max-width: 100%;
@@ -227,7 +227,7 @@ nav {
 .btn:hover {
   color: #fff;
   transform: translateY(-2px);
-  box-shadow: 0 24px 48px rgba(244, 123, 56, 0.34);
+  box-shadow: 0 24px 48px rgba(243, 201, 13, 0.34);
   filter: brightness(1.05);
 }
 
