@@ -2,12 +2,12 @@
   "notes": "",
   "platforms": {
     "macos": {
-      "version": "1.6.1",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.6.1/oc-claw_1.6.1_aarch64.dmg"
+      "version": "1.6.2",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.6.2/oc-claw_1.6.2_aarch64.dmg"
     },
     "windows": {
-      "version": "1.6.1",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.6.1/oc-claw_1.6.1_x64-setup.exe"
+      "version": "1.6.2",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.6.2/oc-claw_1.6.2_x64-setup.exe"
     }
   }
 }
