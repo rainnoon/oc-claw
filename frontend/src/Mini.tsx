@@ -87,7 +87,7 @@ function ChatList({ messages, accentColor }: { messages: { role: string; text: s
     <div
       ref={containerRef}
       className="scrollbar-thin selectable-text"
-      style={{ maxHeight: 524, overflowY: 'auto', padding: '12px 14px' }}
+      style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 14px' }}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {messages.map((msg, i) => (
@@ -1348,6 +1348,8 @@ export default function Mini() {
           maxHeight: 400,
           overflowY: 'hidden',
           overflowX: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
           background: '#18181c',
           clipPath: showPanel
             ? 'inset(0 0 0 0 round 0 0 24px 24px)'
@@ -1435,7 +1437,10 @@ export default function Mini() {
             transition: showPanel
               ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s, transform 0.4s cubic-bezier(0.2, 1, 0.3, 1), filter 0.25s ease 0.05s'
               : 'opacity 0.08s ease-out, transform 0.08s ease-out, filter 0.08s ease-out',
-            height: 'auto',
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
           }}>
             {/* ===== Normal content (always rendered when expanded) ===== */}
               <AnimatePresence mode="wait">
@@ -1446,7 +1451,7 @@ export default function Mini() {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.15 }}
-                style={{ position: 'relative' }}
+                style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
               >
                 {/* Loading overlay while refreshing connections */}
                 <AnimatePresence>
@@ -1470,7 +1475,7 @@ export default function Mini() {
                 </AnimatePresence>
                 {/* Banner Area */}
                 <div className="border-b-[3px] border-black relative overflow-hidden select-none" style={{
-                  height: 125,
+                  height: 125, flexShrink: 0,
                   ...(islandBg === '__anime__' ? {
                     background: '#F0D140',
                   } : {
@@ -1588,7 +1593,7 @@ export default function Mini() {
                 </div>
 
                 {/* Task List */}
-                <div className="p-2 bg-[#0f0f13] min-h-[120px] flex flex-col gap-0.5">
+                <div className="p-2 bg-[#0f0f13] flex flex-col gap-0.5" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                   {allSessions.length === 0 && claudeSessions.length === 0 && !refreshingAgents && (
                     <motion.div
                       initial={{ opacity: 0 }}
@@ -1606,7 +1611,7 @@ export default function Mini() {
                     </motion.div>
                   )}
 
-                  <div className="scrollbar-hidden" style={{ maxHeight: 4 * 50, overflowY: 'auto' }}>
+                  <div className="scrollbar-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
                     <AnimatePresence mode="popLayout">
                     {(() => {
                       const unified: { type: 'oc', data: MiniSessionInfo, active: boolean, updatedAt: number }[] = allSessions.map(s => ({ type: 'oc' as const, data: s, active: s.active, updatedAt: s.updatedAt }))
@@ -1717,7 +1722,7 @@ export default function Mini() {
             ) : selectedSessionKey ? (
               /* ===== OpenClaw session chat ===== */
               <motion.div key="oc-chat"
-                style={{ background: '#1a1a1a' }}
+                style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
                 initial={{ opacity: 0, x: 30 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -30 }}
@@ -1733,7 +1738,7 @@ export default function Mini() {
             ) : selectedClaudeSession ? (
               /* ===== Claude session chat ===== */
               <motion.div key="claude-chat"
-                style={{ background: '#1a1a1a' }}
+                style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
                 initial={{ opacity: 0, x: 30 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -30 }}
