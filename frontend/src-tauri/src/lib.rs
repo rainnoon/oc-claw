@@ -2923,7 +2923,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     let builder = WebviewWindowBuilder::new(&app, "mini", WebviewUrl::App("index.html#/mini".into()))
-        .title("ooclaw Mini")
+        .title("oc-claw Mini")
         .inner_size(60.0, 45.0)
         .decorations(false)
         .transparent(true)
@@ -4239,7 +4239,7 @@ async fn open_detail_panel(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     let win = WebviewWindowBuilder::new(&app, "detail", WebviewUrl::App("index.html#/detail".into()))
-        .title("ooclaw - Detail")
+        .title("oc-claw - Detail")
         .inner_size(480.0, 600.0)
         .decorations(true)
         .resizable(true)
@@ -5113,7 +5113,7 @@ if ($installerPath.EndsWith('.msi')) {{
 
 Log "Launching updated app"
 # Find install location from registry (user may have chosen a custom path).
-# The executable is named ooclaw.exe (productName config produces this binary name).
+# The executable is named oc_claw.exe (productName config produces this binary name).
 $appPath = $null
 foreach ($regPath in @(
     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -5123,7 +5123,7 @@ foreach ($regPath in @(
         Where-Object {{ $_.DisplayName -eq 'oc-claw' }} | Select-Object -First 1
     if ($entry -and $entry.InstallLocation) {{
         $loc = $entry.InstallLocation.Trim('"')
-        $candidate = Join-Path $loc 'ooclaw.exe'
+        $candidate = Join-Path $loc 'oc_claw.exe'
         if (Test-Path $candidate) {{
             $appPath = $candidate
             break
@@ -5133,7 +5133,7 @@ foreach ($regPath in @(
 if (-not $appPath) {{
     # Fallback: check common locations
     foreach ($dir in @("$env:LOCALAPPDATA\oc-claw", "$env:ProgramFiles\oc-claw", "H:\oc-claw")) {{
-        $candidate = Join-Path $dir 'ooclaw.exe'
+        $candidate = Join-Path $dir 'oc_claw.exe'
         if (Test-Path $candidate) {{ $appPath = $candidate; break }}
     }}
 }}
@@ -5141,7 +5141,7 @@ if ($appPath) {{
     Log "Relaunching from $appPath"
     Start-Process $appPath
 }} else {{
-    Log "Warning: could not find ooclaw.exe to relaunch"
+    Log "Warning: could not find oc_claw.exe to relaunch"
 }}
 "#,
             pid = std::process::id(),
