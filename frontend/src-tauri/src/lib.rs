@@ -5936,8 +5936,13 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
 
+            // Use dedicated tray icon (logo-mini: white cat silhouette on transparent bg)
+            // instead of the app icon, so it renders correctly in macOS menu bar / Windows tray
+            let tray_icon_bytes = include_bytes!("../icons/tray-icon.png");
+            let tray_icon = tauri::image::Image::from_bytes(tray_icon_bytes)
+                .expect("failed to load tray icon");
             TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
