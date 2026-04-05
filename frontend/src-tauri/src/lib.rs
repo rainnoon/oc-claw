@@ -5848,54 +5848,78 @@ pub fn run() {
             {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+                    use windows::Win32::Graphics::Gdi::{HMONITOR, MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
                     use windows::Win32::Foundation::POINT;
 
                     let mut was_hidden = false;
                     let mut saved_pos: Option<tauri::LogicalPosition<f64>> = None;
+                    let mut hidden_monitor: Option<HMONITOR> = None;
+                    // Debounce counter: require several consecutive non-fullscreen
+                    // polls before restoring, so brief foreground changes (mouse
+                    // movement, overlay popups) during video playback don't cause
+                    // the pet to flicker.
+                    let mut non_fs_streak: u32 = 0;
+                    const RESTORE_THRESHOLD: u32 = 4; // 4 × 500ms = 2s
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(500));
                         let fs_monitor = fullscreen_foreground_monitor();
 
                         if let Some(win) = app_handle.get_webview_window("mini") {
-                            let same_monitor = if let Some(fs_mon) = fs_monitor {
-                                if let Ok(pos) = win.outer_position() {
-                                    let mini_mon = unsafe {
-                                        MonitorFromPoint(
-                                            POINT { x: pos.x, y: pos.y },
-                                            MONITOR_DEFAULTTONEAREST,
-                                        )
-                                    };
-                                    mini_mon == fs_mon
-                                } else {
-                                    false
-                                }
+                            let tracked_monitor = if was_hidden {
+                                hidden_monitor
+                            } else if let Ok(pos) = win.outer_position() {
+                                Some(unsafe {
+                                    MonitorFromPoint(
+                                        POINT { x: pos.x, y: pos.y },
+                                        MONITOR_DEFAULTTONEAREST,
+                                    )
+                                })
                             } else {
-                                false
+                                None
                             };
+                            let same_monitor = matches!(
+                                (fs_monitor, tracked_monitor),
+                                (Some(fs_mon), Some(mini_mon)) if mini_mon == fs_mon
+                            );
 
-                            if same_monitor && !was_hidden {
-                                log::info!("[fullscreen] detected fullscreen app on same monitor, moving mini off-screen");
-                                FULLSCREEN_HIDING.store(true, std::sync::atomic::Ordering::SeqCst);
-                                if let Ok(Some(pos)) = win.outer_position().map(|p| {
-                                    win.current_monitor().ok().flatten().map(|m| {
-                                        let s = m.scale_factor();
-                                        tauri::LogicalPosition::new(p.x as f64 / s, p.y as f64 / s)
-                                    })
-                                }) {
-                                    saved_pos = Some(pos);
+                            if same_monitor {
+                                non_fs_streak = 0;
+                                if !was_hidden {
+                                    log::info!("[fullscreen] detected fullscreen app on same monitor, moving mini off-screen");
+                                    FULLSCREEN_HIDING.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    if let Ok(pos) = win.outer_position() {
+                                        hidden_monitor = Some(unsafe {
+                                            MonitorFromPoint(
+                                                POINT { x: pos.x, y: pos.y },
+                                                MONITOR_DEFAULTTONEAREST,
+                                            )
+                                        });
+                                    }
+                                    if let Ok(Some(pos)) = win.outer_position().map(|p| {
+                                        win.current_monitor().ok().flatten().map(|m| {
+                                            let s = m.scale_factor();
+                                            tauri::LogicalPosition::new(p.x as f64 / s, p.y as f64 / s)
+                                        })
+                                    }) {
+                                        saved_pos = Some(pos);
+                                    }
+                                    let _ = win.set_always_on_top(false);
+                                    let _ = win.set_position(tauri::LogicalPosition::new(-9999.0_f64, -9999.0_f64));
+                                    was_hidden = true;
                                 }
-                                let _ = win.set_always_on_top(false);
-                                let _ = win.set_position(tauri::LogicalPosition::new(-9999.0_f64, -9999.0_f64));
-                                was_hidden = true;
-                            } else if !same_monitor && was_hidden {
-                                log::info!("[fullscreen] fullscreen exited or on different monitor, restoring mini position");
-                                FULLSCREEN_HIDING.store(false, std::sync::atomic::Ordering::SeqCst);
-                                if let Some(pos) = saved_pos.take() {
-                                    let _ = win.set_position(pos);
+                            } else if was_hidden {
+                                non_fs_streak += 1;
+                                if non_fs_streak >= RESTORE_THRESHOLD {
+                                    log::info!("[fullscreen] fullscreen exited or on different monitor, restoring mini position");
+                                    FULLSCREEN_HIDING.store(false, std::sync::atomic::Ordering::SeqCst);
+                                    if let Some(pos) = saved_pos.take() {
+                                        let _ = win.set_position(pos);
+                                    }
+                                    let _ = win.set_always_on_top(true);
+                                    was_hidden = false;
+                                    hidden_monitor = None;
+                                    non_fs_streak = 0;
                                 }
-                                let _ = win.set_always_on_top(true);
-                                was_hidden = false;
                             }
                         }
                     }
