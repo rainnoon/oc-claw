@@ -22,6 +22,11 @@ input, textarea, pre, [contenteditable], .selectable-text, .selectable-text * {
 .scrollbar-white::-webkit-scrollbar-thumb { background: #1a1a1a; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; }
 .scrollbar-white::-webkit-scrollbar-thumb:hover { background: #222; border-color: rgba(255,255,255,0.35); }
 
+@keyframes bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(3px); }
+}
+
 @keyframes movePulse {
   0%, 100% { outline-color: rgba(59,130,246,0.6); }
   50% { outline-color: rgba(59,130,246,0.15); }
