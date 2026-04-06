@@ -426,7 +426,7 @@ export default function Mini() {
   const [characters, setCharacters] = useState<CharacterMeta[]>([])
   const [agentCharMap, setAgentCharMap] = useState<Record<string, string>>({})
   const [miniChar, setMiniChar] = useState<CharacterMeta | null>(null)
-  const [bobPhase, setBobPhase] = useState(0)
+
   const [allSessions, setAllSessions] = useState<MiniSessionInfo[]>([])
   const [anySessionActive, setAnySessionActive] = useState(false)
   const [refreshingAgents, setRefreshingAgents] = useState(false)
@@ -487,20 +487,6 @@ export default function Mini() {
   const [moveMode, setMoveMode] = useState(false)
 
   const { t } = useTranslation()
-
-  // Bob animation (only when collapsed, avoid 60fps re-renders in settings mode)
-  useEffect(() => {
-    if (expanded) return
-    let frame: number
-    const animate = () => {
-      setBobPhase(Date.now())
-      frame = requestAnimationFrame(animate)
-    }
-    frame = requestAnimationFrame(animate)
-    return () => cancelAnimationFrame(frame)
-  }, [expanded])
-
-  const bobYRaw = Math.sin(bobPhase / 600) * 3
 
   // Load mini character from store
   const loadMiniChar = useCallback(async () => {
@@ -1245,7 +1231,7 @@ export default function Mini() {
   const hasWorking = anySessionActive || Object.values(healthMap).some(Boolean) || claudeWorking || claudeCompacting || claudeWaiting
   // Priority: waiting > compacting > working > idle
   const mainPetState: PetState = claudeWaiting ? 'waiting' : claudeCompacting ? 'compacting' : hasWorking ? 'working' : 'idle'
-  const bobY = (disableSleepAnim && mainPetState === 'idle') ? 0 : bobYRaw
+  const shouldBob = !(disableSleepAnim && mainPetState === 'idle')
   const miniGif = getMiniGif(miniChar ?? undefined, mainPetState, true)
   const handleDeleteChar = useCallback(async (name: string) => {
     try {
@@ -1294,14 +1280,16 @@ export default function Mini() {
           }}
         >
           <div style={{
-            transform: `translateY(${bobY}px)`,
-            transition: 'transform 0.1s ease',
             position: 'relative',
+            animation: moveMode
+              ? 'movePulse 1.2s ease-in-out infinite'
+              : shouldBob
+                ? 'bob 1.2s ease-in-out infinite'
+                : 'none',
             ...(moveMode ? {
               borderRadius: 12,
               outline: '2px solid rgba(59,130,246,0.6)',
               outlineOffset: -2,
-              animation: 'movePulse 1.2s ease-in-out infinite',
             } : {}),
           }}>
             {miniGif ? (
@@ -1569,7 +1557,8 @@ export default function Mini() {
                           position: 'absolute', left: x, top: y,
                           display: 'flex', flexDirection: 'column', alignItems: 'center',
                           cursor: 'pointer', zIndex: 2,
-                          transform: `translateY(${Math.sin((bobPhase + sortedIdx * 400) / 800) * 2}px)`,
+                          animation: 'bob 1.6s ease-in-out infinite',
+                          animationDelay: `${sortedIdx * -0.3}s`,
                         }}
                       >
                         <div style={{ position: 'relative' }}>
