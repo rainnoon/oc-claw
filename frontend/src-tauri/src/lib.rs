@@ -4343,6 +4343,11 @@ pub struct ClaudeSession {
     /// the session is stale and should be cleared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Number of sub-agents (Agent tool) still running in the background.
+    /// Incremented on PreToolUse(Agent), decremented on SubagentStop.
+    /// Sound only plays on Stop when this reaches 0 (all agents done).
+    #[serde(skip)]
+    pub pending_agents: u32,
 }
 
 struct ClaudeState {
@@ -5523,6 +5528,7 @@ fn process_claude_event(
 
         let was_processing;
         let was_compacting;
+        let pending_agents;
 
         {
             let mut sessions = state.lock().unwrap();
@@ -5532,6 +5538,7 @@ fn process_claude_event(
 
             if hook_event == "SessionEnd" {
                 sessions.remove(&session_id);
+                pending_agents = 0;
             } else {
                 let session = sessions.entry(session_id.clone()).or_insert_with(|| ClaudeSession {
                     session_id: session_id.clone(),
@@ -5544,7 +5551,28 @@ fn process_claude_event(
                     updated_at: 0,
                     is_processing: false,
                     pid: None,
+                    pending_agents: 0,
                 });
+
+                // Track pending sub-agents:
+                // - PreToolUse with tool=Agent → a sub-agent is being launched
+                // - SubagentStop → a sub-agent has completed
+                // Sound only plays on Stop when pending_agents == 0 (all agents done).
+                let tool_name = event.get("tool").or_else(|| event.get("tool_name"))
+                    .and_then(|v| v.as_str()).unwrap_or("");
+                if hook_event == "UserPromptSubmit" {
+                    // New user prompt = fresh start. Reset counter in case previous
+                    // agents were killed or SubagentStop was never delivered.
+                    session.pending_agents = 0;
+                } else if hook_event == "PreToolUse" && tool_name == "Agent" {
+                    session.pending_agents += 1;
+                    log::info!("[claude_event] session={} Agent launched, pending_agents={}",
+                        &session_id[..session_id.len().min(8)], session.pending_agents);
+                } else if hook_event == "SubagentStop" {
+                    session.pending_agents = session.pending_agents.saturating_sub(1);
+                    log::info!("[claude_event] session={} SubagentStop, pending_agents={}",
+                        &session_id[..session_id.len().min(8)], session.pending_agents);
+                }
 
                 session.status = status.clone();
                 session.is_processing = is_processing;
@@ -5571,6 +5599,8 @@ fn process_claude_event(
                     session.tool = None;
                     session.tool_input = None;
                 }
+
+                pending_agents = session.pending_agents;
             }
         }
 
@@ -5579,8 +5609,11 @@ fn process_claude_event(
         // Only emit completion sound on explicit Stop or PermissionRequest events.
         // Previously we checked status transitions, but guard overrides on PostToolUse
         // could falsely trigger "stopped" mid-task when CC's status field lags behind.
+        // Also suppress sound while sub-agents are still running (pending_agents > 0).
+        // Each PreToolUse(Agent) increments the counter, each SubagentStop decrements it.
+        // Sound only plays when all sub-agents have completed.
         if was_processing && !was_compacting
-            && (hook_event == "Stop" || hook_event == "PermissionRequest") {
+            && ((hook_event == "Stop" && pending_agents == 0) || hook_event == "PermissionRequest") {
             let is_waiting = hook_event == "PermissionRequest";
             let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting}));
         }
