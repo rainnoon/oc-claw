@@ -4526,6 +4526,10 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
                     if !is_pid_alive(pid) {
                         log::info!("[get_claude_sessions] CC pid {} dead, clearing {} for {}", pid, session.status, session.session_id);
                         session.status = "stopped".to_string();
+                        // Reset pending_agents so future Stop events aren't
+                        // permanently suppressed (SubagentStop will never arrive
+                        // from a dead CC process).
+                        session.pending_agents = 0;
                     }
                 }
                 // No pid recorded → can't verify, keep current status (CC is
