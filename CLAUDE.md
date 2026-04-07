@@ -51,6 +51,13 @@ The CC hook system and the session file watcher BOTH update session status. They
 1. **`check_interrupted()` must only check the LAST user message.** The JSONL file accumulates all messages. If it scans multiple lines for `[Request interrupted by user`, an old ESC interruption marker persists after the user submits a new prompt. The file watcher then keeps resetting "processing"/"tool_running" → "stopped" on every file change, overriding hook events. Fix: find the most recent `"type":"user"` line and only check that one.
 2. **PID-alive check must cover ALL active statuses**, not just "waiting". If CC is killed (Ctrl+C / SIGKILL) during thinking (no tool calls yet), no Stop/SessionEnd hook fires. Without the PID check on "processing"/"tool_running"/"compacting", the character gets stuck in working state forever.
 3. **Hook events are the primary status source; the file watcher is a fallback.** Hook events arrive in real-time via the Unix/TCP socket. The file watcher (200ms debounce) only handles edge cases the hooks miss: ESC interruption and session file truncation (compact). Do not add file-watcher logic that competes with hook-derived status.
+4. **Sub-agent completion sound suppression uses a `pending_agents` counter on `ClaudeSession`.** When CC spawns sub-agents (Agent tool), each completion triggers a `Stop` event. Without suppression, background agents cause 2-3 sounds per prompt. The counter tracks: `PreToolUse(Agent)` +1, `SubagentStop` -1. Sound only plays on `Stop` when `pending_agents == 0`. Key details:
+   - CC sub-agents do NOT create separate sessions or fire independent hooks — all events (including `SubagentStop`) fire on the **parent session** with the parent's `session_id`.
+   - `PermissionRequest` is exempt from the counter check (always notifies).
+   - `UserPromptSubmit` resets the counter to 0 (safety valve if `SubagentStop` is never delivered).
+   - PID-alive check also resets the counter when CC is detected as dead.
+   - CC's raw hook JSON does NOT include an `interactive` field — the hook script computes it from the process tree (`-p`/`--print` flag detection). Do not rely on `interactive` to distinguish sub-agents.
+   - `install_claude_hooks()` in `lib.rs` regenerates the hook script on every app startup, overwriting manual edits to `~/.claude/hooks/ooclaw-hook.sh`. To persist hook changes, modify the template in `lib.rs`.
 
 # Polling & Remote SSH
 
