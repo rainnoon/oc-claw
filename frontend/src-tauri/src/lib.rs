@@ -4488,6 +4488,11 @@ pub struct ClaudeSession {
     /// Raw permission_suggestions JSON from the PermissionRequest hook event.
     #[serde(rename = "permissionSuggestions", skip_serializing_if = "Option::is_none")]
     pub permission_suggestions: Option<serde_json::Value>,
+    /// Ghostty terminal `id` captured when the session is first seen.
+    /// Used by `jump_to_claude_terminal` to select the exact tab instead
+    /// of relying on CWD/title matching which is ambiguous.
+    #[serde(skip)]
+    pub terminal_id: Option<String>,
 }
 
 type PendingPermissions = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>;
@@ -5019,6 +5024,7 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
     let session = sessions.get(&session_id).ok_or("Session not found")?;
     let pid = session.pid.ok_or("No PID tracked for this session")?;
     let cwd = session.cwd.clone();
+    let terminal_id = session.terminal_id.clone();
     drop(sessions);
 
     #[cfg(target_os = "macos")]
@@ -5033,20 +5039,45 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
 
         match terminal_app.as_deref() {
             Some("Ghostty" | "ghostty") => {
-                // Ghostty exposes id, working directory, and name (title) per terminal
-                // but NOT tty. Claude Code sets tab titles containing the session ID,
-                // so matching by session ID substring in the title is the most precise.
+                // Matching strategy (most → least precise):
+                // 0. Stored terminal `id` captured at session start
+                // 1. Session ID substring in tab title
+                // 2. Working directory (ambiguous if multiple tabs share CWD)
+                //
+                // IMPORTANT: do NOT `activate` before matching — that would
+                // bring Ghostty to front showing whatever tab was last
+                // selected, giving a wrong-tab flash.
+                let escaped_tid = terminal_id.as_deref().unwrap_or("").replace('\\', "\\\\").replace('"', "\\\"");
                 let script = format!(
                     r#"tell application "Ghostty"
     if not (it is running) then return ""
-    activate
 
     set targetWindow to missing value
     set targetTab to missing value
     set targetTerminal to missing value
 
-    -- Pass 1: match by session ID in tab title (most precise)
-    if "{sid}" is not "" then
+    -- Pass 0: match by stored terminal id (most precise)
+    if "{tid}" is not "" then
+        repeat with aWindow in windows
+            repeat with aTab in tabs of aWindow
+                repeat with aTerminal in terminals of aTab
+                    try
+                        if (id of aTerminal as text) is "{tid}" then
+                            set targetWindow to aWindow
+                            set targetTab to aTab
+                            set targetTerminal to aTerminal
+                            exit repeat
+                        end if
+                    end try
+                end repeat
+                if targetTerminal is not missing value then exit repeat
+            end repeat
+            if targetTerminal is not missing value then exit repeat
+        end repeat
+    end if
+
+    -- Pass 1: match by session ID in tab title
+    if targetTerminal is missing value and "{sid}" is not "" then
         repeat with aWindow in windows
             repeat with aTab in tabs of aWindow
                 repeat with aTerminal in terminals of aTab
@@ -5065,7 +5096,7 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
         end repeat
     end if
 
-    -- Pass 2: match by working directory (fallback for non-Claude tabs)
+    -- Pass 2: match by working directory (least precise)
     if targetTerminal is missing value and "{cwd}" is not "" then
         repeat with aWindow in windows
             repeat with aTab in tabs of aWindow
@@ -5087,19 +5118,21 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
 
     if targetTerminal is missing value then return ""
 
-    if targetWindow is not missing value then
-        activate window targetWindow
-        delay 0.04
-    end if
+    -- Activate AFTER matching so the correct tab is shown immediately.
+    activate
+    delay 0.05
     if targetTab is not missing value then
         select tab targetTab
-        delay 0.04
+        delay 0.05
+    end if
+    if targetWindow is not missing value then
+        set index of targetWindow to 1
     end if
     focus targetTerminal
     return "matched"
 end tell"#,
+                    tid = escaped_tid,
                     sid = escaped_sid,
-                    // Use first 8+ chars of session ID for title matching
                     sid_prefix = &escaped_sid[..escaped_sid.len().min(12)],
                     cwd = escaped_cwd,
                 );
@@ -5787,6 +5820,18 @@ export OOCLAW_INTERACTIVE=$IS_INTERACTIVE
 # and clear stale "waiting" sessions.
 export CC_PID=$PPID
 
+# Capture Ghostty terminal ID once per CC session (cached per CC PID).
+# The hook runs inside the CC terminal, so the focused tab is the right one.
+_TID_CACHE="/tmp/ooclaw-tid-$PPID"
+if [ -f "$_TID_CACHE" ]; then
+    export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
+else
+    export GHOSTTY_TID=$(osascript -e 'try
+tell application "Ghostty" to return id of first terminal of selected tab of front window as text
+end try' 2>/dev/null || echo "")
+    [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
+fi
+
 /usr/bin/python3 -c "
 import json, os, socket, sys
 
@@ -5817,6 +5862,11 @@ output = {
     'interactive': os.environ.get('OOCLAW_INTERACTIVE', 'true') == 'true',
     'pid': int(os.environ.get('CC_PID', '0')) or None,
 }
+
+# Ghostty terminal ID for precise tab jumping
+_tid = os.environ.get('GHOSTTY_TID', '')
+if _tid:
+    output['terminalId'] = _tid
 
 if hook_event == 'UserPromptSubmit':
     prompt = input_data.get('prompt', '')
@@ -6074,6 +6124,7 @@ fn process_claude_event(
                     pid: None,
                     pending_agents: 0,
                     permission_suggestions: None,
+                    terminal_id: None,
                 });
 
                 // Track pending sub-agents:
@@ -6115,6 +6166,19 @@ fn process_claude_event(
                 // Store CC process PID from hook event for stale-session detection
                 if let Some(p) = event.get("pid").and_then(|v| v.as_u64()) {
                     session.pid = Some(p as u32);
+                }
+
+                // Store Ghostty terminal ID from hook event for precise tab jumping.
+                // The hook captures this from inside the CC terminal, so it's
+                // always the correct tab — even for pre-existing sessions.
+                if session.terminal_id.is_none() {
+                    if let Some(tid) = event.get("terminalId").and_then(|v| v.as_str()) {
+                        if !tid.is_empty() {
+                            log::info!("[claude_event] session={} stored terminal_id={}",
+                                &session_id[..session_id.len().min(8)], tid);
+                            session.terminal_id = Some(tid.to_string());
+                        }
+                    }
                 }
 
                 if hook_event == "Stop" || hook_event == "SubagentStop" {
