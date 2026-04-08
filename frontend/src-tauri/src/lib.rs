@@ -4492,6 +4492,10 @@ pub struct ClaudeSession {
     /// Shown in the efficiency-mode completion reminder popup.
     #[serde(rename = "lastResponse", skip_serializing_if = "Option::is_none")]
     pub last_response: Option<String>,
+    /// Whether this session's terminal tab is currently the active/focused tab.
+    /// Set dynamically in `get_claude_sessions` — not persisted.
+    #[serde(rename = "isActiveTab")]
+    pub is_active_tab: bool,
     /// Ghostty terminal `id` captured when the session is first seen.
     /// Used by `jump_to_claude_terminal` to select the exact tab instead
     /// of relying on CWD/title matching which is ambiguous.
@@ -4661,6 +4665,33 @@ fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+/// Get the terminal ID of Ghostty's currently focused tab, if Ghostty is frontmost.
+/// Returns None if Ghostty is not running or not frontmost.
+#[cfg(target_os = "macos")]
+fn get_active_ghostty_terminal_id() -> Option<String> {
+    let script = r#"
+        if not (application "Ghostty" is running) then return ""
+        tell application "System Events"
+            set fp to name of first application process whose frontmost is true
+        end tell
+        if fp is not "Ghostty" then return ""
+        tell application "Ghostty"
+            try
+                return id of first terminal of selected tab of front window as text
+            end try
+        end tell
+        return ""
+    "#;
+    let output = std::process::Command::new("osascript")
+        .arg("-e").arg(script)
+        .output().ok()?;
+    let tid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if tid.is_empty() { None } else { Some(tid) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_active_ghostty_terminal_id() -> Option<String> { None }
+
 #[tauri::command]
 async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec<ClaudeSession>, String> {
     // Stale session guard: if the CC process was killed (Ctrl+C / SIGKILL)
@@ -4691,10 +4722,17 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     }
 
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let active_tid = get_active_ghostty_terminal_id();
     let mut list: Vec<ClaudeSession> = sessions.values()
         .filter(|s| !s.cwd.is_empty())
         .cloned()
         .collect();
+    // Mark the session whose terminal tab is currently focused
+    if let Some(ref tid) = active_tid {
+        for s in &mut list {
+            s.is_active_tab = s.terminal_id.as_deref() == Some(tid.as_str());
+        }
+    }
     list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(list)
 }
@@ -5883,7 +5921,25 @@ if tool:
 
 tool_input = input_data.get('tool_input', {})
 if tool_input:
-    output['toolInput'] = json.dumps(tool_input)[:200]
+    # For Write/Edit, build a slim JSON with complete structure so the
+    # frontend can parse it and show file name + numbered code lines.
+    if tool in ('Write', 'Edit'):
+        slim = {}
+        if tool_input.get('file_path'):
+            slim['file_path'] = tool_input['file_path']
+        c = tool_input.get('content') or tool_input.get('new_string') or tool_input.get('old_string') or ''
+        if c:
+            slim['content'] = c[:5000]
+        output['toolInput'] = json.dumps(slim)
+    elif tool == 'Bash':
+        slim = {}
+        if tool_input.get('command'):
+            slim['command'] = tool_input['command'][:500]
+        if tool_input.get('description'):
+            slim['description'] = tool_input['description'][:200]
+        output['toolInput'] = json.dumps(slim)
+    else:
+        output['toolInput'] = json.dumps(tool_input)[:300]
 
 if hook_event == 'Stop':
     msg = input_data.get('last_assistant_message', '')
@@ -6133,6 +6189,7 @@ fn process_claude_event(
                     pid: None,
                     pending_agents: 0,
                     last_response: None,
+                    is_active_tab: false,
                     permission_suggestions: None,
                     terminal_id: None,
                 });

@@ -1044,7 +1044,7 @@ export default function Mini() {
         // with an AI response (lastResponse appeared for the first time).
         if (viewModeRef.current === 'efficiency' && !expandedRef.current && !expandingRef.current && !collapsingRef.current) {
           for (const s of sessions) {
-            if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId)) {
+            if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId) && !s.isActiveTab) {
               seenCompletions.add(s.sessionId)
               hoverExpandedRef.current = true
               setCompletionSessionId(s.sessionId)
@@ -2065,7 +2065,7 @@ export default function Mini() {
                                        此面板。包含四个操作按钮：拒绝、允许一次、
                                        全部允许、自动批准。
                                        用途：让用户无需切换到终端即可快速处理权限请求。 */}
-                                    {isWaiting && (
+                                    {isWaiting && !cs.isActiveTab && (
                                       <div className="mt-2">
                                         {cs.tool && (
                                           <div className="flex items-center gap-1.5 mb-2">
@@ -2082,16 +2082,16 @@ export default function Mini() {
                                                 const fileName = input.file_path ? input.file_path.split('/').pop() : ''
                                                 const isNew = cs.tool === 'Write'
                                                 const content = input.content || input.new_string || input.old_string || ''
-                                                const lines = content.split('\n').slice(0, 12)
+                                                const lines = content.split('\n')
                                                 return (
                                                   <div className="mb-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-hidden">
                                                     {fileName && (
-                                                      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#2a2a2e]">
+                                                      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#2a2a2e] sticky top-0 bg-[#1a1a1e] z-10">
                                                         <span className="text-[12px] text-slate-300 font-mono">{fileName}</span>
                                                         {isNew && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400">{t('mini.newFile', '新文件')}</span>}
                                                       </div>
                                                     )}
-                                                    <div className="px-3 py-2 max-h-[140px] overflow-hidden">
+                                                    <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin">
                                                       {lines.map((line: string, i: number) => (
                                                         <div key={i} className="flex gap-3 leading-[1.6]">
                                                           <span className="text-[11px] text-slate-600 font-mono select-none w-5 text-right shrink-0">{i + 1}</span>
@@ -2132,11 +2132,13 @@ export default function Mini() {
                                             // the next 2s poll cycle.
                                             const resolvePermission = (decision: string) => {
                                               invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision }).catch(() => {})
-                                              // Collapse the panel immediately after permission action
-                                              if (hoverExpandedRef.current) {
-                                                hoverExpandedRef.current = false
-                                                collapse()
-                                              }
+                                              // Clear waiting state locally so popup disappears instantly
+                                              setClaudeSessions((prev) => prev.map((s) =>
+                                                s.sessionId === cs.sessionId ? { ...s, status: 'processing', tool: undefined, toolInput: undefined } : s
+                                              ))
+                                              // Collapse the panel
+                                              hoverExpandedRef.current = false
+                                              collapse()
                                             }
                                             return (<>
                                           <button
@@ -2176,7 +2178,7 @@ export default function Mini() {
                                        任务完成且终端未激活时，显示用户问题和 AI 回复预览，
                                        点击跳转到对应终端。
                                        只有刚完成的 session 才展开弹窗，其余已完成的只显示标题行。 */}
-                                    {!isWaiting && !isWorking && cs.lastResponse && completionSessionId === cs.sessionId && (
+                                    {!isWaiting && !isWorking && cs.lastResponse && completionSessionId === cs.sessionId && !cs.isActiveTab && (
                                       <div
                                         data-no-drag
                                         className="mt-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] cursor-pointer hover:bg-[#222226] transition-colors overflow-hidden"
