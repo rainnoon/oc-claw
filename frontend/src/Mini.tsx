@@ -482,7 +482,17 @@ export default function Mini() {
   const setIsCreateModalOpen = (v: boolean) => { isCreateModalOpenRef.current = v; _setIsCreateModalOpen(v) }
   const [hiding, setHiding] = useState(false)
   const [pinned, setPinned] = useState(false)
-  const [viewMode, setViewMode] = useState<'island' | 'list'>('island')
+  const [viewMode, _setViewMode] = useState<'island' | 'efficiency'>('island')
+  const setViewMode = useCallback(async (v: 'island' | 'efficiency' | ((prev: 'island' | 'efficiency') => 'island' | 'efficiency')) => {
+    _setViewMode(prev => {
+      const next = typeof v === 'function' ? v(prev) : v
+      load('settings.json', { defaults: {}, autoSave: true }).then(store => {
+        store.set('view_mode', next)
+        store.save()
+      })
+      return next
+    })
+  }, [])
   const collapsingRef = useRef(false)
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
   const [moveMode, setMoveMode] = useState(false)
@@ -510,6 +520,13 @@ export default function Mini() {
     const unlisten = listen('character-changed', () => loadMiniChar())
     return () => { unlisten.then((fn) => fn()) }
   }, [loadMiniChar])
+
+  useEffect(() => {
+    load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+      const saved = (await store.get('view_mode')) as string | null
+      if (saved === 'efficiency') _setViewMode('efficiency')
+    })
+  }, [])
 
   const fetchAgents = useCallback(async () => {
     // Skip polling while settings page is open — snapshot comparison would
@@ -1375,9 +1392,9 @@ export default function Mini() {
                   </button>
                 )}
                 <button data-no-drag
-                  onClick={(e) => { e.stopPropagation(); setViewMode(v => v === 'island' ? 'list' : 'island') }}
+                  onClick={(e) => { e.stopPropagation(); setViewMode(v => v === 'island' ? 'efficiency' : 'island') }}
                   className="text-slate-400 hover:text-[#F0D140] transition-colors"
-                  title={viewMode === 'island' ? 'List View' : 'Island View'}
+                  title={viewMode === 'island' ? t('mini.efficiencyMode') || 'Efficiency Mode' : t('mini.islandMode') || 'Island Mode'}
                 >
                   {viewMode === 'island' ? <Rows className="w-4 h-4" strokeWidth={2.5} /> : <PanelLeft className="w-4 h-4" strokeWidth={2.5} />}
                 </button>
@@ -1441,9 +1458,9 @@ export default function Mini() {
             {/* ===== Normal content (always rendered when expanded) ===== */}
               <AnimatePresence mode="wait">
               {(!inAgentDetail && !selectedClaudeSession && !selectedSessionKey && !showClaudeStats) ? (
-              viewMode === 'list' ? (
-              /* ===== List View: anime-process-manager style ===== */
-              <motion.div key="list-view"
+              viewMode === 'efficiency' ? (
+              /* ===== Efficiency Mode ===== */
+              <motion.div key="efficiency-view"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -1549,15 +1566,17 @@ export default function Mini() {
                                     {s.channel}
                                   </span>
                                 )}
-                                <span className="text-[11px] text-slate-500 font-medium group-hover:hidden">{timeAgo}</span>
-                                <button
-                                  data-no-drag
-                                  onClick={(e) => { e.stopPropagation(); dismissedSessionsRef.current.set(`${s.agentId}:${s.key}`, s.updatedAt); setAllSessions(prev => prev.filter(ss => !(ss.agentId === s.agentId && ss.key === s.key))) }}
-                                  className="hidden group-hover:block text-slate-500 hover:text-rose-500 transition-colors outline-none"
-                                  title={t('mini.remove')}
-                                >
-                                  <X className="w-3.5 h-3.5" strokeWidth={2.5} />
-                                </button>
+                                <div className="w-8 flex items-center justify-center">
+                                  <span className="text-[11px] text-slate-500 font-medium group-hover:hidden">{timeAgo}</span>
+                                  <button
+                                    data-no-drag
+                                    onClick={(e) => { e.stopPropagation(); dismissedSessionsRef.current.set(`${s.agentId}:${s.key}`, s.updatedAt); setAllSessions(prev => prev.filter(ss => !(ss.agentId === s.agentId && ss.key === s.key))) }}
+                                    className="hidden group-hover:flex items-center justify-center text-slate-600 hover:text-rose-500 transition-colors outline-none"
+                                    title={t('mini.remove')}
+                                  >
+                                    <Trash2 className="w-4 h-4" strokeWidth={2} />
+                                  </button>
+                                </div>
                               </div>
                             </motion.div>
                           )
@@ -1616,15 +1635,17 @@ export default function Mini() {
                                 <span className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-[#3f211d] text-[#e87a65]">
                                   Claude
                                 </span>
-                                <span className="text-[11px] text-slate-500 font-medium group-hover:hidden">{timeAgo}</span>
-                                <button
-                                  data-no-drag
-                                  onClick={(e) => { e.stopPropagation(); invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {}); setClaudeSessions(prev => prev.filter(s => s.sessionId !== cs.sessionId)) }}
-                                  className="hidden group-hover:block text-slate-500 hover:text-rose-500 transition-colors outline-none"
-                                  title={t('mini.remove')}
-                                >
-                                  <X className="w-3.5 h-3.5" strokeWidth={2.5} />
-                                </button>
+                                <div className="w-8 flex items-center justify-center">
+                                  <span className="text-[11px] text-slate-500 font-medium group-hover:hidden">{timeAgo}</span>
+                                  <button
+                                    data-no-drag
+                                    onClick={(e) => { e.stopPropagation(); invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {}); setClaudeSessions(prev => prev.filter(s => s.sessionId !== cs.sessionId)) }}
+                                    className="hidden group-hover:flex items-center justify-center text-slate-600 hover:text-rose-500 transition-colors outline-none"
+                                    title={t('mini.remove')}
+                                  >
+                                    <Trash2 className="w-4 h-4" strokeWidth={2} />
+                                  </button>
+                                </div>
                               </div>
                             </motion.div>
                           )
@@ -1634,13 +1655,13 @@ export default function Mini() {
                     </AnimatePresence>
                   </div>
                   {/* Footer */}
-                  <div className="mt-auto pt-1.5 pb-1 flex justify-center items-center select-none">
+                  <div className="mt-auto py-0.5 flex justify-center items-center select-none opacity-30 hover:opacity-60 transition-opacity">
                     <span
                       data-no-drag
                       onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
-                      className="text-[10px] font-black tracking-[0.25em] text-slate-500 uppercase cursor-pointer hover:text-slate-300 transition-colors"
+                      className="text-[8px] font-bold tracking-[0.2em] text-slate-500 uppercase cursor-pointer"
                     >
-                      oc–claw.ai
+                      oc–claw
                     </span>
                   </div>
                 </div>
