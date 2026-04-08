@@ -1042,14 +1042,16 @@ export default function Mini() {
         const sessions = (await invoke('get_claude_sessions')) as any[]
         // In efficiency mode, auto-expand panel when a session just completed
         // with an AI response (lastResponse appeared for the first time).
-        if (viewModeRef.current === 'efficiency' && !expandedRef.current && !expandingRef.current && !collapsingRef.current) {
-          for (const s of sessions) {
-            if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId) && !s.isActiveTab) {
-              seenCompletions.add(s.sessionId)
+        // Mark all newly completed sessions as seen, but only auto-expand
+        // if the session's terminal tab is not currently active.
+        for (const s of sessions) {
+          if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId)) {
+            seenCompletions.add(s.sessionId)
+            // Only auto-expand if tab not active and panel is collapsed
+            if (!s.isActiveTab && viewModeRef.current === 'efficiency' && !expandedRef.current && !expandingRef.current && !collapsingRef.current) {
               hoverExpandedRef.current = true
               setCompletionSessionId(s.sessionId)
               expandFnRef.current?.()
-              break
             }
           }
         }
@@ -1057,13 +1059,6 @@ export default function Mini() {
         for (const sid of seenCompletions) {
           if (!sessions.find((s: any) => s.sessionId === sid && s.lastResponse)) {
             seenCompletions.delete(sid)
-          }
-        }
-        // If the completion session's tab is now active, user has seen it — dismiss
-        if (completionSessionIdRef.current) {
-          const cs = sessions.find((s: any) => s.sessionId === completionSessionIdRef.current)
-          if (cs?.isActiveTab) {
-            setCompletionSessionId(null)
           }
         }
         setClaudeSessions(sessions)
