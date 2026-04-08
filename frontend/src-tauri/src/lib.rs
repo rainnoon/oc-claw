@@ -3243,7 +3243,7 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
-async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>) -> Result<(), String> {
+async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
 
@@ -3291,9 +3291,18 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
                         }
                     } else {
-                        let win_w = 60.0;
-                        let win_h = 45.0;
-                        let x = collapsed_x(sx, sw, win_w, &pos, notch_off);
+                        let is_efficiency = efficiency.unwrap_or(false);
+                        let (win_w, win_h, x) = if is_efficiency {
+                            let w = notch_off * 2.0 + 20.0;
+                            let h = 50.0;
+                            let x = sx + (sw - w) / 2.0;
+                            (w, h, x)
+                        } else {
+                            let w = 60.0;
+                            let h = 45.0;
+                            let x = collapsed_x(sx, sw, w, &pos, notch_off);
+                            (w, h, x)
+                        };
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
@@ -4348,10 +4357,16 @@ pub struct ClaudeSession {
     /// Sound only plays on Stop when this reaches 0 (all agents done).
     #[serde(skip)]
     pub pending_agents: u32,
+    /// Raw permission_suggestions JSON from the PermissionRequest hook event.
+    #[serde(rename = "permissionSuggestions", skip_serializing_if = "Option::is_none")]
+    pub permission_suggestions: Option<serde_json::Value>,
 }
+
+type PendingPermissions = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>;
 
 struct ClaudeState {
     sessions: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    pending_permissions: PendingPermissions,
 }
 
 /// Compute the JSONL session file path (matching notchi's ConversationParser.sessionFilePath)
@@ -4551,6 +4566,99 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
 async fn remove_claude_session(session_id: String, state: tauri::State<'_, ClaudeState>) -> Result<(), String> {
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     sessions.remove(&session_id);
+    Ok(())
+}
+
+/// Resolve a pending PermissionRequest for a Claude Code session.
+/// `decision` is one of: "deny", "allow_once", "allow_all", "auto_approve"
+/// The response JSON is sent back to the blocking hook script via the channel.
+#[tauri::command]
+async fn resolve_claude_permission(
+    session_id: String,
+    decision: String,
+    state: tauri::State<'_, ClaudeState>,
+) -> Result<(), String> {
+    let tool_name = {
+        let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        sessions.get(&session_id).and_then(|s| s.tool.clone())
+    };
+
+    let response_json = match decision.as_str() {
+        "deny" => {
+            serde_json::json!({
+                "continue": true,
+                "suppressOutput": true,
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": { "behavior": "deny" }
+                }
+            }).to_string()
+        }
+        "allow_once" => {
+            serde_json::json!({
+                "continue": true,
+                "suppressOutput": true,
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": { "behavior": "allow" }
+                }
+            }).to_string()
+        }
+        "allow_all" => {
+            let rules = if let Some(name) = &tool_name {
+                serde_json::json!([{ "toolName": name }])
+            } else {
+                serde_json::json!([])
+            };
+            serde_json::json!({
+                "continue": true,
+                "suppressOutput": true,
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {
+                        "behavior": "allow",
+                        "updatedPermissions": [{
+                            "type": "addRules",
+                            "destination": "session",
+                            "rules": rules,
+                            "behavior": "allow"
+                        }]
+                    }
+                }
+            }).to_string()
+        }
+        "auto_approve" => {
+            serde_json::json!({
+                "continue": true,
+                "suppressOutput": true,
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {
+                        "behavior": "allow",
+                        "updatedPermissions": [{
+                            "type": "setMode",
+                            "destination": "session",
+                            "mode": "bypassPermissions"
+                        }]
+                    }
+                }
+            }).to_string()
+        }
+        _ => return Err(format!("Unknown decision: {}", decision)),
+    };
+
+    let tx = {
+        let mut map = state.pending_permissions.lock().map_err(|e| e.to_string())?;
+        map.remove(&session_id)
+    };
+
+    if let Some(tx) = tx {
+        tx.send(response_json).map_err(|_| "Failed to send permission response".to_string())?;
+        log::info!("[resolve_permission] sent '{}' for session={}", decision, &session_id[..session_id.len().min(8)]);
+    } else {
+        log::warn!("[resolve_permission] no pending permission for session={}", &session_id[..session_id.len().min(8)]);
+    }
+
     Ok(())
 }
 
@@ -5595,11 +5703,27 @@ tool_input = input_data.get('tool_input', {})
 if tool_input:
     output['toolInput'] = json.dumps(tool_input)[:200]
 
+if hook_event == 'PermissionRequest':
+    output['permission_suggestions'] = input_data.get('permission_suggestions', [])
+
 try:
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect('$SOCKET_PATH')
     sock.sendall(json.dumps(output).encode())
-    sock.close()
+    if hook_event == 'PermissionRequest':
+        sock.shutdown(socket.SHUT_WR)
+        response = b''
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        sock.close()
+        if response:
+            sys.stdout.write(response.decode('utf-8', errors='replace'))
+            sys.stdout.flush()
+    else:
+        sock.close()
 except:
     pass
 "
@@ -5627,27 +5751,30 @@ except:
         // Windows may delay the FIN packet, causing the server's read to hang or timeout
         // with incomplete data.
         let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
-# Force UTF-8 input encoding — Windows CJK editions default to GBK/Shift-JIS,
-# which corrupts multi-byte characters in CC's UTF-8 JSON payload (especially
-# last_assistant_message in Stop events), causing JSON parse failures downstream.
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 try {
     $raw = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
-    # Inject CC process PID into the raw JSON without parsing it (large
-    # Stop events break ConvertFrom-Json due to truncation). Prepend
-    # "pid":N right after the opening brace via string manipulation.
-    # Process tree: PowerShell → bash (Git Bash) → CC
     $ccPid = (Get-Process -Id $PID).Parent.Parent.Id
     if ($ccPid -and $raw.StartsWith('{')) {
         $raw = '{"pid":' + $ccPid + ',' + $raw.Substring(1)
     }
+    $isPermission = $raw -match '"hook_event_name"\s*:\s*"PermissionRequest"'
     $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
     $stream = $client.GetStream()
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
     $stream.Write($bytes, 0, $bytes.Length)
     $stream.Flush()
     $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+    if ($isPermission) {
+        $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+        $response = $reader.ReadToEnd()
+        if ($response) {
+            [Console]::Out.Write($response)
+            [Console]::Out.Flush()
+        }
+        $reader.Close()
+    }
     $client.Close()
 } catch {}
 "#;
@@ -5724,11 +5851,13 @@ try {
 }
 
 /// Process a Claude hook event (shared logic between Unix socket and TCP server).
+/// Returns Some((session_id, hook_event)) if the event needs further handling
+/// (e.g. PermissionRequest requires blocking the connection for a response).
 fn process_claude_event(
     buf: &str,
     state: &Arc<Mutex<HashMap<String, ClaudeSession>>>,
     app: &tauri::AppHandle,
-) {
+) -> Option<(String, String)> {
     log::info!("[claude_event] raw buf len={} content={}", buf.len(), &buf[..buf.len().min(500)]);
     if let Ok(event) = serde_json::from_str::<serde_json::Value>(buf) {
         // Accept both processed field names (sessionId, event, claudeStatus) from the old
@@ -5737,7 +5866,7 @@ fn process_claude_event(
         // with large payloads (Stop events contain last_assistant_message with full response text).
         let session_id = event.get("sessionId").or_else(|| event.get("session_id"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if session_id.is_empty() { log::warn!("[claude_event] empty sessionId, ignoring"); return; }
+        if session_id.is_empty() { log::warn!("[claude_event] empty sessionId, ignoring"); return None; }
 
         let hook_event = event.get("event").or_else(|| event.get("hook_event_name"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -5816,6 +5945,7 @@ fn process_claude_event(
                     is_processing: false,
                     pid: None,
                     pending_agents: 0,
+                    permission_suggestions: None,
                 });
 
                 // Track pending sub-agents:
@@ -5864,6 +5994,14 @@ fn process_claude_event(
                     session.tool_input = None;
                 }
 
+                if hook_event == "PermissionRequest" {
+                    session.permission_suggestions = event.get("permission_suggestions")
+                        .or_else(|| event.get("permissionSuggestions"))
+                        .cloned();
+                } else {
+                    session.permission_suggestions = None;
+                }
+
                 pending_agents = session.pending_agents;
             }
         }
@@ -5898,21 +6036,27 @@ fn process_claude_event(
         } else if hook_event == "Stop" || hook_event == "SubagentStop" || hook_event == "SessionEnd" {
             stop_session_file_watcher(&session_id);
         }
+
+        return Some((session_id, hook_event));
     } else if let Err(e) = serde_json::from_str::<serde_json::Value>(buf) {
-        // Log parse failures with the error and the tail of the payload (the head is
-        // usually fine; the problem is truncation or encoding at the end).
         let tail: String = buf.chars().rev().take(300).collect::<String>().chars().rev().collect();
         log::warn!("[claude_event] JSON parse failed: err={}, len={}, tail=...{}", e, buf.len(), tail);
     }
+    None
 }
 
 /// Start the Claude IPC server.
 /// On macOS/Linux: Unix domain socket at /tmp/ooclaw-claude.sock
 /// On Windows: TCP server on localhost:19283
-fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>, app_handle: tauri::AppHandle) {
+fn start_claude_socket_server(
+    claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    pending_permissions: PendingPermissions,
+    app_handle: tauri::AppHandle,
+) {
     #[cfg(unix)]
     {
         let state = claude_state;
+        let pending = pending_permissions;
         let app = app_handle;
         std::thread::spawn(move || {
             let sock_path = "/tmp/ooclaw-claude.sock";
@@ -5926,14 +6070,37 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
 
             for stream in listener.incoming() {
                 match stream {
-                    Ok(mut s) => {
+                    Ok(s) => {
                         let state = state.clone();
                         let app = app.clone();
+                        let pending = pending.clone();
                         std::thread::spawn(move || {
-                            use std::io::Read;
+                            use std::io::{Read, Write};
+                            let mut s = s;
                             let mut buf = String::new();
                             let _ = s.read_to_string(&mut buf);
-                            process_claude_event(&buf, &state, &app);
+                            if let Some((session_id, hook_event)) = process_claude_event(&buf, &state, &app) {
+                                if hook_event == "PermissionRequest" {
+                                    let (tx, rx) = std::sync::mpsc::channel::<String>();
+                                    {
+                                        let mut map = pending.lock().unwrap();
+                                        map.insert(session_id.clone(), tx);
+                                    }
+                                    log::info!("[claude_socket] blocking for PermissionRequest session={}", &session_id[..session_id.len().min(8)]);
+                                    match rx.recv_timeout(std::time::Duration::from_secs(600)) {
+                                        Ok(response_json) => {
+                                            log::info!("[claude_socket] sending permission response for session={}", &session_id[..session_id.len().min(8)]);
+                                            let _ = s.write_all(response_json.as_bytes());
+                                            let _ = s.flush();
+                                        }
+                                        Err(_) => {
+                                            log::warn!("[claude_socket] permission timeout for session={}", &session_id[..session_id.len().min(8)]);
+                                        }
+                                    }
+                                    let mut map = pending.lock().unwrap();
+                                    map.remove(&session_id);
+                                }
+                            }
                         });
                     }
                     Err(e) => { log::error!("Claude socket accept error: {}", e); }
@@ -5945,6 +6112,7 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
     #[cfg(windows)]
     {
         let state = claude_state;
+        let pending = pending_permissions;
         let app = app_handle;
         std::thread::spawn(move || {
             use std::net::TcpListener;
@@ -5959,20 +6127,17 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
                     Ok(mut s) => {
                         let state = state.clone();
                         let app = app.clone();
+                        let pending = pending.clone();
                         std::thread::spawn(move || {
-                            use std::io::Read;
-                            // Set a read timeout to prevent read_to_string from hanging
-                            // indefinitely if the client (PowerShell TcpClient.Dispose())
-                            // doesn't send FIN promptly on Windows.
+                            use std::io::{Read, Write};
                             s.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
                             let mut buf = Vec::new();
                             let mut chunk = [0u8; 4096];
                             loop {
                                 match s.read(&mut chunk) {
-                                    Ok(0) => break, // EOF
+                                    Ok(0) => break,
                                     Ok(n) => buf.extend_from_slice(&chunk[..n]),
                                     Err(e) => {
-                                        // Timeout or other error — process whatever we have
                                         if !buf.is_empty() { break; }
                                         log::warn!("[claude_tcp] read error with empty buf: {}", e);
                                         return;
@@ -5980,7 +6145,27 @@ fn start_claude_socket_server(claude_state: Arc<Mutex<HashMap<String, ClaudeSess
                                 }
                             }
                             let text = String::from_utf8_lossy(&buf);
-                            process_claude_event(&text, &state, &app);
+                            if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app) {
+                                if hook_event == "PermissionRequest" {
+                                    let (tx, rx) = std::sync::mpsc::channel::<String>();
+                                    {
+                                        let mut map = pending.lock().unwrap();
+                                        map.insert(session_id.clone(), tx);
+                                    }
+                                    s.set_read_timeout(None).ok();
+                                    match rx.recv_timeout(std::time::Duration::from_secs(600)) {
+                                        Ok(response_json) => {
+                                            let _ = s.write_all(response_json.as_bytes());
+                                            let _ = s.flush();
+                                        }
+                                        Err(_) => {
+                                            log::warn!("[claude_tcp] permission timeout for session={}", &session_id[..session_id.len().min(8)]);
+                                        }
+                                    }
+                                    let mut map = pending.lock().unwrap();
+                                    map.remove(&session_id);
+                                }
+                            }
                         });
                     }
                     Err(e) => { log::error!("Claude TCP accept error: {}", e); }
@@ -6227,7 +6412,8 @@ pub fn run() {
             {
                 let claude_state = app.state::<ClaudeState>();
                 let sessions_arc = Arc::clone(&claude_state.sessions);
-                start_claude_socket_server(sessions_arc, app.handle().clone());
+                let pending_arc = Arc::clone(&claude_state.pending_permissions);
+                start_claude_socket_server(sessions_arc, pending_arc, app.handle().clone());
             }
 
             // System tray — use saved language, fallback to system language
@@ -6298,9 +6484,9 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, activate_app, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
-        .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
+        .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

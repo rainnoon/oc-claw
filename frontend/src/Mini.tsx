@@ -78,62 +78,112 @@ function ChatList({ messages, accentColor }: { messages: { role: string; text: s
 
   useEffect(() => {
     const el = containerRef.current
-    if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
+    if (el)
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight
+      })
   }, [messages.length])
 
-  const toggle = (i: number) => setExpandedSet(prev => { const s = new Set(prev); if (s.has(i)) s.delete(i); else s.add(i); return s })
+  const toggle = (i: number) =>
+    setExpandedSet((prev) => {
+      const s = new Set(prev)
+      if (s.has(i)) s.delete(i)
+      else s.add(i)
+      return s
+    })
 
   return (
-    <div
-      ref={containerRef}
-      className="scrollbar-thin selectable-text"
-      style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 14px' }}
-    >
+    <div ref={containerRef} className="scrollbar-thin selectable-text" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 14px' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {messages.map((msg, i) => (
           <div key={i}>
-            {msg.role === 'user' ? (() => {
-              const limit = 300
-              const truncated = !expandedSet.has(i) && msg.text.length > limit
-              return (
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <div style={{
-                    background: accentColor, borderRadius: 18,
-                    padding: '8px 14px', maxWidth: '80%',
-                    color: '#fff', fontSize: 13, lineHeight: 1.5,
-                    wordBreak: 'break-word', whiteSpace: 'pre-wrap',
-                  }}>
-                    {truncated ? msg.text.slice(0, limit) + '...' : msg.text}
-                    {(truncated || (expandedSet.has(i) && msg.text.length > limit)) && (
-                      <button onClick={() => toggle(i)}
-                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, width: '100%', marginTop: 4, padding: '2px 0', background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)', fontSize: 11, cursor: 'pointer' }}>
-                        <ChevronDown style={{ width: 12, height: 12, transition: 'transform 0.2s', transform: expandedSet.has(i) ? 'rotate(180deg)' : 'none' }} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )
-            })() : (() => {
-              const limit = 500
-              const truncated = !expandedSet.has(i) && msg.text.length > limit
-              return (
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: accentColor, marginTop: 6, flexShrink: 0 }} />
-                  <div className="markdown-content" style={{
-                    color: '#ddd', fontSize: 13, lineHeight: 1.5,
-                    wordBreak: 'break-word', maxWidth: '90%',
-                  }}>
-                    <ReactMarkdown>{truncated ? msg.text.slice(0, limit) + '...' : msg.text}</ReactMarkdown>
-                    {(truncated || (expandedSet.has(i) && msg.text.length > limit)) && (
-                      <button onClick={() => toggle(i)}
-                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, width: '100%', marginTop: 2, padding: '2px 0', background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', fontSize: 11, cursor: 'pointer' }}>
-                        <ChevronDown style={{ width: 12, height: 12, transition: 'transform 0.2s', transform: expandedSet.has(i) ? 'rotate(180deg)' : 'none' }} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )
-            })()}
+            {msg.role === 'user'
+              ? (() => {
+                  const limit = 300
+                  const truncated = !expandedSet.has(i) && msg.text.length > limit
+                  return (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <div
+                        style={{
+                          background: accentColor,
+                          borderRadius: 18,
+                          padding: '8px 14px',
+                          maxWidth: '80%',
+                          color: '#fff',
+                          fontSize: 13,
+                          lineHeight: 1.5,
+                          wordBreak: 'break-word',
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        {truncated ? msg.text.slice(0, limit) + '...' : msg.text}
+                        {(truncated || (expandedSet.has(i) && msg.text.length > limit)) && (
+                          <button
+                            onClick={() => toggle(i)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: 2,
+                              width: '100%',
+                              marginTop: 4,
+                              padding: '2px 0',
+                              background: 'none',
+                              border: 'none',
+                              color: 'rgba(255,255,255,0.5)',
+                              fontSize: 11,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <ChevronDown style={{ width: 12, height: 12, transition: 'transform 0.2s', transform: expandedSet.has(i) ? 'rotate(180deg)' : 'none' }} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()
+              : (() => {
+                  const limit = 500
+                  const truncated = !expandedSet.has(i) && msg.text.length > limit
+                  return (
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                      <div style={{ width: 5, height: 5, borderRadius: '50%', background: accentColor, marginTop: 6, flexShrink: 0 }} />
+                      <div
+                        className="markdown-content"
+                        style={{
+                          color: '#ddd',
+                          fontSize: 13,
+                          lineHeight: 1.5,
+                          wordBreak: 'break-word',
+                          maxWidth: '90%',
+                        }}
+                      >
+                        <ReactMarkdown>{truncated ? msg.text.slice(0, limit) + '...' : msg.text}</ReactMarkdown>
+                        {(truncated || (expandedSet.has(i) && msg.text.length > limit)) && (
+                          <button
+                            onClick={() => toggle(i)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: 2,
+                              width: '100%',
+                              marginTop: 2,
+                              padding: '2px 0',
+                              background: 'none',
+                              border: 'none',
+                              color: 'rgba(255,255,255,0.3)',
+                              fontSize: 11,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <ChevronDown style={{ width: 12, height: 12, transition: 'transform 0.2s', transform: expandedSet.has(i) ? 'rotate(180deg)' : 'none' }} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()}
           </div>
         ))}
       </div>
@@ -157,7 +207,10 @@ function IntervalGif({ src, playMs = 1300, pauseMs = 4000, style, ...props }: Re
       const t = setTimeout(() => {
         // Force GIF restart by briefly clearing src
         setGifSrc('')
-        requestAnimationFrame(() => { setGifSrc(src!); setPlaying(true) })
+        requestAnimationFrame(() => {
+          setGifSrc(src!)
+          setPlaying(true)
+        })
       }, pauseMs)
       return () => clearTimeout(t)
     }
@@ -180,13 +233,13 @@ function FrozenImg({ src, style, ...props }: React.ImgHTMLAttributes<HTMLImageEl
     }
     img.src = src
   }, [src])
-  return <canvas ref={canvasRef} style={style} {...props as any} />
+  return <canvas ref={canvasRef} style={style} {...(props as any)} />
 }
 
 function getMiniGif(char: CharacterMeta | undefined, petState: PetState | boolean, useTop = false): string | undefined {
   // backward compat: boolean → PetState
   const state: PetState = typeof petState === 'boolean' ? (petState ? 'working' : 'idle') : petState
-  const c = (char?.miniActions && Object.values(char.miniActions).flat().length > 0) ? char : DEFAULT_CHAR
+  const c = char?.miniActions && Object.values(char.miniActions).flat().length > 0 ? char : DEFAULT_CHAR
   if (!c?.miniActions) return undefined
   if (useTop && c.miniActions['top']?.length) {
     const topGifs = c.miniActions['top']
@@ -227,7 +280,17 @@ function getMiniGif(char: CharacterMeta | undefined, petState: PetState | boolea
   return idleGifs[0] || allGifs[0]
 }
 
-function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, onToggle, onOpenCreate, onDeleteChar, sourceLabel }: {
+function AgentAccordionItem({
+  agent,
+  characters,
+  currentChar,
+  onSelect,
+  isOpen,
+  onToggle,
+  onOpenCreate,
+  onDeleteChar,
+  sourceLabel,
+}: {
   agent: AgentInfo
   characters: CharacterMeta[]
   currentChar: string
@@ -251,10 +314,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
   return (
     <div className="flex flex-col border-b border-white/5 last:border-b-0 group">
       {/* Main Row */}
-      <div
-        className="relative flex items-center justify-between p-4 hover:bg-white/[0.02] transition-colors cursor-pointer"
-        onClick={onToggle}
-      >
+      <div className="relative flex items-center justify-between p-4 hover:bg-white/[0.02] transition-colors cursor-pointer" onClick={onToggle}>
         <div className="flex items-center gap-4">
           <div className="relative">
             <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center overflow-hidden">
@@ -274,7 +334,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
           </div>
         </div>
         <div className="flex items-center gap-2 text-sm text-white/50 group-hover:text-white/80 transition-colors pr-2">
-          <span>{currentChar ? (characters.find(c => c.name === currentChar)?.builtin ? t(`charNames.${currentChar}`, currentChar) : currentChar) : t('mini.unassigned')}</span>
+          <span>{currentChar ? (characters.find((c) => c.name === currentChar)?.builtin ? t(`charNames.${currentChar}`, currentChar) : currentChar) : t('mini.unassigned')}</span>
           <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
         </div>
       </div>
@@ -305,9 +365,7 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                 <button
                   onClick={() => setIsEditing(!isEditing)}
                   className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors ${
-                    isEditing
-                      ? 'bg-red-500/20 text-red-400 border border-red-500/20'
-                      : 'bg-white/5 text-white/60 hover:text-white hover:bg-white/10 border border-transparent'
+                    isEditing ? 'bg-red-500/20 text-red-400 border border-red-500/20' : 'bg-white/5 text-white/60 hover:text-white hover:bg-white/10 border border-transparent'
                   }`}
                   title={isEditing ? t('common.done') : t('common.edit')}
                 >
@@ -326,21 +384,23 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                   }
                   // 自定义 always first, 其他 always last
                   const customIdx = ipOrder.indexOf('自定义')
-                  if (customIdx > 0) { ipOrder.splice(customIdx, 1); ipOrder.unshift('自定义') }
+                  if (customIdx > 0) {
+                    ipOrder.splice(customIdx, 1)
+                    ipOrder.unshift('自定义')
+                  }
                   const otherIdx = ipOrder.indexOf('其他')
-                  if (otherIdx >= 0 && otherIdx < ipOrder.length - 1) { ipOrder.splice(otherIdx, 1); ipOrder.push('其他') }
+                  if (otherIdx >= 0 && otherIdx < ipOrder.length - 1) {
+                    ipOrder.splice(otherIdx, 1)
+                    ipOrder.push('其他')
+                  }
                   for (const ip of ipOrder) {
                     groups.push({ ip, chars: charsWithMini.filter((c) => (c.ip || '自定义') === ip) })
                   }
                   return groups.map(({ ip, chars }) => (
                     <div key={ip} className="mb-3 last:mb-0">
-                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">{
-                        ip === '自定义' ? t('mini.custom')
-                        : ip === '其他' ? t('mini.other')
-                        : ip === '原神' ? t('mini.ipGenshin')
-                        : ip === '赛马娘' ? t('mini.ipUmaMusume')
-                        : ip
-                      }</div>
+                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">
+                        {ip === '自定义' ? t('mini.custom') : ip === '其他' ? t('mini.other') : ip === '原神' ? t('mini.ipGenshin') : ip === '赛马娘' ? t('mini.ipUmaMusume') : ip}
+                      </div>
                       <div className="grid grid-cols-3 gap-3">
                         {chars.map((c) => {
                           const isSelected = c.name === currentChar
@@ -360,10 +420,10 @@ function AgentAccordionItem({ agent, characters, currentChar, onSelect, isOpen, 
                                 isEditing && !isDefault
                                   ? 'cursor-pointer hover:bg-red-500/10 border-red-500/30'
                                   : isEditing && isDefault
-                                  ? 'opacity-40 cursor-not-allowed border-transparent'
-                                  : isSelected
-                                  ? 'bg-white/10 border-white/20 cursor-default'
-                                  : 'bg-white/5 border-transparent hover:bg-white/10 cursor-pointer'
+                                    ? 'opacity-40 cursor-not-allowed border-transparent'
+                                    : isSelected
+                                      ? 'bg-white/10 border-white/20 cursor-default'
+                                      : 'bg-white/5 border-transparent hover:bg-white/10 cursor-pointer'
                               }`}
                             >
                               <div className="relative w-9 h-9 shrink-0 rounded-lg overflow-hidden bg-black/50 border border-white/10">
@@ -441,7 +501,7 @@ export default function Mini() {
   const [extraInfo, setExtraInfo] = useState<any>(null)
 
   // OpenClaw session chat
-  const [selectedSessionKey, setSelectedSessionKey] = useState<{ agentId: string, key: string } | null>(null)
+  const [selectedSessionKey, setSelectedSessionKey] = useState<{ agentId: string; key: string } | null>(null)
   const [sessionMessages, setSessionMessages] = useState<any[]>([])
 
   // Claude Code
@@ -479,20 +539,27 @@ export default function Mini() {
   const [openAccordionId, setOpenAccordionId] = useState<string | null>(null)
   const [isCreateModalOpen, _setIsCreateModalOpen] = useState(false)
   const isCreateModalOpenRef = useRef(false)
-  const setIsCreateModalOpen = (v: boolean) => { isCreateModalOpenRef.current = v; _setIsCreateModalOpen(v) }
+  const setIsCreateModalOpen = (v: boolean) => {
+    isCreateModalOpenRef.current = v
+    _setIsCreateModalOpen(v)
+  }
   const [hiding, setHiding] = useState(false)
   const [pinned, setPinned] = useState(false)
   const [viewMode, _setViewMode] = useState<'island' | 'efficiency'>('island')
+  const viewModeRef = useRef<'island' | 'efficiency'>('island')
+  const expandedRef = useRef(false)
   const setViewMode = useCallback(async (v: 'island' | 'efficiency' | ((prev: 'island' | 'efficiency') => 'island' | 'efficiency')) => {
-    _setViewMode(prev => {
+    _setViewMode((prev) => {
       const next = typeof v === 'function' ? v(prev) : v
-      load('settings.json', { defaults: {}, autoSave: true }).then(store => {
+      viewModeRef.current = next
+      load('settings.json', { defaults: {}, autoSave: true }).then((store) => {
         store.set('view_mode', next)
         store.save()
       })
       return next
     })
   }, [])
+  const [showIdleSessions, setShowIdleSessions] = useState(false)
   const collapsingRef = useRef(false)
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
   const [moveMode, setMoveMode] = useState(false)
@@ -507,7 +574,10 @@ export default function Mini() {
     const chars = (await store.get('characters')) as CharacterMeta[] | null
     if (miniCharName && chars) {
       const found = chars.find((c) => c.name === miniCharName)
-      if (found) { setMiniChar(found); return }
+      if (found) {
+        setMiniChar(found)
+        return
+      }
     }
     if (chars) {
       const fallback = chars.find((c) => c.miniActions && Object.keys(c.miniActions).length > 0)
@@ -518,13 +588,19 @@ export default function Mini() {
   useEffect(() => {
     loadMiniChar()
     const unlisten = listen('character-changed', () => loadMiniChar())
-    return () => { unlisten.then((fn) => fn()) }
+    return () => {
+      unlisten.then((fn) => fn())
+    }
   }, [loadMiniChar])
 
   useEffect(() => {
     load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
       const saved = (await store.get('view_mode')) as string | null
-      if (saved === 'efficiency') _setViewMode('efficiency')
+      if (saved === 'efficiency') {
+        _setViewMode('efficiency')
+        viewModeRef.current = 'efficiency'
+        invoke('set_mini_expanded', { expanded: false, position: 'right', efficiency: true }).catch(() => {})
+      }
     })
   }, [])
 
@@ -537,13 +613,15 @@ export default function Mini() {
     try {
       const chars = await loadCharacters()
       setCharacters(chars)
-    } catch (e) { console.warn('[fetchAgents] loadCharacters failed:', e) }
+    } catch (e) {
+      console.warn('[fetchAgents] loadCharacters failed:', e)
+    }
     try {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const connections = await loadOcConnections()
 
       // Detect connection config changes — show loading overlay if changed
-      const snapshot = JSON.stringify(connections.map(c => ({ id: c.id, type: c.type, host: c.host, user: c.user })))
+      const snapshot = JSON.stringify(connections.map((c) => ({ id: c.id, type: c.type, host: c.host, user: c.user })))
       const configChanged = lastConnSnapshotRef.current !== '' && snapshot !== lastConnSnapshotRef.current
       lastConnSnapshotRef.current = snapshot
       if (configChanged) {
@@ -559,22 +637,26 @@ export default function Mini() {
       const newSourceLabels: Record<string, string> = {}
       const allAgents: AgentInfo[] = []
       const multi = connections.length > 1
-      await Promise.all(connections.map(async (conn) => {
-        try {
-          const oc = connToOcParams(conn)
-          if (!oc) return // skip incomplete remote connections
-          const agents = (await invoke('get_agents', oc)) as AgentInfo[]
-          const prefix = multi ? `${conn.id.slice(0, 8)}:` : ''
-          const label = conn.type === 'local' ? t('mini.local') : (conn.host || t('mini.remote'))
-          for (const a of agents) {
-            const qualifiedId = prefix + a.id
-            newConnMap.set(qualifiedId, oc)
-            newRealIdMap.set(qualifiedId, a.id)
-            if (multi) newSourceLabels[qualifiedId] = label
-            allAgents.push({ ...a, id: qualifiedId })
+      await Promise.all(
+        connections.map(async (conn) => {
+          try {
+            const oc = connToOcParams(conn)
+            if (!oc) return // skip incomplete remote connections
+            const agents = (await invoke('get_agents', oc)) as AgentInfo[]
+            const prefix = multi ? `${conn.id.slice(0, 8)}:` : ''
+            const label = conn.type === 'local' ? t('mini.local') : conn.host || t('mini.remote')
+            for (const a of agents) {
+              const qualifiedId = prefix + a.id
+              newConnMap.set(qualifiedId, oc)
+              newRealIdMap.set(qualifiedId, a.id)
+              if (multi) newSourceLabels[qualifiedId] = label
+              allAgents.push({ ...a, id: qualifiedId })
+            }
+          } catch (e) {
+            console.warn('[fetchAgents] connection failed:', conn.id, e)
           }
-        } catch (e) { console.warn('[fetchAgents] connection failed:', conn.id, e) }
-      }))
+        }),
+      )
 
       agentConnMapRef.current = newConnMap
       agentRealIdMapRef.current = newRealIdMap
@@ -584,11 +666,17 @@ export default function Mini() {
       setAgentCharMap(charMap || {})
       // Clear loading overlay — data is now fresh
       setRefreshingAgents(false)
-      if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current)
+        refreshTimeoutRef.current = null
+      }
     } catch (e) {
       console.warn('[fetchAgents] get_agents failed:', e)
       setRefreshingAgents(false)
-      if (refreshTimeoutRef.current) { clearTimeout(refreshTimeoutRef.current); refreshTimeoutRef.current = null }
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current)
+        refreshTimeoutRef.current = null
+      }
     }
   }, [])
 
@@ -633,65 +721,67 @@ export default function Mini() {
       const hMap: Record<string, boolean> = { ...prevHealthRef.current }
       const sMap: Record<string, boolean> = { ...prevSessionHealthRef.current }
       const freshKeys = new Set<string>() // session keys that got fresh data this round
-      await Promise.all(connections.map(async (conn) => {
-        const prefix = connections.length > 1 ? `${conn.id.slice(0, 8)}:` : ''
-        try {
-          const oc = connToOcParams(conn)
-          if (!oc) {
-            // Incomplete remote connection — still clear stale health data for
-            // this prefix so the mascot/status doesn't stay "busy" from the
-            // previous (now-removed) connection's data.
+      await Promise.all(
+        connections.map(async (conn) => {
+          const prefix = connections.length > 1 ? `${conn.id.slice(0, 8)}:` : ''
+          try {
+            const oc = connToOcParams(conn)
+            if (!oc) {
+              // Incomplete remote connection — still clear stale health data for
+              // this prefix so the mascot/status doesn't stay "busy" from the
+              // previous (now-removed) connection's data.
+              for (const k of Object.keys(hMap)) {
+                if (prefix === '' || k.startsWith(prefix)) delete hMap[k]
+              }
+              for (const k of Object.keys(sMap)) {
+                if (prefix === '' || k.startsWith(prefix)) delete sMap[k]
+              }
+              return
+            }
+            const health = (await invoke('get_health', oc)) as { agents: AgentHealth[]; gatewayAlive?: boolean }
+            // Gateway dead (local OpenClaw process not running) — remove this
+            // connection from settings so the character cleanly goes idle instead
+            // of flickering between stale "working" and "idle" states.
+            if (health.gatewayAlive === false) {
+              console.warn('[pollHealth] gateway dead, removing connection:', conn.id)
+              const remaining = connections.filter((c) => c.id !== conn.id)
+              saveOcConnections(remaining)
+              for (const k of Object.keys(hMap)) {
+                if (prefix === '' || k.startsWith(prefix)) delete hMap[k]
+              }
+              for (const k of Object.keys(sMap)) {
+                if (prefix === '' || k.startsWith(prefix)) delete sMap[k]
+              }
+              return
+            }
+            // Clear old entries for this connection, then fill fresh data
             for (const k of Object.keys(hMap)) {
               if (prefix === '' || k.startsWith(prefix)) delete hMap[k]
             }
             for (const k of Object.keys(sMap)) {
               if (prefix === '' || k.startsWith(prefix)) delete sMap[k]
             }
-            return
+            health.agents.forEach((a) => {
+              hMap[prefix + a.agentId] = a.active
+              if (a.sessions) {
+                a.sessions.forEach((s) => {
+                  const sk = `${prefix}${a.agentId}:${s.key}`
+                  sMap[sk] = s.active
+                  freshKeys.add(sk)
+                })
+              }
+            })
+          } catch {
+            /* SSH/invoke failed — previous data preserved */
           }
-          const health = (await invoke('get_health', oc)) as { agents: AgentHealth[]; gatewayAlive?: boolean }
-          // Gateway dead (local OpenClaw process not running) — remove this
-          // connection from settings so the character cleanly goes idle instead
-          // of flickering between stale "working" and "idle" states.
-          if (health.gatewayAlive === false) {
-            console.warn('[pollHealth] gateway dead, removing connection:', conn.id)
-            const remaining = connections.filter(c => c.id !== conn.id)
-            saveOcConnections(remaining)
-            for (const k of Object.keys(hMap)) {
-              if (prefix === '' || k.startsWith(prefix)) delete hMap[k]
-            }
-            for (const k of Object.keys(sMap)) {
-              if (prefix === '' || k.startsWith(prefix)) delete sMap[k]
-            }
-            return
-          }
-          // Clear old entries for this connection, then fill fresh data
-          for (const k of Object.keys(hMap)) {
-            if (prefix === '' || k.startsWith(prefix)) delete hMap[k]
-          }
-          for (const k of Object.keys(sMap)) {
-            if (prefix === '' || k.startsWith(prefix)) delete sMap[k]
-          }
-          health.agents.forEach((a) => {
-            hMap[prefix + a.agentId] = a.active
-            if (a.sessions) {
-              a.sessions.forEach((s) => {
-                const sk = `${prefix}${a.agentId}:${s.key}`
-                sMap[sk] = s.active
-                freshKeys.add(sk)
-              })
-            }
-          })
-        } catch { /* SSH/invoke failed — previous data preserved */ }
-      }))
+        }),
+      )
 
       // Detect session active→inactive transitions (only for fresh data)
       // Skip sub-agent sessions — their key contains ":subagent:" (from OpenClaw session key format)
       const prev = prevSessionHealthRef.current
       if (freshKeys.size > 0) {
-        const anyBecameInactive = Array.from(freshKeys).some(k =>
-          prev[k] === true && sMap[k] === false && !k.includes(':subagent:')
-        )
+        const anyBecameInactive = Array.from(freshKeys).some((k) => prev[k] === true && sMap[k] === false && !k.includes(':subagent:'))
         if (anyBecameInactive) {
           console.log('[pollHealth] session became inactive, prev:', prev, 'curr:', sMap)
           playOcCompletionSound('pollHealth')
@@ -699,12 +789,14 @@ export default function Mini() {
       }
       prevSessionHealthRef.current = sMap
 
-      const anyActive = Object.values(sMap).some(v => v)
+      const anyActive = Object.values(sMap).some((v) => v)
       setAnySessionActive(anyActive)
 
       prevHealthRef.current = hMap
       setHealthMap(hMap)
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     pollHealthBusyRef.current = false
   }, [playOcCompletionSound])
 
@@ -716,7 +808,10 @@ export default function Mini() {
   const fetchingSessionsRef = useRef(false)
 
   const fetchAllSessions = useCallback(async () => {
-    if (agents.length === 0) { setAllSessions([]); return }
+    if (agents.length === 0) {
+      setAllSessions([])
+      return
+    }
     if (fetchingSessionsRef.current) return
     fetchingSessionsRef.current = true
     const results: MiniSessionInfo[] = []
@@ -727,21 +822,27 @@ export default function Mini() {
           const realId = agentRealIdMapRef.current.get(agent.id) || agent.id
           const s = (await invoke('get_agent_sessions', { agentId: realId, ...oc })) as MiniSessionInfo[]
           // Tag sessions with the qualified agent ID
-          results.push(...s.map(ss => ({ ...ss, agentId: agent.id })))
-        } catch { /* ignore */ }
-      })
+          results.push(...s.map((ss) => ({ ...ss, agentId: agent.id })))
+        } catch {
+          /* ignore */
+        }
+      }),
     )
     console.log('[fetchAllSessions] raw results:', results.length, results)
     // Keep previous data if all fetches failed (SSH backoff etc.)
-    if (results.length === 0 && previewCacheRef.current.size > 0) { console.log('[fetchAllSessions] empty results, keeping cache'); fetchingSessionsRef.current = false; return }
+    if (results.length === 0 && previewCacheRef.current.size > 0) {
+      console.log('[fetchAllSessions] empty results, keeping cache')
+      fetchingSessionsRef.current = false
+      return
+    }
     const seen = new Set<string>()
-    const deduped = results.filter(s => {
+    const deduped = results.filter((s) => {
       const k = `${s.agentId}:${s.key}`
       if (seen.has(k)) return false
       seen.add(k)
       return true
     })
-    const filtered = deduped.filter(s => {
+    const filtered = deduped.filter((s) => {
       const key = `${s.agentId}:${s.key}`
       const dismissedAt = dismissedSessionsRef.current.get(key)
       if (dismissedAt !== undefined && s.updatedAt > dismissedAt) {
@@ -753,16 +854,17 @@ export default function Mini() {
     const top = filtered.slice(0, MAX_SLOTS)
 
     // Merge cached preview data into sessions
-    const merged = top.map(s => {
-      const k = `${s.agentId}:${s.key}`
-      const cached = previewCacheRef.current.get(k)
-      if (cached) {
-        return { ...s, active: cached.active, lastUserMsg: cached.lastUserMsg, lastAssistantMsg: cached.lastAssistantMsg }
-      }
-      return s
-    })
-    // Filter out OpenClaw sub-agent sessions (key contains ":subagent:")
-    .filter(s => !s.key.includes(':subagent:'))
+    const merged = top
+      .map((s) => {
+        const k = `${s.agentId}:${s.key}`
+        const cached = previewCacheRef.current.get(k)
+        if (cached) {
+          return { ...s, active: cached.active, lastUserMsg: cached.lastUserMsg, lastAssistantMsg: cached.lastAssistantMsg }
+        }
+        return s
+      })
+      // Filter out OpenClaw sub-agent sessions (key contains ":subagent:")
+      .filter((s) => !s.key.includes(':subagent:'))
     merged.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
     console.log('[fetchAllSessions] final merged:', merged.length, merged)
     setAllSessions(merged)
@@ -775,7 +877,7 @@ export default function Mini() {
       sessionAgentMapRef.current.set(k, s.agentId)
       const cached = previewCacheRef.current.get(k)
       const staleTime = cached?.active ? 8000 : 15000 // poll active sessions faster
-      const stale = !cached || (Date.now() - cached.fetchedAt > staleTime)
+      const stale = !cached || Date.now() - cached.fetchedAt > staleTime
       if (stale) queue.push(k)
     }
     // Prioritize active sessions first
@@ -793,19 +895,25 @@ export default function Mini() {
     pollHealth()
     const a = setInterval(fetchAgents, 5000)
     const h = setInterval(pollHealth, 1000)
-    return () => { clearInterval(a); clearInterval(h) }
+    return () => {
+      clearInterval(a)
+      clearInterval(h)
+    }
   }, [fetchAgents, pollHealth])
 
   // Update allSessions active states from pollHealth session data
   const syncSessionActiveStates = useCallback(() => {
     const sMap = prevSessionHealthRef.current
     if (Object.keys(sMap).length === 0) return
-    setAllSessions(prev => {
+    setAllSessions((prev) => {
       let changed = false
-      const updated = prev.map(s => {
+      const updated = prev.map((s) => {
         const key = `${s.agentId}:${s.key}`
         const isActive = !!sMap[key]
-        if (s.active !== isActive) { changed = true; return { ...s, active: isActive } }
+        if (s.active !== isActive) {
+          changed = true
+          return { ...s, active: isActive }
+        }
         return s
       })
       if (!changed) return prev
@@ -821,7 +929,10 @@ export default function Mini() {
   }, [syncSessionActiveStates])
 
   const drainPreviewQueue = useCallback(async () => {
-    if (previewTimerRef.current) { clearTimeout(previewTimerRef.current); previewTimerRef.current = null }
+    if (previewTimerRef.current) {
+      clearTimeout(previewTimerRef.current)
+      previewTimerRef.current = null
+    }
     const queue = [...previewQueueRef.current]
     if (queue.length === 0) return
     const processNext = (idx: number) => {
@@ -839,14 +950,18 @@ export default function Mini() {
         .then((preview) => {
           const p = preview as SessionPreview
           previewCacheRef.current.set(k, { ...p, fetchedAt: Date.now() })
-          setAllSessions(prev => prev.map(s => {
-            if (`${s.agentId}:${s.key}` === k) {
-              return { ...s, active: p.active, lastUserMsg: p.lastUserMsg, lastAssistantMsg: p.lastAssistantMsg }
-            }
-            return s
-          }))
+          setAllSessions((prev) =>
+            prev.map((s) => {
+              if (`${s.agentId}:${s.key}` === k) {
+                return { ...s, active: p.active, lastUserMsg: p.lastUserMsg, lastAssistantMsg: p.lastAssistantMsg }
+              }
+              return s
+            }),
+          )
         })
-        .catch(() => { /* ignore */ })
+        .catch(() => {
+          /* ignore */
+        })
         .finally(() => {
           if (idx + 1 < queue.length) {
             previewTimerRef.current = setTimeout(() => processNext(idx + 1), 1500)
@@ -859,48 +974,65 @@ export default function Mini() {
   useEffect(() => {
     if (!expanded) return
     fetchAllSessions().then(() => drainPreviewQueue())
-    const t1 = setInterval(() => { fetchAllSessions().then(() => drainPreviewQueue()) }, 5000)
+    const t1 = setInterval(() => {
+      fetchAllSessions().then(() => drainPreviewQueue())
+    }, 5000)
     return () => {
       clearInterval(t1)
-      if (previewTimerRef.current) { clearTimeout(previewTimerRef.current); previewTimerRef.current = null }
+      if (previewTimerRef.current) {
+        clearTimeout(previewTimerRef.current)
+        previewTimerRef.current = null
+      }
     }
   }, [expanded, fetchAllSessions, drainPreviewQueue])
 
   // Load feature toggles
   useEffect(() => {
-    (async () => {
+    ;(async () => {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
       if (cc !== false) invoke('install_claude_hooks').catch(() => {})
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
-      const ns = await store.get('notify_sound') as string
+      const ns = (await store.get('notify_sound')) as string
       if (ns === 'default' || ns === 'manbo') setNotifySound(ns)
       const ws = await store.get('waiting_sound')
       if (typeof ws === 'boolean') setWaitingSound(ws)
       const dsa = await store.get('disable_sleep_anim')
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
-      const mp = await store.get('mascot_position') as string
-      if (mp === 'left' || mp === 'right') { setMascotPosition(mp); mascotPositionRef.current = mp }
-      const bg = await store.get('island_bg') as string
+      const mp = (await store.get('mascot_position')) as string
+      if (mp === 'left' || mp === 'right') {
+        setMascotPosition(mp)
+        mascotPositionRef.current = mp
+      }
+      const bg = (await store.get('island_bg')) as string
       if (bg) setIslandBg(bg)
-      const bp = await store.get('island_bg_pos') as { x: number; y: number }
+      const bp = (await store.get('island_bg_pos')) as { x: number; y: number }
       if (bp) setBgPos(bp)
       const ccChar = ((await store.get('claude_char')) as string) || DEFAULT_CHAR_NAME
       setClaudeCharName(ccChar)
-      invoke('get_ui_scale').then((s) => { if (typeof s === 'number' && s > 0) setUiScale(s) }).catch(() => {})
+      invoke('get_ui_scale')
+        .then((s) => {
+          if (typeof s === 'number' && s > 0) setUiScale(s)
+        })
+        .catch(() => {})
     })()
   }, [])
 
   // Poll Claude Code sessions
   useEffect(() => {
-    if (!enableClaudeCode) { setClaudeSessions([]); return }
+    if (!enableClaudeCode) {
+      setClaudeSessions([])
+      return
+    }
     const poll = async () => {
       try {
-        const sessions = await invoke('get_claude_sessions') as any[]
+        const sessions = (await invoke('get_claude_sessions')) as any[]
         setClaudeSessions(sessions)
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
     poll()
     const t = setInterval(poll, 2000)
@@ -917,6 +1049,11 @@ export default function Mini() {
   useEffect(() => {
     if (!enableClaudeCode) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
+      if (ev.payload?.waiting && viewModeRef.current === 'efficiency') {
+        if (!expandedRef.current && expandFnRef.current) {
+          expandFnRef.current()
+        }
+      }
       if (!soundEnabledRef.current) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
       if (notifySoundRef.current === 'manbo') {
@@ -925,44 +1062,66 @@ export default function Mini() {
         playDefaultSound()
       }
     })
-    return () => { unlisten.then((fn) => fn()) }
+    return () => {
+      unlisten.then((fn) => fn())
+    }
   }, [enableClaudeCode])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
-    if (!selectedSessionKey) { setSessionMessages([]); return }
+    if (!selectedSessionKey) {
+      setSessionMessages([])
+      return
+    }
     let cancelled = false
     const fetchMsgs = async () => {
       try {
         const oc = agentConnMapRef.current.get(selectedSessionKey.agentId) || {}
         const realId = agentRealIdMapRef.current.get(selectedSessionKey.agentId) || selectedSessionKey.agentId
-        const msgs = await invoke('get_session_messages', { agentId: realId, sessionKey: selectedSessionKey.key, ...oc }) as any[]
+        const msgs = (await invoke('get_session_messages', { agentId: realId, sessionKey: selectedSessionKey.key, ...oc })) as any[]
         if (!cancelled) setSessionMessages(msgs)
-      } catch { if (!cancelled) setSessionMessages([]) }
+      } catch {
+        if (!cancelled) setSessionMessages([])
+      }
     }
     fetchMsgs()
     const t = setInterval(fetchMsgs, 3000)
-    return () => { cancelled = true; clearInterval(t) }
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
   }, [selectedSessionKey])
 
   // Fetch Claude conversation when selected
   useEffect(() => {
-    if (!selectedClaudeSession) { setClaudeConversation([]); return }
+    if (!selectedClaudeSession) {
+      setClaudeConversation([])
+      return
+    }
     let cancelled = false
     const fetch = async () => {
       try {
-        const msgs = await invoke('get_claude_conversation', { sessionId: selectedClaudeSession }) as any[]
+        const msgs = (await invoke('get_claude_conversation', { sessionId: selectedClaudeSession })) as any[]
         if (!cancelled) setClaudeConversation(msgs)
-      } catch { if (!cancelled) setClaudeConversation([]) }
+      } catch {
+        if (!cancelled) setClaudeConversation([])
+      }
     }
     fetch()
     const t = setInterval(fetch, 3000)
-    return () => { cancelled = true; clearInterval(t) }
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
   }, [selectedClaudeSession])
 
   // Fetch agent metrics when selected
   useEffect(() => {
-    if (!selectedAgentId) { setMetrics(null); setExtraInfo(null); return }
+    if (!selectedAgentId) {
+      setMetrics(null)
+      setExtraInfo(null)
+      return
+    }
     let cancelled = false
     const realId = agentRealIdMapRef.current.get(selectedAgentId) || selectedAgentId
     const fetchMetrics = async () => {
@@ -970,26 +1129,33 @@ export default function Mini() {
         const oc = agentConnMapRef.current.get(selectedAgentId) || {}
         const m = (await invoke('get_agent_metrics', { agentId: realId, ...oc })) as AgentMetrics
         if (!cancelled) setMetrics(m)
-      } catch { if (!cancelled) setMetrics(null) }
+      } catch {
+        if (!cancelled) setMetrics(null)
+      }
     }
     const fetchExtra = async () => {
       const oc = agentConnMapRef.current.get(selectedAgentId) || {}
       try {
         const e = (await invoke('get_agent_extra_info', { agentId: realId, ...oc })) as any
         if (!cancelled) setExtraInfo(e)
-      } catch { if (!cancelled) setExtraInfo(null) }
+      } catch {
+        if (!cancelled) setExtraInfo(null)
+      }
     }
     fetchMetrics()
     fetchExtra()
     const i1 = setInterval(fetchMetrics, 2000)
     const i2 = setInterval(fetchExtra, 10000)
-    return () => { cancelled = true; clearInterval(i1); clearInterval(i2) }
+    return () => {
+      cancelled = true
+      clearInterval(i1)
+      clearInterval(i2)
+    }
   }, [selectedAgentId])
-
 
   // Build character slots (OpenClaw + Claude Code)
   const ocSlots: SessionSlot[] = allSessions.slice(0, MAX_SLOTS).map((s, i) => {
-    const agent = agents.find(a => a.id === s.agentId) || { id: s.agentId }
+    const agent = agents.find((a) => a.id === s.agentId) || { id: s.agentId }
     const charName = agentCharMap[s.agentId]
     const char = characters.find((c) => c.name === charName) || DEFAULT_CHAR
     return { agentId: s.agentId, sessionIdx: i, agent, char, isWorking: s.active }
@@ -1000,11 +1166,21 @@ export default function Mini() {
     const isActive = cs.status === 'processing' || cs.status === 'tool_running'
     const char = characters.find((c) => c.name === claudeCharName) || DEFAULT_CHAR
     const petState: PetState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle'
-    return { agentId: `claude:${cs.sessionId}`, sessionIdx: ocSlots.length + i, agent: { id: `claude:${cs.sessionId}`, identityName: 'Claude', identityEmoji: '🤖' }, char, isWorking: isActive || isCompacting || isWaiting, petState }
+    return {
+      agentId: `claude:${cs.sessionId}`,
+      sessionIdx: ocSlots.length + i,
+      agent: { id: `claude:${cs.sessionId}`, identityName: 'Claude', identityEmoji: '🤖' },
+      char,
+      isWorking: isActive || isCompacting || isWaiting,
+      petState,
+    }
   })
   const sessionSlots = [...ocSlots, ...claudeSlots].slice(0, MAX_SLOTS)
 
   const expandingRef = useRef(false)
+  const expandFnRef = useRef<(() => void) | null>(null)
+  const hoverExpandedRef = useRef(false)
+  const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expand = useCallback(async () => {
     if (collapsingRef.current || expandingRef.current) return
     expandingRef.current = true
@@ -1013,81 +1189,92 @@ export default function Mini() {
     await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current })
     setHiding(false)
     setExpanded(true)
+    expandedRef.current = true
     requestAnimationFrame(() => {
       requestAnimationFrame(() => setShowPanel(true))
     })
     expandingRef.current = false
   }, [])
+  expandFnRef.current = expand
 
-  const handleMascotPointerDown = useCallback((e: React.PointerEvent) => {
-    if (e.button !== 0 || collapsingRef.current) return
+  const handleMascotPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0 || collapsingRef.current) return
 
-    // Normal mode: click to expand
-    if (!moveMode) {
-      expand()
-      return
-    }
-
-    // Move mode: drag to reposition, click to exit
-    e.preventDefault()
-    const el = e.currentTarget as HTMLElement
-    el.setPointerCapture(e.pointerId)
-
-    let lastX = e.screenX
-    let lastY = e.screenY
-    let dragging = false
-    const pid = e.pointerId
-
-    const onMove = (ev: PointerEvent) => {
-      if (!dragging) {
-        if (Math.abs(ev.screenX - lastX) + Math.abs(ev.screenY - lastY) > 3) {
-          dragging = true
-        } else return
+      // Normal mode: click to expand
+      if (!moveMode) {
+        hoverExpandedRef.current = false
+        expand()
+        return
       }
-      const dx = ev.screenX - lastX
-      const dy = ev.screenY - lastY
-      lastX = ev.screenX
-      lastY = ev.screenY
-      if (dx !== 0 || dy !== 0) invoke('move_mini_by', { dx, dy })
-    }
 
-    const cleanup = () => {
-      try { el.releasePointerCapture(pid) } catch {}
-      el.removeEventListener('pointermove', onMove)
-      el.removeEventListener('pointerup', onUp)
-      el.removeEventListener('lostpointercapture', cleanup)
-    }
+      // Move mode: drag to reposition, click to exit
+      e.preventDefault()
+      const el = e.currentTarget as HTMLElement
+      el.setPointerCapture(e.pointerId)
 
-    const onUp = () => {
-      cleanup()
-      if (!dragging) {
-        // Click without moving: exit move mode
-        setMoveMode(false)
-        // Force browser to re-evaluate cursor immediately
-        document.body.style.cursor = 'pointer'
-        requestAnimationFrame(() => { document.body.style.cursor = '' })
-      } else {
-        // Save dragged position (macOS native coordinates)
-        invoke('get_mini_origin').then((pos) => {
-          const [x, y] = pos as [number, number]
-          customPosRef.current = { x, y }
-        })
+      let lastX = e.screenX
+      let lastY = e.screenY
+      let dragging = false
+      const pid = e.pointerId
+
+      const onMove = (ev: PointerEvent) => {
+        if (!dragging) {
+          if (Math.abs(ev.screenX - lastX) + Math.abs(ev.screenY - lastY) > 3) {
+            dragging = true
+          } else return
+        }
+        const dx = ev.screenX - lastX
+        const dy = ev.screenY - lastY
+        lastX = ev.screenX
+        lastY = ev.screenY
+        if (dx !== 0 || dy !== 0) invoke('move_mini_by', { dx, dy })
       }
-    }
 
-    el.addEventListener('pointermove', onMove)
-    el.addEventListener('pointerup', onUp)
-    el.addEventListener('lostpointercapture', cleanup)
-  }, [expand, moveMode])
+      const cleanup = () => {
+        try {
+          el.releasePointerCapture(pid)
+        } catch {}
+        el.removeEventListener('pointermove', onMove)
+        el.removeEventListener('pointerup', onUp)
+        el.removeEventListener('lostpointercapture', cleanup)
+      }
+
+      const onUp = () => {
+        cleanup()
+        if (!dragging) {
+          // Click without moving: exit move mode
+          setMoveMode(false)
+          // Force browser to re-evaluate cursor immediately
+          document.body.style.cursor = 'pointer'
+          requestAnimationFrame(() => {
+            document.body.style.cursor = ''
+          })
+        } else {
+          // Save dragged position (macOS native coordinates)
+          invoke('get_mini_origin').then((pos) => {
+            const [x, y] = pos as [number, number]
+            customPosRef.current = { x, y }
+          })
+        }
+      }
+
+      el.addEventListener('pointermove', onMove)
+      el.addEventListener('pointerup', onUp)
+      el.addEventListener('lostpointercapture', cleanup)
+    },
+    [expand, moveMode],
+  )
 
   const enterMoveMode = useCallback(async () => {
     setShowPanel(false)
     setTimeout(async () => {
       setHiding(true)
       setExpanded(false)
+      expandedRef.current = false
       try {
         await new Promise<void>((r) => setTimeout(r, 50))
-        await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current })
+        await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
         if (customPosRef.current) {
           await invoke('set_mini_origin', customPosRef.current)
         }
@@ -1101,6 +1288,11 @@ export default function Mini() {
   const collapse = useCallback(async () => {
     if (collapsingRef.current) return
     collapsingRef.current = true
+    hoverExpandedRef.current = false
+    if (hoverCloseTimerRef.current) {
+      clearTimeout(hoverCloseTimerRef.current)
+      hoverCloseTimerRef.current = null
+    }
     setIsCreateModalOpen(false)
     setShowPanel(false)
     setSelectedAgentId(null)
@@ -1127,15 +1319,17 @@ export default function Mini() {
         if (wasSettings) {
           await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
         } else {
-          await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current })
+          await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
         }
         setExpanded(false)
+        expandedRef.current = false
         await new Promise<void>((r) => setTimeout(r, 50))
-        // Restore custom drag position if set
         if (customPosRef.current) {
           await invoke('set_mini_origin', customPosRef.current)
         }
-      } catch { /* ensure hiding is always cleared */ }
+      } catch {
+        /* ensure hiding is always cleared */
+      }
       setHiding(false)
       setSettingsTransitioning(false)
       // Brief cooldown to prevent focus event from immediately re-expanding
@@ -1208,7 +1402,9 @@ export default function Mini() {
         filePickerOpenRef.current = true
       }
     }
-    const onFocus = () => { filePickerOpenRef.current = false }
+    const onFocus = () => {
+      filePickerOpenRef.current = false
+    }
     const onBlur = () => {
       if (filePickerOpenRef.current) return
       collapse()
@@ -1222,8 +1418,6 @@ export default function Mini() {
       window.removeEventListener('focus', onFocus)
     }
   }, [expanded, pinned, settingsMode, collapse])
-
-
 
   useEffect(() => {
     if (expanded || moveMode) return
@@ -1243,9 +1437,9 @@ export default function Mini() {
     return () => window.removeEventListener('blur', onBlur)
   }, [moveMode])
 
-  const claudeWaiting = claudeSessions.some(cs => cs.status === 'waiting')
-  const claudeCompacting = claudeSessions.some(cs => cs.status === 'compacting')
-  const claudeWorking = claudeSessions.some(cs => cs.status === 'processing' || cs.status === 'tool_running')
+  const claudeWaiting = claudeSessions.some((cs) => cs.status === 'waiting')
+  const claudeCompacting = claudeSessions.some((cs) => cs.status === 'compacting')
+  const claudeWorking = claudeSessions.some((cs) => cs.status === 'processing' || cs.status === 'tool_running')
   const hasWorking = anySessionActive || Object.values(healthMap).some(Boolean) || claudeWorking || claudeCompacting || claudeWaiting
   // Priority: waiting > compacting > working > idle
   const mainPetState: PetState = claudeWaiting ? 'waiting' : claudeCompacting ? 'compacting' : hasWorking ? 'working' : 'idle'
@@ -1256,10 +1450,12 @@ export default function Mini() {
       await invoke('delete_character_assets', { name })
       const chars = await loadCharacters()
       setCharacters(chars)
-    } catch (e) { console.warn('delete char failed:', e) }
+    } catch (e) {
+      console.warn('delete char failed:', e)
+    }
   }, [])
   const inAgentDetail = selectedAgentId !== null
-  const selectedAgent = agents.find(a => a.id === selectedAgentId)
+  const selectedAgent = agents.find((a) => a.id === selectedAgentId)
 
   // Panel dimensions — CSS uses fixed base sizes (380/400); on Windows high-DPI
   // screens the panel root applies `zoom: uiScale` so all content (text, icons,
@@ -1280,923 +1476,1281 @@ export default function Mini() {
   }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale])
 
   return (
-    <div style={{
-      width: '100vw', height: '100vh',
-      background: 'transparent',
-      overflow: 'hidden', userSelect: 'none',
-    }}>
+    <div
+      style={{
+        width: '100vw',
+        height: '100vh',
+        background: 'transparent',
+        overflow: 'hidden',
+        userSelect: 'none',
+      }}
+    >
       {/* Collapsed */}
       {!expanded && !hiding && (
         <div
           id="mini-panel"
           onPointerDown={handleMascotPointerDown}
+          onMouseEnter={() => {
+            if (!moveMode && viewMode === 'efficiency') {
+              hoverExpandedRef.current = true
+              expand()
+            }
+          }}
           style={{
-            width: '100%', height: '100%',
-            display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+            width: '100%',
+            height: '100%',
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'center',
+            background: viewMode === 'efficiency' ? 'rgba(0,0,0,0.01)' : undefined,
             cursor: moveMode ? 'grab' : 'pointer',
             pointerEvents: 'auto',
           }}
         >
-          <div style={{
-            position: 'relative',
-            animation: moveMode
-              ? 'movePulse 1.2s ease-in-out infinite'
-              : shouldBob
-                ? 'bob 1.2s ease-in-out infinite'
-                : 'none',
-            ...(moveMode ? {
-              borderRadius: 12,
-              outline: '2px solid rgba(59,130,246,0.6)',
-              outlineOffset: -2,
-            } : {}),
-          }}>
+          <div
+            style={{
+              position: 'relative',
+              animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : shouldBob ? 'bob 1.2s ease-in-out infinite' : 'none',
+              ...(moveMode
+                ? {
+                    borderRadius: 12,
+                    outline: '2px solid rgba(59,130,246,0.6)',
+                    outlineOffset: -2,
+                  }
+                : {}),
+            }}
+          >
             {miniGif ? (
               disableSleepAnim && mainPetState === 'idle' ? (
-                <FrozenImg src={miniGif}
-                  style={{ width: 43, height: 43, objectFit: 'contain' }}
-                  draggable={false} />
+                <FrozenImg src={miniGif} style={{ width: 43, height: 43, objectFit: 'contain' }} draggable={false} />
               ) : mainPetState === 'compacting' ? (
-                <IntervalGif src={miniGif}
-                  style={{ width: 43, height: 43, objectFit: 'contain' }} />
+                <IntervalGif src={miniGif} style={{ width: 43, height: 43, objectFit: 'contain' }} />
               ) : (
-                <img src={miniGif} alt="mini"
-                  style={{ width: 43, height: 43, objectFit: 'contain' }}
-                  draggable={false} />
+                <img src={miniGif} alt="mini" style={{ width: 43, height: 43, objectFit: 'contain' }} draggable={false} />
               )
             ) : (
-              <div style={{
-                width: 43, height: 43, borderRadius: 10,
-                background: 'rgba(0,0,0,0.3)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: '#999', fontSize: 16,
-              }}>?</div>
+              <div
+                style={{
+                  width: 43,
+                  height: 43,
+                  borderRadius: 10,
+                  background: 'rgba(0,0,0,0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#999',
+                  fontSize: 16,
+                }}
+              >
+                ?
+              </div>
             )}
-            <div style={{
-              position: 'absolute', bottom: 0, right: 0,
-              width: 8, height: 8, borderRadius: '50%',
-              background: mainPetState === 'waiting' ? '#f59e0b' : hasWorking ? '#2ecc71' : '#777',
-              border: '1.5px solid rgba(0,0,0,0.3)',
-            }} />
+            <div
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                right: 0,
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: mainPetState === 'waiting' ? '#f59e0b' : hasWorking ? '#2ecc71' : '#777',
+                border: '1.5px solid rgba(0,0,0,0.3)',
+              }}
+            />
           </div>
         </div>
       )}
 
       {/* Expanded panel */}
       {expanded && !settingsMode && !settingsTransitioning && (
-        <div id="mini-panel" ref={panelRef} className="scrollbar-hidden" style={{
-          position: 'absolute', top: 0,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          transformOrigin: 'top center',
-          zoom: uiScale !== 1 ? uiScale : undefined,
-          width: panelW,
-          height: 'auto',
-          maxHeight: 400,
-          overflowY: 'hidden',
-          overflowX: 'hidden',
-          display: 'flex',
-          flexDirection: 'column',
-          background: '#18181c',
-          clipPath: showPanel
-            ? 'inset(0 0 0 0 round 0 0 24px 24px)'
-            : 'inset(0 calc(50% - 30px) calc(100% + 200px) calc(50% - 30px) round 0 0 8px 8px)',
-          boxShadow: showPanel
-            ? '0 8px 32px rgba(0,0,0,0.8)'
-            : '0 2px 8px rgba(0,0,0,0.3)',
-          transition: showPanel
-            ? 'clip-path 0.45s cubic-bezier(0.22, 1.2, 0.36, 1), box-shadow 0.3s ease'
-            : 'clip-path 0.25s cubic-bezier(0.4, 0, 0, 1), box-shadow 0.15s ease',
-        }}>
-          {/* Top Control Bar — outside the transform wrapper so sticky works correctly */}
-          <div className="flex items-center justify-between px-4 py-2.5 shrink-0 sticky top-0 z-20 bg-black text-white" style={{
-            opacity: showPanel ? 1 : 0,
-            transition: showPanel
-              ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s'
-              : 'opacity 0.08s ease-out',
-          }}>
-              <div className="flex items-center gap-4 min-w-0 flex-1">
-                {(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) ? (
-                  <button data-no-drag
-                    onClick={(e) => { e.stopPropagation(); setSelectedAgentId(null); setSelectedClaudeSession(null); setSelectedSessionKey(null); setShowClaudeStats(false) }}
-                    className="text-slate-400 hover:text-slate-200 transition-colors"
-                  >
-                    <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
-                  </button>
-                ) : (
-                  <button data-no-drag
-                    onClick={(e) => { e.stopPropagation(); setPinned(!pinned) }}
-                    className={`transition-colors ${pinned ? 'text-[#F0D140]' : 'text-slate-400 hover:text-slate-200'}`}
-                    title={pinned ? t('mini.unpin') : t('mini.pin')}
-                  >
-                    <Pin className="w-4 h-4" strokeWidth={2.5} />
-                  </button>
-                )}
-                <button data-no-drag
-                  onClick={(e) => { e.stopPropagation(); setViewMode(v => v === 'island' ? 'efficiency' : 'island') }}
-                  className="text-slate-400 hover:text-[#F0D140] transition-colors"
-                  title={viewMode === 'island' ? t('mini.efficiencyMode') || 'Efficiency Mode' : t('mini.islandMode') || 'Island Mode'}
-                >
-                  {viewMode === 'island' ? <Rows className="w-4 h-4" strokeWidth={2.5} /> : <PanelLeft className="w-4 h-4" strokeWidth={2.5} />}
-                </button>
-                <button data-no-drag
-                  onClick={async (e) => {
-                    e.stopPropagation()
-                    const next = !soundEnabled
-                    setSoundEnabled(next)
-                    const store = await load('settings.json', { defaults: {}, autoSave: true })
-                    await store.set('sound_enabled', next)
-                    await store.save()
-                    if (next) {
-                      if (notifySound === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {})
-                      else playDefaultSound()
-                    }
-                  }}
-                  className={`transition-colors ${soundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
-                  title={soundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
-                >
-                  {soundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
-                </button>
-              </div>
-              <div className="flex items-center gap-4">
-                <button data-no-drag
-                  onClick={(e) => { e.stopPropagation(); enterMoveMode() }}
-                  className="text-slate-400 hover:text-[#F0D140] transition-colors"
-                  title={t('mini.moveMascot')}
-                >
-                  <Move className="w-4 h-4" strokeWidth={2.5} />
-                </button>
-                <button data-no-drag
-                  onClick={(e) => { e.stopPropagation(); enterSettings() }}
-                  className="text-slate-400 hover:text-[#F0D140] transition-colors"
-                  title={t('mini.settings')}
-                >
-                  <Settings className="w-4 h-4" strokeWidth={2.5} />
-                </button>
-                <button data-no-drag
-                  onClick={(e) => { e.stopPropagation(); window.blur(); collapse() }}
-                  className="text-slate-400 hover:text-rose-500 transition-colors ml-1"
-                >
-                  <X className="w-4.5 h-4.5" strokeWidth={2.5} />
-                </button>
-              </div>
-          </div>
-
-          <div style={{
-            position: 'relative', zIndex: 1,
-            opacity: showPanel ? 1 : 0,
-            transform: showPanel ? 'scale(1) translateY(0)' : 'scale(0.9) translateY(-20px)',
-            filter: showPanel ? 'blur(0px)' : 'blur(8px)',
+        <div
+          id="mini-panel"
+          ref={panelRef}
+          className="scrollbar-hidden"
+          onMouseEnter={() => {
+            if (hoverCloseTimerRef.current) {
+              clearTimeout(hoverCloseTimerRef.current)
+              hoverCloseTimerRef.current = null
+            }
+          }}
+          onMouseLeave={() => {
+            if (hoverExpandedRef.current) {
+              hoverCloseTimerRef.current = setTimeout(() => {
+                hoverExpandedRef.current = false
+                hoverCloseTimerRef.current = null
+                collapse()
+              }, 300)
+            }
+          }}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: '50%',
+            transform: 'translateX(-50%)',
             transformOrigin: 'top center',
-            transition: showPanel
-              ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s, transform 0.4s cubic-bezier(0.2, 1, 0.3, 1), filter 0.25s ease 0.05s'
-              : 'opacity 0.08s ease-out, transform 0.08s ease-out, filter 0.08s ease-out',
-            flex: 1,
-            minHeight: 0,
+            zoom: uiScale !== 1 ? uiScale : undefined,
+            width: panelW,
+            height: 'auto',
+            maxHeight: 400,
+            overflowY: 'hidden',
+            overflowX: 'hidden',
             display: 'flex',
             flexDirection: 'column',
-          }}>
-            {/* ===== Normal content (always rendered when expanded) ===== */}
-              <AnimatePresence mode="wait">
-              {(!inAgentDetail && !selectedClaudeSession && !selectedSessionKey && !showClaudeStats) ? (
-              viewMode === 'efficiency' ? (
-              /* ===== Efficiency Mode ===== */
-              <motion.div key="efficiency-view"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-                style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-              >
-                <div className="flex flex-col bg-black" style={{ flex: 1, minHeight: 0 }}>
-                  <div className="flex-1 overflow-y-auto scrollbar-hidden">
-                    <AnimatePresence mode="popLayout">
-                    {(() => {
-                      const unified: { type: 'oc', data: MiniSessionInfo, active: boolean, updatedAt: number }[] = allSessions.map(s => ({ type: 'oc' as const, data: s, active: s.active, updatedAt: s.updatedAt }))
-                      const claudeUnified = claudeSessions.map(cs => ({ type: 'claude' as const, data: cs, active: cs.status === 'processing' || cs.status === 'tool_running', updatedAt: cs.updatedAt || 0 }))
-                      const merged = [...unified, ...claudeUnified].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
-
-                      if (merged.length === 0) {
-                        return (
-                          <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            className="text-center py-10 px-4 flex flex-col items-center gap-2.5"
-                          >
-                            {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
-                          </motion.div>
-                        )
-                      }
-
-                      const agentSeqCount: Record<string, number> = {}
-                      const formatTimeAgo = (ts: number) => {
-                        if (!ts) return ''
-                        const diff = Date.now() - ts
-                        const mins = Math.floor(diff / 60000)
-                        if (mins < 1) return '<1m'
-                        if (mins < 60) return `${mins}m`
-                        const hrs = Math.floor(mins / 60)
-                        if (hrs < 24) return `${hrs}h`
-                        return `${Math.floor(hrs / 24)}d`
-                      }
-                      return merged.map((item, index) => {
-                        if (item.type === 'oc') {
-                          const s = item.data
-                          const agent = agents.find(a => a.id === s.agentId)
-                          const seq = (agentSeqCount[s.agentId] = (agentSeqCount[s.agentId] || 0) + 1)
-                          const agentName = `${agent?.identityEmoji || ''} ${agent?.identityName || s.agentId}`.trim()
-                          const charName = agentCharMap[s.agentId]
-                          const charMeta = characters.find(c => c.name === charName)
-                          const gif = charMeta ? getMiniGif(charMeta, s.active ? 'working' : 'idle') : undefined
-                          const title = `${agentName} #${seq}`
-                          const subtitle = s.lastUserMsg || ''
-                          const timeAgo = formatTimeAgo(s.updatedAt)
-                          const isWorking = s.active
-                          return (
-                            <motion.div
-                              key={`list-oc-${s.agentId}-${s.key}`}
-                              layout
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              exit={{ opacity: 0, filter: 'blur(4px)' }}
-                              transition={{ duration: 0.2, delay: index * 0.05 }}
-                              data-no-drag
-                              onClick={() => {
-                                const ch = (s.channel || '').toLowerCase()
-                                const appName = ch.includes('feishu') || ch.includes('lark') ? 'Lark'
-                                  : ch.includes('telegram') ? 'Telegram'
-                                  : ch.includes('discord') ? 'Discord'
-                                  : ch.includes('slack') ? 'Slack'
-                                  : ch.includes('wechat') || ch.includes('weixin') ? 'WeChat'
-                                  : null
-                                if (appName) {
-                                  invoke('activate_app', { appName }).catch((err: unknown) => console.warn('activate failed:', err))
-                                }
-                              }}
-                              className="group flex items-center gap-3 px-4 border-b border-[#1f1f24] last:border-0 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                              style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
-                            >
-                              {isWorking && (
-                                <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
-                                  {gif ? (
-                                    <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
-                                  ) : (
-                                    <span className="text-white/40 text-lg">{agent?.identityEmoji || '?'}</span>
-                                  )}
-                                  <div style={{
-                                    position: 'absolute', bottom: 0, right: 0,
-                                    width: 8, height: 8, borderRadius: '50%',
-                                    background: '#2ecc71',
-                                    border: '1.5px solid rgba(0,0,0,0.3)',
-                                  }} />
-                                </div>
-                              )}
-                              {!isWorking && (
-                                <div className="shrink-0 flex items-center justify-center w-4 h-4">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
-                                </div>
-                              )}
-                              <div className="flex min-w-0 flex-1 items-center gap-2">
-                                <span className={`text-[13px] font-bold truncate ${isWorking ? 'text-slate-200' : 'text-slate-400'}`}>
-                                  {title}{subtitle ? ` · ${subtitle}` : ''}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                {s.channel && (
-                                  <span className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-[#27272a] text-slate-300">
-                                    {s.channel}
-                                  </span>
-                                )}
-                                <div className="w-8 flex items-center justify-center">
-                                  <span className="text-[11px] text-slate-500 font-medium group-hover:hidden">{timeAgo}</span>
-                                  <button
-                                    data-no-drag
-                                    onClick={(e) => { e.stopPropagation(); dismissedSessionsRef.current.set(`${s.agentId}:${s.key}`, s.updatedAt); setAllSessions(prev => prev.filter(ss => !(ss.agentId === s.agentId && ss.key === s.key))) }}
-                                    className="hidden group-hover:flex items-center justify-center text-slate-600 hover:text-rose-500 transition-colors outline-none"
-                                    title={t('mini.remove')}
-                                  >
-                                    <Trash2 className="w-4 h-4" strokeWidth={2} />
-                                  </button>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )
-                        } else {
-                          const cs = item.data
-                          const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
-                          const isActive = item.active
-                          const isWaiting = cs.status === 'waiting'
-                          const isCompacting = cs.status === 'compacting'
-                          const isWorking = isActive || isWaiting || isCompacting
-                          const charMeta = characters.find(c => c.name === claudeCharName)
-                          const gif = charMeta ? getMiniGif(charMeta, isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle') : undefined
-                          const subtitle = cs.userPrompt || ''
-                          const timeAgo = formatTimeAgo(cs.updatedAt || 0)
-                          return (
-                            <motion.div
-                              key={`list-claude-${cs.sessionId}`}
-                              layout
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              exit={{ opacity: 0, filter: 'blur(4px)' }}
-                              transition={{ duration: 0.2, delay: index * 0.05 }}
-                              data-no-drag
-                              onClick={() => {
-                                invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
-                              }}
-                              className="group flex items-center gap-3 border-b border-[#1f1f24] last:border-0 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                              style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
-                            >
-                              {isWorking && (
-                                <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
-                                  {gif ? (
-                                    <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
-                                  ) : (
-                                    <span className="text-white/40 text-lg">🤖</span>
-                                  )}
-                                  <div style={{
-                                    position: 'absolute', bottom: 0, right: 0,
-                                    width: 8, height: 8, borderRadius: '50%',
-                                    background: isWaiting ? '#f59e0b' : '#2ecc71',
-                                    border: '1.5px solid rgba(0,0,0,0.3)',
-                                  }} />
-                                </div>
-                              )}
-                              {!isWorking && (
-                                <div className="shrink-0 flex items-center justify-center w-4 h-4">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
-                                </div>
-                              )}
-                              <div className="flex min-w-0 flex-1 items-center gap-2">
-                                <span className={`text-[13px] font-bold truncate ${isWorking ? 'text-slate-200' : 'text-slate-400'}`}>
-                                  {projectName}{subtitle ? ` · ${subtitle}` : ''}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                <span className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-[#3f211d] text-[#e87a65]">
-                                  Claude
-                                </span>
-                                <div className="w-8 flex items-center justify-center">
-                                  <span className="text-[11px] text-slate-500 font-medium group-hover:hidden">{timeAgo}</span>
-                                  <button
-                                    data-no-drag
-                                    onClick={(e) => { e.stopPropagation(); invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {}); setClaudeSessions(prev => prev.filter(s => s.sessionId !== cs.sessionId)) }}
-                                    className="hidden group-hover:flex items-center justify-center text-slate-600 hover:text-rose-500 transition-colors outline-none"
-                                    title={t('mini.remove')}
-                                  >
-                                    <Trash2 className="w-4 h-4" strokeWidth={2} />
-                                  </button>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )
-                        }
-                      })
-                    })()}
-                    </AnimatePresence>
-                  </div>
-                  {/* Footer */}
-                  <div className="mt-auto py-0.5 flex justify-center items-center select-none opacity-30 hover:opacity-60 transition-opacity">
-                    <span
-                      data-no-drag
-                      onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
-                      className="text-[8px] font-bold tracking-[0.2em] text-slate-500 uppercase cursor-pointer"
-                    >
-                      oc–claw
-                    </span>
-                  </div>
-                </div>
-              </motion.div>
-              ) : (
-              /* ===== Normal: character island + sessions ===== */
-              <motion.div key="main"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-                style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-              >
-                {/* Loading overlay while refreshing connections */}
-                <AnimatePresence>
-                  {refreshingAgents && (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.15 }}
-                      style={{
-                        position: 'absolute', inset: 0, zIndex: 10,
-                        background: 'rgba(15,15,19,0.9)',
-                        display: 'flex', flexDirection: 'column',
-                        alignItems: 'center', justifyContent: 'center', gap: 8,
-                      }}
-                    >
-                      <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'rgba(255,255,255,0.4)' }} />
-                      <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11 }}>{t('mini.connecting')}</span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-                {/* Banner Area */}
-                <div className="border-b-[3px] border-black relative overflow-hidden select-none" style={{
-                  height: 125, flexShrink: 0,
-                  ...(islandBg === '__anime__' ? {
-                    background: '#F0D140',
-                  } : {
-                    backgroundImage: `url(/assets/backgrounds/${islandBg})`,
-                    backgroundSize: 'cover',
-                    backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
-                  }),
-                }}>
-                  {islandBg === '__anime__' && (
-                    <>
-                      <div className="absolute inset-0 bg-[linear-gradient(to_right,#00000015_2px,transparent_2px),linear-gradient(to_bottom,#00000015_2px,transparent_2px)] bg-[size:16px_16px]" />
-                      <motion.div
-                        animate={{ x: [-80, panelW + 80] }}
-                        transition={{ repeat: Infinity, duration: 18, ease: "linear" }}
-                        className="absolute top-1 left-0 text-black p-4 -m-4"
-                        style={{ filter: 'drop-shadow(2px 2px 0px #000)' }}
-                      >
-                        <Cloud className="w-12 h-12 fill-white" strokeWidth={2} style={{ overflow: 'visible' }} />
-                      </motion.div>
-                      <motion.div
-                        animate={{ x: [-60, panelW + 60] }}
-                        transition={{ repeat: Infinity, duration: 25, ease: "linear", delay: 4 }}
-                        className="absolute top-10 left-0 text-black p-4 -m-4"
-                        style={{ filter: 'drop-shadow(2px 2px 0px #000)' }}
-                      >
-                        <Cloud className="w-8 h-8 fill-white" strokeWidth={2} style={{ overflow: 'visible' }} />
-                      </motion.div>
-                    </>
-                  )}
-
-                  {sessionSlots.length === 0 && (() => {
-                    const emptyGif = getMiniGif(miniChar ?? undefined, 'idle', true)
-                    return (
-                      <div style={{
-                        position: 'absolute', inset: 0,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        zIndex: 2,
-                      }}>
-                        {emptyGif ? (
-                          <img
-                            src={emptyGif}
-                            style={{
-                              width: 68, height: 68, objectFit: 'contain',
-                              animation: 'bob 2s ease-in-out infinite',
-                              opacity: 0.8,
-                            }}
-                            draggable={false}
-                          />
-                        ) : (
-                          <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11 }}>
-                            {t('mini.waitingForAgents')}
-                          </span>
-                        )}
-                      </div>
-                    )
-                  })()}
-
-                  {(() => {
-                    const shuffled = sessionSlots.map((slot, idx) => {
-                      const seed = (slot.agentId + slot.sessionIdx).split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0)
-                      return { slot, idx, seed }
-                    }).sort((a, b) => ((a.seed * 7 + 13) % 97) - ((b.seed * 7 + 13) % 97))
-
-                    return shuffled.map(({ slot, seed }, sortedIdx) => {
-                    const gif = getMiniGif(slot.char, slot.petState ?? (slot.isWorking ? 'working' : 'idle'), true)
-                    const singleRow = sessionSlots.length <= 6
-                    const row = sortedIdx < 6 ? 0 : 1
-                    const col = row === 0 ? sortedIdx : sortedIdx - 6
-                    const cols = row === 0 ? Math.min(sessionSlots.length, 6) : Math.min(sessionSlots.length - 6, 4)
-                    const slotW = 475 / Math.max(cols, 1)
-                    const xBase = slotW * col + slotW / 2 - 28 + (row === 1 ? slotW * 0.4 : 0)
-                    const yBase = row === 0 ? (singleRow ? 16 : 10) : 64
-                    const jx = ((seed * 7) % 17) - 8
-                    const jy = singleRow ? ((seed * 11) % 45) - 22 : ((seed * 11) % 11) - 5
-                    const x = Math.max(2, Math.min(415, xBase + jx))
-                    const y = yBase + jy
-                    return (
-                      <div
-                        key={`${slot.agentId}-${slot.sessionIdx}`}
-                        data-no-drag
-                        onClick={() => {
-                          if (slot.agentId.startsWith('claude:')) {
-                            setSelectedAgentId(null); setSelectedSessionKey(null); setSelectedClaudeSession(null)
-                            setShowClaudeStats(true)
-                          } else {
-                            setSelectedClaudeSession(null); setSelectedSessionKey(null)
-                            setSelectedAgentId(slot.agentId)
-                          }
-                        }}
-                        style={{
-                          position: 'absolute', left: x, top: y,
-                          display: 'flex', flexDirection: 'column', alignItems: 'center',
-                          cursor: 'pointer', zIndex: 2,
-                          animation: 'bob 1.6s ease-in-out infinite',
-                          animationDelay: `${sortedIdx * -0.3}s`,
-                        }}
-                      >
-                        <div style={{ position: 'relative' }}>
-                          {gif ? (
-                            <img src={gif} alt={slot.char?.name}
-                              style={{ width: 56, height: 56, objectFit: 'contain' }}
-                              draggable={false} />
-                          ) : (
-                            <div style={{
-                              width: 56, height: 56, borderRadius: 8,
-                              background: 'rgba(255,255,255,0.1)',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              color: '#555', fontSize: 13,
-                            }}>?</div>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })
-                  })()}
-                </div>
-
-                {/* Task List */}
-                <div className="p-2 bg-[#0f0f13] flex flex-col gap-0.5" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-                  {allSessions.length === 0 && claudeSessions.length === 0 && !refreshingAgents && (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      className="text-center py-10 px-4 flex flex-col items-center gap-2.5"
-                    >
-                      {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
-                      <button
-                        data-no-drag
-                        onClick={(e) => { e.stopPropagation(); enterSettings() }}
-                        className="text-slate-400 text-sm font-medium underline decoration-slate-500 underline-offset-4 hover:text-slate-200 transition-colors"
-                      >
-                        {t('mini.goToSettings')}
-                      </button>
-                    </motion.div>
-                  )}
-
-                  <div className="scrollbar-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-                    <AnimatePresence mode="popLayout">
-                    {(() => {
-                      const unified: { type: 'oc', data: MiniSessionInfo, active: boolean, updatedAt: number }[] = allSessions.map(s => ({ type: 'oc' as const, data: s, active: s.active, updatedAt: s.updatedAt }))
-                      const claudeUnified = claudeSessions.map(cs => ({ type: 'claude' as const, data: cs, active: cs.status === 'processing' || cs.status === 'tool_running', updatedAt: cs.updatedAt || 0 }))
-                      const merged = [...unified, ...claudeUnified].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
-
-                      const agentSeqCount: Record<string, number> = {}
-                      return merged.map((item, index) => {
-                        if (item.type === 'oc') {
-                          const s = item.data
-                          const agent = agents.find(a => a.id === s.agentId)
-                          const seq = (agentSeqCount[s.agentId] = (agentSeqCount[s.agentId] || 0) + 1)
-                          const agentName = `${agent?.identityEmoji || ''} ${agent?.identityName || s.agentId}`.trim()
-                          const label = `${agentName} #${seq}${s.lastUserMsg ? ` - ${s.lastUserMsg}` : ''}`
-                          return (
-                            <motion.div
-                              key={`oc-${s.agentId}-${s.key}`}
-                              layout
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              exit={{ opacity: 0, filter: 'blur(4px)' }}
-                              transition={{ duration: 0.2, delay: index * 0.05 }}
-                              data-no-drag
-                              onClick={() => { setSelectedClaudeSession(null); setSelectedAgentId(null); setSelectedSessionKey({ agentId: s.agentId, key: s.key }) }}
-                              className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors cursor-pointer"
-                            >
-                              <div className="shrink-0 flex items-center justify-center w-4 h-4">
-                                {s.active ? (
-                                  <Asterisk className="w-4 h-4 text-emerald-400 animate-[spin_4s_linear_infinite]" strokeWidth={2.5} />
-                                ) : (
-                                  <span className="w-1 h-1 rounded-full bg-slate-600" />
-                                )}
-                              </div>
-                              <div className="flex items-baseline gap-2 min-w-0 flex-1">
-                                <span className={`text-sm font-bold tracking-wide truncate ${s.active ? 'text-slate-200' : 'text-slate-400'}`}>
-                                  {label}
-                                </span>
-                              </div>
-                              <button
-                                data-no-drag
-                                onClick={(e) => { e.stopPropagation(); dismissedSessionsRef.current.set(`${s.agentId}:${s.key}`, s.updatedAt); setAllSessions(prev => prev.filter(ss => !(ss.agentId === s.agentId && ss.key === s.key))) }}
-                                className="shrink-0 text-slate-600 hover:text-rose-500 transition-colors outline-none"
-                                title={t('mini.remove')}
-                              >
-                                <Trash2 className="w-4 h-4" strokeWidth={2} />
-                              </button>
-                            </motion.div>
-                          )
-                        } else {
-                          const cs = item.data
-                          const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
-                          const isActive = item.active
-                          const isWaiting = cs.status === 'waiting'
-                          const statusText = cs.tool ? `🔧 ${cs.tool}` : cs.status === 'stopped' ? t('mini.idle') : cs.status === 'waiting' ? '⏳ ' + t('mini.waiting') : cs.status === 'processing' ? t('mini.thinking') : cs.status === 'tool_running' ? t('mini.working') : cs.status === 'compacting' ? t('mini.compacting') : cs.status
-                          const label = `${projectName}${cs.userPrompt ? ` - ${cs.userPrompt}` : ` - ${statusText}`}`
-                          return (
-                            <motion.div
-                              key={`claude-${cs.sessionId}`}
-                              layout
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              exit={{ opacity: 0, filter: 'blur(4px)' }}
-                              transition={{ duration: 0.2, delay: index * 0.05 }}
-                              data-no-drag
-                              onClick={() => { setSelectedAgentId(null); setSelectedSessionKey(null); setSelectedClaudeSession(cs.sessionId) }}
-                              className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors cursor-pointer"
-                            >
-                              <div className="shrink-0 flex items-center justify-center w-4 h-4">
-                                {(isActive || isWaiting) ? (
-                                  <Asterisk className={`w-4 h-4 animate-[spin_4s_linear_infinite] ${isWaiting ? 'text-amber-400' : 'text-emerald-400'}`} strokeWidth={2.5} />
-                                ) : (
-                                  <span className="w-1 h-1 rounded-full bg-slate-600" />
-                                )}
-                              </div>
-                              <div className="flex items-baseline gap-2 min-w-0 flex-1">
-                                <span className={`text-sm font-bold tracking-wide truncate ${(isActive || isWaiting) ? 'text-slate-200' : 'text-slate-400'}`}>
-                                  {label}
-                                </span>
-                              </div>
-                              <button
-                                data-no-drag
-                                onClick={(e) => { e.stopPropagation(); invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {}); setClaudeSessions(prev => prev.filter(s => s.sessionId !== cs.sessionId)) }}
-                                className="shrink-0 text-slate-600 hover:text-rose-500 transition-colors outline-none"
-                                title={t('mini.remove')}
-                              >
-                                <Trash2 className="w-4 h-4" strokeWidth={2} />
-                              </button>
-                            </motion.div>
-                          )
-                        }
-                      })
-                    })()}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* Trademark / Footer */}
-                  <div className="mt-auto pt-1.5 pb-1 flex justify-center items-center select-none">
-                    <span
-                      data-no-drag
-                      onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
-                      className="text-[10px] font-black tracking-[0.25em] text-slate-500 uppercase cursor-pointer hover:text-slate-300 transition-colors"
-                    >
-                      oc–claw.ai
-                    </span>
-                  </div>
-                </div>
-              </motion.div>
-              )
-            ) : selectedSessionKey ? (
-              /* ===== OpenClaw session chat ===== */
-              <motion.div key="oc-chat"
-                style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-                initial={{ opacity: 0, x: 30 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -30 }}
-                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}>
-                {sessionMessages.length === 0 ? (
-                  <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>
-                    {t('common.loading')}
-                  </div>
-                ) : (
-                  <ChatList messages={sessionMessages} accentColor="#2ecc71" />
-                )}
-              </motion.div>
-            ) : selectedClaudeSession ? (
-              /* ===== Claude session chat ===== */
-              <motion.div key="claude-chat"
-                style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-                initial={{ opacity: 0, x: 30 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -30 }}
-                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}>
-                {claudeConversation.length === 0 ? (
-                  <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>
-                    {t('common.loading')}
-                  </div>
-                ) : (
-                  <ChatList messages={claudeConversation} accentColor="#007AFF" />
-                )}
-              </motion.div>
-            ) : showClaudeStats ? (
-              /* ===== Claude Code stats ===== */
-              <motion.div key="claude-stats"
-                style={{ background: '#1a1a1a' }}
-                initial={{ opacity: 0, x: 30 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -30 }}
-                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}>
-                <ClaudeStatsView />
-              </motion.div>
-            ) : (
-              /* ===== Agent detail panel (ui-2 style) ===== */
-              <motion.div key="agent-detail"
-                style={{ background: '#1a1a1a' }}
-                initial={{ opacity: 0, x: 30 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -30 }}
-                transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
-              >
-                <AgentDetailView
-                  agent={selectedAgent}
-                  metrics={metrics}
-                  extraInfo={extraInfo}
-                />
-              </motion.div>
-            )}
-              </AnimatePresence>
-          </div>
-
-        </div>
-      )}
-
-      {/* ===== Settings overlay (independent fixed layer) ===== */}
-      <AnimatePresence>
-      {showSettingsOverlay && (
-        <>
+            background: '#18181c',
+            clipPath: showPanel ? 'inset(0 0 0 0 round 0 0 24px 24px)' : 'inset(0 calc(50% - 30px) calc(100% + 200px) calc(50% - 30px) round 0 0 8px 8px)',
+            boxShadow: showPanel ? '0 8px 32px rgba(0,0,0,0.8)' : '0 2px 8px rgba(0,0,0,0.3)',
+            transition: showPanel ? 'clip-path 0.45s cubic-bezier(0.22, 1.2, 0.36, 1), box-shadow 0.3s ease' : 'clip-path 0.25s cubic-bezier(0.4, 0, 0, 1), box-shadow 0.15s ease',
+          }}
+        >
+          {/* Top Control Bar — outside the transform wrapper so sticky works correctly */}
           <div
-            data-no-drag
-            onMouseDown={(e) => {
-              if (e.target === e.currentTarget) exitSettings()
-            }}
+            className="flex items-center justify-between px-4 py-2.5 shrink-0 sticky top-0 z-20 bg-black text-white"
             style={{
-              position: 'fixed',
-              inset: 0,
-              zIndex: 40,
-            }}
-          />
-          <motion.div
-            key="settings-overlay"
-            data-no-drag
-            className="scrollbar-hidden"
-            variants={{
-              hidden: { opacity: 0, scale: 0.96, y: -24, filter: "blur(10px)" },
-              visible: { opacity: 1, scale: 1, y: 0, filter: "blur(0px)", transition: { type: "spring", damping: 22, stiffness: 150, mass: 1.2 } },
-              exit: { opacity: 0, scale: 0.96, y: -24, filter: "blur(10px)", transition: { type: "spring", damping: 25, stiffness: 300 } },
-            }}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
-            style={{
-              position: 'fixed',
-              top: 4,
-              left: 12,
-              right: 12,
-              bottom: 12,
-              zIndex: 50,
-              background: '#0f0f13',
-              border: '1px solid rgba(255,255,255,0.08)',
-              borderRadius: 24,
-              display: 'flex',
-              flexDirection: 'column',
-              transformOrigin: 'top center',
-              overflow: 'hidden',
+              opacity: showPanel ? 1 : 0,
+              transition: showPanel ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s' : 'opacity 0.08s ease-out',
             }}
           >
-            {/* Settings header */}
-            <div id="settings-overlay" className="flex items-center justify-between px-4 py-2.5 shrink-0 bg-[#18181c] border-b border-white/[0.06]">
-              <div className="flex items-center gap-6 min-w-0 flex-1">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <button data-no-drag
-                    onClick={(e) => { e.stopPropagation(); exitSettings() }}
-                    style={{
-                      background: 'rgba(255,255,255,0.06)', border: 'none',
-                      color: 'rgba(255,255,255,0.6)', fontSize: 11,
-                      cursor: 'pointer', padding: '3px 8px',
-                      borderRadius: 6, display: 'flex', alignItems: 'center', gap: 4,
-                    }}>
-                    <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
-                  </button>
-                  {(['pairing', 'settings'] as const).map((nav) => (
-                    <button key={nav} data-no-drag
-                      onClick={(e) => { e.stopPropagation(); setSettingsNav(nav) }}
-                      style={{
-                        background: settingsNav === nav ? 'rgba(255,255,255,0.12)' : 'none',
-                        border: 'none',
-                        color: settingsNav === nav ? '#fff' : 'rgba(255,255,255,0.4)',
-                        fontSize: 11, cursor: 'pointer', padding: '3px 10px',
-                        borderRadius: 6, fontWeight: settingsNav === nav ? 600 : 400,
-                      }}>
-                      {nav === 'pairing' ? t('mini.pairing') : t('mini.settings')}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <button data-no-drag
-                onClick={(e) => { e.stopPropagation(); exitSettings() }}
+            <div className="flex items-center gap-4 min-w-0 flex-1">
+              {inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats ? (
+                <button
+                  data-no-drag
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setSelectedAgentId(null)
+                    setSelectedClaudeSession(null)
+                    setSelectedSessionKey(null)
+                    setShowClaudeStats(false)
+                  }}
+                  className="text-slate-400 hover:text-slate-200 transition-colors"
+                >
+                  <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
+                </button>
+              ) : (
+                <button
+                  data-no-drag
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setPinned(!pinned)
+                  }}
+                  className={`transition-colors ${pinned ? 'text-[#F0D140]' : 'text-slate-400 hover:text-slate-200'}`}
+                  title={pinned ? t('mini.unpin') : t('mini.pin')}
+                >
+                  <Pin className="w-4 h-4" strokeWidth={2.5} />
+                </button>
+              )}
+              <button
+                data-no-drag
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setViewMode((v) => (v === 'island' ? 'efficiency' : 'island'))
+                }}
+                className="text-slate-400 hover:text-[#F0D140] transition-colors"
+                title={viewMode === 'island' ? t('mini.efficiencyMode') || 'Efficiency Mode' : t('mini.islandMode') || 'Island Mode'}
+              >
+                {viewMode === 'island' ? <Rows className="w-4 h-4" strokeWidth={2.5} /> : <PanelLeft className="w-4 h-4" strokeWidth={2.5} />}
+              </button>
+              <button
+                data-no-drag
+                onClick={async (e) => {
+                  e.stopPropagation()
+                  const next = !soundEnabled
+                  setSoundEnabled(next)
+                  const store = await load('settings.json', { defaults: {}, autoSave: true })
+                  await store.set('sound_enabled', next)
+                  await store.save()
+                  if (next) {
+                    if (notifySound === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {})
+                    else playDefaultSound()
+                  }
+                }}
+                className={`transition-colors ${soundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
+                title={soundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
+              >
+                {soundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
+              </button>
+            </div>
+            <div className="flex items-center gap-4">
+              <button
+                data-no-drag
+                onClick={(e) => {
+                  e.stopPropagation()
+                  enterMoveMode()
+                }}
+                className="text-slate-400 hover:text-[#F0D140] transition-colors"
+                title={t('mini.moveMascot')}
+              >
+                <Move className="w-4 h-4" strokeWidth={2.5} />
+              </button>
+              <button
+                data-no-drag
+                onClick={(e) => {
+                  e.stopPropagation()
+                  enterSettings()
+                }}
+                className="text-slate-400 hover:text-[#F0D140] transition-colors"
+                title={t('mini.settings')}
+              >
+                <Settings className="w-4 h-4" strokeWidth={2.5} />
+              </button>
+              <button
+                data-no-drag
+                onClick={(e) => {
+                  e.stopPropagation()
+                  window.blur()
+                  collapse()
+                }}
                 className="text-slate-400 hover:text-rose-500 transition-colors ml-1"
               >
                 <X className="w-4.5 h-4.5" strokeWidth={2.5} />
               </button>
             </div>
-            <div style={{ flex: 1, overflow: 'hidden', margin: 8, marginTop: 0, borderRadius: 12, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-              <div className="bg-[#151515] text-white font-sans antialiased scrollbar-hidden" style={{ borderRadius: '12px 12px 0 0', overflow: 'auto', flex: 1, minHeight: 0 }}>
-                {settingsNav === 'pairing' && (
-                  <div className="h-full overflow-y-auto bg-[#151515] pt-6 px-6 pb-10 scrollbar-hidden">
-                    <div className="max-w-3xl mx-auto">
-                      <p className="text-sm text-white/50 mb-10">
-                        {t('mini.pairingDesc')}
-                      </p>
-                      <div className="mb-8">
-                        <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">{t('mini.mascot')}</h2>
-                        <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                          <AgentAccordionItem
-                            agent={{ id: '__mini__', identityName: t('mini.mascot') }}
-                            characters={characters}
-                            currentChar={miniChar?.name || ''}
-                            isOpen={openAccordionId === '__mini__'}
-                            onToggle={() => setOpenAccordionId(openAccordionId === '__mini__' ? null : '__mini__')}
-                            onOpenCreate={() => setIsCreateModalOpen(true)}
-                            onDeleteChar={handleDeleteChar}
-                            onSelect={async (name) => {
-                              const store = await load('settings.json', { defaults: {}, autoSave: true })
-                              await store.set('mini_character', name)
-                              await store.save()
-                              loadMiniChar()
-                            }}
-                          />
-                        </div>
+          </div>
+
+          <div
+            style={{
+              position: 'relative',
+              zIndex: 1,
+              opacity: showPanel ? 1 : 0,
+              transform: showPanel ? 'scale(1) translateY(0)' : 'scale(0.9) translateY(-20px)',
+              filter: showPanel ? 'blur(0px)' : 'blur(8px)',
+              transformOrigin: 'top center',
+              transition: showPanel
+                ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s, transform 0.4s cubic-bezier(0.2, 1, 0.3, 1), filter 0.25s ease 0.05s'
+                : 'opacity 0.08s ease-out, transform 0.08s ease-out, filter 0.08s ease-out',
+              flex: 1,
+              minHeight: 0,
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            {/* ===== Normal content (always rendered when expanded) ===== */}
+            <AnimatePresence mode="wait">
+              {!inAgentDetail && !selectedClaudeSession && !selectedSessionKey && !showClaudeStats ? (
+                viewMode === 'efficiency' ? (
+                  /* ===== Efficiency Mode ===== */
+                  <motion.div
+                    key="efficiency-view"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.15 }}
+                    style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+                  >
+                    <div className="flex flex-col bg-black" style={{ flex: 1, minHeight: 0 }}>
+                      <div className="flex-1 overflow-y-auto scrollbar-hidden">
+                        <AnimatePresence mode="popLayout">
+                          {(() => {
+                            const unified: { type: 'oc'; data: MiniSessionInfo; active: boolean; updatedAt: number }[] = allSessions.map((s) => ({
+                              type: 'oc' as const,
+                              data: s,
+                              active: s.active,
+                              updatedAt: s.updatedAt,
+                            }))
+                            const claudeUnified = claudeSessions.map((cs) => ({
+                              type: 'claude' as const,
+                              data: cs,
+                              active: cs.status === 'processing' || cs.status === 'tool_running',
+                              updatedAt: cs.updatedAt || 0,
+                            }))
+                            const allItems = [...unified, ...claudeUnified].sort((a, b) => b.updatedAt - a.updatedAt)
+                            const isItemWorking = (item: (typeof allItems)[0]) => {
+                              if (item.type === 'oc') return item.active
+                              const cs = item.data as any
+                              return item.active || cs.status === 'waiting' || cs.status === 'compacting'
+                            }
+                            const workingItems = allItems.filter(isItemWorking)
+                            const idleItems = allItems.filter((i) => !isItemWorking(i))
+
+                            if (allItems.length === 0) {
+                              return (
+                                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
+                                  {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
+                                </motion.div>
+                              )
+                            }
+
+                            const agentSeqCount: Record<string, number> = {}
+                            const formatTimeAgo = (ts: number) => {
+                              if (!ts) return ''
+                              const diff = Date.now() - ts
+                              const mins = Math.floor(diff / 60000)
+                              if (mins < 1) return '<1m'
+                              if (mins < 60) return `${mins}m`
+                              const hrs = Math.floor(mins / 60)
+                              if (hrs < 24) return `${hrs}h`
+                              return `${Math.floor(hrs / 24)}d`
+                            }
+                            const hasWaiting = allItems.some((i) => i.type === 'claude' && (i.data as any).status === 'waiting')
+                            const shouldCollapse = hasWaiting && idleItems.length > 0
+                            const visibleItems = shouldCollapse && !showIdleSessions ? workingItems : allItems
+                            const elements: React.ReactNode[] = visibleItems.map((item, index) => {
+                              if (item.type === 'oc') {
+                                const s = item.data
+                                const agent = agents.find((a) => a.id === s.agentId)
+                                const seq = (agentSeqCount[s.agentId] = (agentSeqCount[s.agentId] || 0) + 1)
+                                const agentName = `${agent?.identityEmoji || ''} ${agent?.identityName || s.agentId}`.trim()
+                                const charName = agentCharMap[s.agentId]
+                                const charMeta = characters.find((c) => c.name === charName)
+                                const gif = charMeta ? getMiniGif(charMeta, s.active ? 'working' : 'idle') : undefined
+                                const title = `${agentName} #${seq}`
+                                const subtitle = s.lastUserMsg || ''
+                                const timeAgo = formatTimeAgo(s.updatedAt)
+                                const isWorking = s.active
+                                return (
+                                  <motion.div
+                                    key={`list-oc-${s.agentId}-${s.key}`}
+                                    layout
+                                    initial={{ opacity: 0, x: -10 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, filter: 'blur(4px)' }}
+                                    transition={{ duration: 0.2, delay: index * 0.05 }}
+                                    data-no-drag
+                                    onClick={() => {
+                                      const ch = (s.channel || '').toLowerCase()
+                                      const appName =
+                                        ch.includes('feishu') || ch.includes('lark')
+                                          ? 'Lark'
+                                          : ch.includes('telegram')
+                                            ? 'Telegram'
+                                            : ch.includes('discord')
+                                              ? 'Discord'
+                                              : ch.includes('slack')
+                                                ? 'Slack'
+                                                : ch.includes('wechat') || ch.includes('weixin')
+                                                  ? 'WeChat'
+                                                  : null
+                                      if (appName) {
+                                        invoke('activate_app', { appName }).catch((err: unknown) => console.warn('activate failed:', err))
+                                      }
+                                    }}
+                                    className="group flex items-center gap-3 px-4 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                                    style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
+                                  >
+                                    {isWorking && (
+                                      <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
+                                        {gif ? (
+                                          <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
+                                        ) : (
+                                          <span className="text-white/40 text-lg">{agent?.identityEmoji || '?'}</span>
+                                        )}
+                                        <div
+                                          style={{
+                                            position: 'absolute',
+                                            bottom: 0,
+                                            right: 0,
+                                            width: 8,
+                                            height: 8,
+                                            borderRadius: '50%',
+                                            background: '#2ecc71',
+                                            border: '1.5px solid rgba(0,0,0,0.3)',
+                                          }}
+                                        />
+                                      </div>
+                                    )}
+                                    {!isWorking && (
+                                      <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                                      </div>
+                                    )}
+                                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                      <span className={`text-[13px] font-bold shrink-0 ${isWorking ? 'text-white' : 'text-slate-300'}`}>{title}</span>
+                                      {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300">{s.channel}</span>}
+                                      <div className="w-8 flex items-center justify-center">
+                                        <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
+                                        <button
+                                          data-no-drag
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            dismissedSessionsRef.current.set(`${s.agentId}:${s.key}`, s.updatedAt)
+                                            setAllSessions((prev) => prev.filter((ss) => !(ss.agentId === s.agentId && ss.key === s.key)))
+                                          }}
+                                          className="hidden group-hover:flex items-center justify-center text-slate-600 hover:text-rose-500 transition-colors outline-none"
+                                          title={t('mini.remove')}
+                                        >
+                                          <Trash2 className="w-4 h-4" strokeWidth={2} />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </motion.div>
+                                )
+                              } else {
+                                const cs = item.data
+                                const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                const isActive = item.active
+                                const isWaiting = cs.status === 'waiting'
+                                const isCompacting = cs.status === 'compacting'
+                                const isWorking = isActive || isWaiting || isCompacting
+                                const charMeta = characters.find((c) => c.name === claudeCharName)
+                                const gif = charMeta ? getMiniGif(charMeta, isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle') : undefined
+                                const subtitle = cs.userPrompt || ''
+                                const timeAgo = formatTimeAgo(cs.updatedAt || 0)
+                                return (
+                                  <motion.div
+                                    key={`list-claude-${cs.sessionId}`}
+                                    layout
+                                    initial={{ opacity: 0, x: -10 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, filter: 'blur(4px)' }}
+                                    transition={{ duration: 0.2, delay: index * 0.05 }}
+                                    data-no-drag
+                                    onClick={() => {
+                                      if (!isWaiting) {
+                                        invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
+                                      }
+                                    }}
+                                    className={`group hover:bg-white/[0.04] transition-colors ${isWaiting ? '' : 'cursor-pointer'}`}
+                                    style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
+                                  >
+                                    <div className="flex items-center gap-3">
+                                      {isWorking && (
+                                        <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
+                                          {gif ? (
+                                            <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
+                                          ) : (
+                                            <span className="text-white/40 text-lg">🤖</span>
+                                          )}
+                                          <div
+                                            style={{
+                                              position: 'absolute',
+                                              bottom: 0,
+                                              right: 0,
+                                              width: 8,
+                                              height: 8,
+                                              borderRadius: '50%',
+                                              background: isWaiting ? '#f59e0b' : '#2ecc71',
+                                              border: '1.5px solid rgba(0,0,0,0.3)',
+                                            }}
+                                          />
+                                        </div>
+                                      )}
+                                      {!isWorking && (
+                                        <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                                        </div>
+                                      )}
+                                      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                        <span className={`text-[13px] font-bold shrink-0 ${isWorking ? 'text-white' : 'text-slate-300'}`}>{projectName}</span>
+                                        {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#3f211d] text-[#e87a65]">Claude</span>
+                                        <div className="w-8 flex items-center justify-center">
+                                          <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
+                                          <button
+                                            data-no-drag
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {})
+                                              setClaudeSessions((prev) => prev.filter((s) => s.sessionId !== cs.sessionId))
+                                            }}
+                                            className="hidden group-hover:flex items-center justify-center text-slate-600 hover:text-rose-500 transition-colors outline-none"
+                                            title={t('mini.remove')}
+                                          >
+                                            <Trash2 className="w-4 h-4" strokeWidth={2} />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    {isWaiting && (
+                                      <div className="mt-2">
+                                        {cs.tool && (
+                                          <div className="flex items-center gap-1.5 mb-2">
+                                            <span className="text-amber-400 text-[12px]">⚠</span>
+                                            <span className="text-amber-400 text-[12px] font-normal">{cs.tool}</span>
+                                          </div>
+                                        )}
+                                        {cs.toolInput &&
+                                          (() => {
+                                            try {
+                                              const input = JSON.parse(cs.toolInput)
+                                              const preview = input.command || input.file_path || input.content?.slice(0, 100) || cs.toolInput.slice(0, 100)
+                                              return (
+                                                <div className="mb-2 p-2 rounded bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
+                                                  <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{preview}</pre>
+                                                </div>
+                                              )
+                                            } catch {
+                                              return (
+                                                <div className="mb-2 p-2 rounded bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
+                                                  <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{cs.toolInput.slice(0, 100)}</pre>
+                                                </div>
+                                              )
+                                            }
+                                          })()}
+                                        <div className="flex gap-2">
+                                          <button
+                                            data-no-drag
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'deny' }).catch(() => {})
+                                            }}
+                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                          >
+                                            {t('mini.deny', '拒绝')}
+                                          </button>
+                                          <button
+                                            data-no-drag
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'allow_once' }).catch(() => {})
+                                            }}
+                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                          >
+                                            {t('mini.allowOnce', '允许一次')}
+                                          </button>
+                                          <button
+                                            data-no-drag
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'allow_all' }).catch(() => {})
+                                            }}
+                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-emerald-900/50 text-emerald-300 hover:bg-emerald-800/50 transition-colors"
+                                          >
+                                            {t('mini.allowAll', '全部允许')}
+                                          </button>
+                                          <button
+                                            data-no-drag
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'auto_approve' }).catch(() => {})
+                                            }}
+                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-rose-900/50 text-rose-300 hover:bg-rose-800/50 transition-colors"
+                                          >
+                                            {t('mini.autoApprove', '自动批准')}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </motion.div>
+                                )
+                              }
+                            })
+                            if (shouldCollapse && !showIdleSessions) {
+                              elements.push(
+                                <motion.div
+                                  key="idle-toggle"
+                                  initial={{ opacity: 0 }}
+                                  animate={{ opacity: 1 }}
+                                  data-no-drag
+                                  onClick={() => setShowIdleSessions(true)}
+                                  className="flex items-center justify-center py-2.5 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                                >
+                                  <span className="text-[12px] text-slate-500">{`其余 ${idleItems.length} 个 session`}</span>
+                                </motion.div>,
+                              )
+                            }
+                            if (shouldCollapse && showIdleSessions) {
+                              elements.push(
+                                <motion.div
+                                  key="idle-collapse"
+                                  initial={{ opacity: 0 }}
+                                  animate={{ opacity: 1 }}
+                                  data-no-drag
+                                  onClick={() => setShowIdleSessions(false)}
+                                  className="flex items-center justify-center py-2 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                                >
+                                  <span className="text-[12px] text-slate-500">收起</span>
+                                </motion.div>,
+                              )
+                            }
+                            return elements
+                          })()}
+                        </AnimatePresence>
                       </div>
-                      {agents.length > 0 && (
-                        <div className="mb-8">
-                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">OpenClaw Agents</h2>
-                          <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                            {agents.map((agent) => (
-                              <AgentAccordionItem
-                                key={agent.id}
-                                agent={agent}
-                                characters={characters}
-                                currentChar={agentCharMap[agent.id] || DEFAULT_CHAR_NAME}
-                                isOpen={openAccordionId === agent.id}
-                                onToggle={() => setOpenAccordionId(openAccordionId === agent.id ? null : agent.id)}
-                                sourceLabel={agentSourceLabels[agent.id]}
-                                onOpenCreate={() => setIsCreateModalOpen(true)}
-                                onDeleteChar={handleDeleteChar}
-                                onSelect={async (charName) => {
-                                  const updated = { ...agentCharMap, [agent.id]: charName }
-                                  setAgentCharMap(updated)
-                                  await saveAgentCharMap(updated)
-                                }}
-                              />
-                            ))}
-                          </div>
-                        </div>
+                      {/* Footer */}
+                      <div className="mt-auto py-0.5 flex justify-center items-center select-none opacity-30 hover:opacity-60 transition-opacity">
+                        <span
+                          data-no-drag
+                          onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
+                          className="text-[8px] font-bold tracking-[0.2em] text-slate-500 uppercase cursor-pointer"
+                        >
+                          oc–claw
+                        </span>
+                      </div>
+                    </div>
+                  </motion.div>
+                ) : (
+                  /* ===== Normal: character island + sessions ===== */
+                  <motion.div
+                    key="main"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.15 }}
+                    style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+                  >
+                    {/* Loading overlay while refreshing connections */}
+                    <AnimatePresence>
+                      {refreshingAgents && (
+                        <motion.div
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.15 }}
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            zIndex: 10,
+                            background: 'rgba(15,15,19,0.9)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 8,
+                          }}
+                        >
+                          <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'rgba(255,255,255,0.4)' }} />
+                          <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11 }}>{t('mini.connecting')}</span>
+                        </motion.div>
                       )}
-                      {enableClaudeCode && (
+                    </AnimatePresence>
+                    {/* Banner Area */}
+                    <div
+                      className="border-b-[3px] border-black relative overflow-hidden select-none"
+                      style={{
+                        height: 125,
+                        flexShrink: 0,
+                        ...(islandBg === '__anime__'
+                          ? {
+                              background: '#F0D140',
+                            }
+                          : {
+                              backgroundImage: `url(/assets/backgrounds/${islandBg})`,
+                              backgroundSize: 'cover',
+                              backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
+                            }),
+                      }}
+                    >
+                      {islandBg === '__anime__' && (
+                        <>
+                          <div className="absolute inset-0 bg-[linear-gradient(to_right,#00000015_2px,transparent_2px),linear-gradient(to_bottom,#00000015_2px,transparent_2px)] bg-[size:16px_16px]" />
+                          <motion.div
+                            animate={{ x: [-80, panelW + 80] }}
+                            transition={{ repeat: Infinity, duration: 18, ease: 'linear' }}
+                            className="absolute top-1 left-0 text-black p-4 -m-4"
+                            style={{ filter: 'drop-shadow(2px 2px 0px #000)' }}
+                          >
+                            <Cloud className="w-12 h-12 fill-white" strokeWidth={2} style={{ overflow: 'visible' }} />
+                          </motion.div>
+                          <motion.div
+                            animate={{ x: [-60, panelW + 60] }}
+                            transition={{ repeat: Infinity, duration: 25, ease: 'linear', delay: 4 }}
+                            className="absolute top-10 left-0 text-black p-4 -m-4"
+                            style={{ filter: 'drop-shadow(2px 2px 0px #000)' }}
+                          >
+                            <Cloud className="w-8 h-8 fill-white" strokeWidth={2} style={{ overflow: 'visible' }} />
+                          </motion.div>
+                        </>
+                      )}
+
+                      {sessionSlots.length === 0 &&
+                        (() => {
+                          const emptyGif = getMiniGif(miniChar ?? undefined, 'idle', true)
+                          return (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                inset: 0,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                zIndex: 2,
+                              }}
+                            >
+                              {emptyGif ? (
+                                <img
+                                  src={emptyGif}
+                                  style={{
+                                    width: 68,
+                                    height: 68,
+                                    objectFit: 'contain',
+                                    animation: 'bob 2s ease-in-out infinite',
+                                    opacity: 0.8,
+                                  }}
+                                  draggable={false}
+                                />
+                              ) : (
+                                <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11 }}>{t('mini.waitingForAgents')}</span>
+                              )}
+                            </div>
+                          )
+                        })()}
+
+                      {(() => {
+                        const shuffled = sessionSlots
+                          .map((slot, idx) => {
+                            const seed = (slot.agentId + slot.sessionIdx).split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0)
+                            return { slot, idx, seed }
+                          })
+                          .sort((a, b) => ((a.seed * 7 + 13) % 97) - ((b.seed * 7 + 13) % 97))
+
+                        return shuffled.map(({ slot, seed }, sortedIdx) => {
+                          const gif = getMiniGif(slot.char, slot.petState ?? (slot.isWorking ? 'working' : 'idle'), true)
+                          const singleRow = sessionSlots.length <= 6
+                          const row = sortedIdx < 6 ? 0 : 1
+                          const col = row === 0 ? sortedIdx : sortedIdx - 6
+                          const cols = row === 0 ? Math.min(sessionSlots.length, 6) : Math.min(sessionSlots.length - 6, 4)
+                          const slotW = 475 / Math.max(cols, 1)
+                          const xBase = slotW * col + slotW / 2 - 28 + (row === 1 ? slotW * 0.4 : 0)
+                          const yBase = row === 0 ? (singleRow ? 16 : 10) : 64
+                          const jx = ((seed * 7) % 17) - 8
+                          const jy = singleRow ? ((seed * 11) % 45) - 22 : ((seed * 11) % 11) - 5
+                          const x = Math.max(2, Math.min(415, xBase + jx))
+                          const y = yBase + jy
+                          return (
+                            <div
+                              key={`${slot.agentId}-${slot.sessionIdx}`}
+                              data-no-drag
+                              onClick={() => {
+                                if (slot.agentId.startsWith('claude:')) {
+                                  setSelectedAgentId(null)
+                                  setSelectedSessionKey(null)
+                                  setSelectedClaudeSession(null)
+                                  setShowClaudeStats(true)
+                                } else {
+                                  setSelectedClaudeSession(null)
+                                  setSelectedSessionKey(null)
+                                  setSelectedAgentId(slot.agentId)
+                                }
+                              }}
+                              style={{
+                                position: 'absolute',
+                                left: x,
+                                top: y,
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                cursor: 'pointer',
+                                zIndex: 2,
+                                animation: 'bob 1.6s ease-in-out infinite',
+                                animationDelay: `${sortedIdx * -0.3}s`,
+                              }}
+                            >
+                              <div style={{ position: 'relative' }}>
+                                {gif ? (
+                                  <img src={gif} alt={slot.char?.name} style={{ width: 56, height: 56, objectFit: 'contain' }} draggable={false} />
+                                ) : (
+                                  <div
+                                    style={{
+                                      width: 56,
+                                      height: 56,
+                                      borderRadius: 8,
+                                      background: 'rgba(255,255,255,0.1)',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      color: '#555',
+                                      fontSize: 13,
+                                    }}
+                                  >
+                                    ?
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })
+                      })()}
+                    </div>
+
+                    {/* Task List */}
+                    <div className="p-2 bg-[#0f0f13] flex flex-col gap-0.5" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                      {allSessions.length === 0 && claudeSessions.length === 0 && !refreshingAgents && (
+                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
+                          {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
+                          <button
+                            data-no-drag
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              enterSettings()
+                            }}
+                            className="text-slate-400 text-sm font-medium underline decoration-slate-500 underline-offset-4 hover:text-slate-200 transition-colors"
+                          >
+                            {t('mini.goToSettings')}
+                          </button>
+                        </motion.div>
+                      )}
+
+                      <div className="scrollbar-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+                        <AnimatePresence mode="popLayout">
+                          {(() => {
+                            const unified: { type: 'oc'; data: MiniSessionInfo; active: boolean; updatedAt: number }[] = allSessions.map((s) => ({
+                              type: 'oc' as const,
+                              data: s,
+                              active: s.active,
+                              updatedAt: s.updatedAt,
+                            }))
+                            const claudeUnified = claudeSessions.map((cs) => ({
+                              type: 'claude' as const,
+                              data: cs,
+                              active: cs.status === 'processing' || cs.status === 'tool_running',
+                              updatedAt: cs.updatedAt || 0,
+                            }))
+                            const merged = [...unified, ...claudeUnified].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
+
+                            const agentSeqCount: Record<string, number> = {}
+                            return merged.map((item, index) => {
+                              if (item.type === 'oc') {
+                                const s = item.data
+                                const agent = agents.find((a) => a.id === s.agentId)
+                                const seq = (agentSeqCount[s.agentId] = (agentSeqCount[s.agentId] || 0) + 1)
+                                const agentName = `${agent?.identityEmoji || ''} ${agent?.identityName || s.agentId}`.trim()
+                                const label = `${agentName} #${seq}${s.lastUserMsg ? ` - ${s.lastUserMsg}` : ''}`
+                                return (
+                                  <motion.div
+                                    key={`oc-${s.agentId}-${s.key}`}
+                                    layout
+                                    initial={{ opacity: 0, x: -10 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, filter: 'blur(4px)' }}
+                                    transition={{ duration: 0.2, delay: index * 0.05 }}
+                                    data-no-drag
+                                    onClick={() => {
+                                      setSelectedClaudeSession(null)
+                                      setSelectedAgentId(null)
+                                      setSelectedSessionKey({ agentId: s.agentId, key: s.key })
+                                    }}
+                                    className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors cursor-pointer"
+                                  >
+                                    <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                      {s.active ? (
+                                        <Asterisk className="w-4 h-4 text-emerald-400 animate-[spin_4s_linear_infinite]" strokeWidth={2.5} />
+                                      ) : (
+                                        <span className="w-1 h-1 rounded-full bg-slate-600" />
+                                      )}
+                                    </div>
+                                    <div className="flex items-baseline gap-2 min-w-0 flex-1">
+                                      <span className={`text-sm font-bold tracking-wide truncate ${s.active ? 'text-slate-200' : 'text-slate-400'}`}>{label}</span>
+                                    </div>
+                                    <button
+                                      data-no-drag
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        dismissedSessionsRef.current.set(`${s.agentId}:${s.key}`, s.updatedAt)
+                                        setAllSessions((prev) => prev.filter((ss) => !(ss.agentId === s.agentId && ss.key === s.key)))
+                                      }}
+                                      className="shrink-0 text-slate-600 hover:text-rose-500 transition-colors outline-none"
+                                      title={t('mini.remove')}
+                                    >
+                                      <Trash2 className="w-4 h-4" strokeWidth={2} />
+                                    </button>
+                                  </motion.div>
+                                )
+                              } else {
+                                const cs = item.data
+                                const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                const isActive = item.active
+                                const isWaiting = cs.status === 'waiting'
+                                const statusText = cs.tool
+                                  ? `🔧 ${cs.tool}`
+                                  : cs.status === 'stopped'
+                                    ? t('mini.idle')
+                                    : cs.status === 'waiting'
+                                      ? '⏳ ' + t('mini.waiting')
+                                      : cs.status === 'processing'
+                                        ? t('mini.thinking')
+                                        : cs.status === 'tool_running'
+                                          ? t('mini.working')
+                                          : cs.status === 'compacting'
+                                            ? t('mini.compacting')
+                                            : cs.status
+                                const label = `${projectName}${cs.userPrompt ? ` - ${cs.userPrompt}` : ` - ${statusText}`}`
+                                return (
+                                  <motion.div
+                                    key={`claude-${cs.sessionId}`}
+                                    layout
+                                    initial={{ opacity: 0, x: -10 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, filter: 'blur(4px)' }}
+                                    transition={{ duration: 0.2, delay: index * 0.05 }}
+                                    data-no-drag
+                                    onClick={() => {
+                                      setSelectedAgentId(null)
+                                      setSelectedSessionKey(null)
+                                      setSelectedClaudeSession(cs.sessionId)
+                                    }}
+                                    className="group flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.04] transition-colors cursor-pointer"
+                                  >
+                                    <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                      {isActive || isWaiting ? (
+                                        <Asterisk className={`w-4 h-4 animate-[spin_4s_linear_infinite] ${isWaiting ? 'text-amber-400' : 'text-emerald-400'}`} strokeWidth={2.5} />
+                                      ) : (
+                                        <span className="w-1 h-1 rounded-full bg-slate-600" />
+                                      )}
+                                    </div>
+                                    <div className="flex items-baseline gap-2 min-w-0 flex-1">
+                                      <span className={`text-sm font-bold tracking-wide truncate ${isActive || isWaiting ? 'text-slate-200' : 'text-slate-400'}`}>{label}</span>
+                                    </div>
+                                    <button
+                                      data-no-drag
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {})
+                                        setClaudeSessions((prev) => prev.filter((s) => s.sessionId !== cs.sessionId))
+                                      }}
+                                      className="shrink-0 text-slate-600 hover:text-rose-500 transition-colors outline-none"
+                                      title={t('mini.remove')}
+                                    >
+                                      <Trash2 className="w-4 h-4" strokeWidth={2} />
+                                    </button>
+                                  </motion.div>
+                                )
+                              }
+                            })
+                          })()}
+                        </AnimatePresence>
+                      </div>
+
+                      {/* Trademark / Footer */}
+                      <div className="mt-auto pt-1.5 pb-1 flex justify-center items-center select-none">
+                        <span
+                          data-no-drag
+                          onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
+                          className="text-[10px] font-black tracking-[0.25em] text-slate-500 uppercase cursor-pointer hover:text-slate-300 transition-colors"
+                        >
+                          oc–claw.ai
+                        </span>
+                      </div>
+                    </div>
+                  </motion.div>
+                )
+              ) : selectedSessionKey ? (
+                /* ===== OpenClaw session chat ===== */
+                <motion.div
+                  key="oc-chat"
+                  style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+                  initial={{ opacity: 0, x: 30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -30 }}
+                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                >
+                  {sessionMessages.length === 0 ? (
+                    <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>{t('common.loading')}</div>
+                  ) : (
+                    <ChatList messages={sessionMessages} accentColor="#2ecc71" />
+                  )}
+                </motion.div>
+              ) : selectedClaudeSession ? (
+                /* ===== Claude session chat ===== */
+                <motion.div
+                  key="claude-chat"
+                  style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+                  initial={{ opacity: 0, x: 30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -30 }}
+                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                >
+                  {claudeConversation.length === 0 ? (
+                    <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>{t('common.loading')}</div>
+                  ) : (
+                    <ChatList messages={claudeConversation} accentColor="#007AFF" />
+                  )}
+                </motion.div>
+              ) : showClaudeStats ? (
+                /* ===== Claude Code stats ===== */
+                <motion.div
+                  key="claude-stats"
+                  style={{ background: '#1a1a1a' }}
+                  initial={{ opacity: 0, x: 30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -30 }}
+                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                >
+                  <ClaudeStatsView />
+                </motion.div>
+              ) : (
+                /* ===== Agent detail panel (ui-2 style) ===== */
+                <motion.div
+                  key="agent-detail"
+                  style={{ background: '#1a1a1a' }}
+                  initial={{ opacity: 0, x: 30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -30 }}
+                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                >
+                  <AgentDetailView agent={selectedAgent} metrics={metrics} extraInfo={extraInfo} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Settings overlay (independent fixed layer) ===== */}
+      <AnimatePresence>
+        {showSettingsOverlay && (
+          <>
+            <div
+              data-no-drag
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) exitSettings()
+              }}
+              style={{
+                position: 'fixed',
+                inset: 0,
+                zIndex: 40,
+              }}
+            />
+            <motion.div
+              key="settings-overlay"
+              data-no-drag
+              className="scrollbar-hidden"
+              variants={{
+                hidden: { opacity: 0, scale: 0.96, y: -24, filter: 'blur(10px)' },
+                visible: { opacity: 1, scale: 1, y: 0, filter: 'blur(0px)', transition: { type: 'spring', damping: 22, stiffness: 150, mass: 1.2 } },
+                exit: { opacity: 0, scale: 0.96, y: -24, filter: 'blur(10px)', transition: { type: 'spring', damping: 25, stiffness: 300 } },
+              }}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              style={{
+                position: 'fixed',
+                top: 4,
+                left: 12,
+                right: 12,
+                bottom: 12,
+                zIndex: 50,
+                background: '#0f0f13',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 24,
+                display: 'flex',
+                flexDirection: 'column',
+                transformOrigin: 'top center',
+                overflow: 'hidden',
+              }}
+            >
+              {/* Settings header */}
+              <div id="settings-overlay" className="flex items-center justify-between px-4 py-2.5 shrink-0 bg-[#18181c] border-b border-white/[0.06]">
+                <div className="flex items-center gap-6 min-w-0 flex-1">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button
+                      data-no-drag
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        exitSettings()
+                      }}
+                      style={{
+                        background: 'rgba(255,255,255,0.06)',
+                        border: 'none',
+                        color: 'rgba(255,255,255,0.6)',
+                        fontSize: 11,
+                        cursor: 'pointer',
+                        padding: '3px 8px',
+                        borderRadius: 6,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                    >
+                      <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
+                    </button>
+                    {(['pairing', 'settings'] as const).map((nav) => (
+                      <button
+                        key={nav}
+                        data-no-drag
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setSettingsNav(nav)
+                        }}
+                        style={{
+                          background: settingsNav === nav ? 'rgba(255,255,255,0.12)' : 'none',
+                          border: 'none',
+                          color: settingsNav === nav ? '#fff' : 'rgba(255,255,255,0.4)',
+                          fontSize: 11,
+                          cursor: 'pointer',
+                          padding: '3px 10px',
+                          borderRadius: 6,
+                          fontWeight: settingsNav === nav ? 600 : 400,
+                        }}
+                      >
+                        {nav === 'pairing' ? t('mini.pairing') : t('mini.settings')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  data-no-drag
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    exitSettings()
+                  }}
+                  className="text-slate-400 hover:text-rose-500 transition-colors ml-1"
+                >
+                  <X className="w-4.5 h-4.5" strokeWidth={2.5} />
+                </button>
+              </div>
+              <div style={{ flex: 1, overflow: 'hidden', margin: 8, marginTop: 0, borderRadius: 12, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                <div className="bg-[#151515] text-white font-sans antialiased scrollbar-hidden" style={{ borderRadius: '12px 12px 0 0', overflow: 'auto', flex: 1, minHeight: 0 }}>
+                  {settingsNav === 'pairing' && (
+                    <div className="h-full overflow-y-auto bg-[#151515] pt-6 px-6 pb-10 scrollbar-hidden">
+                      <div className="max-w-3xl mx-auto">
+                        <p className="text-sm text-white/50 mb-10">{t('mini.pairingDesc')}</p>
                         <div className="mb-8">
-                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">Claude Code</h2>
+                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">{t('mini.mascot')}</h2>
                           <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
                             <AgentAccordionItem
-                              agent={{ id: 'claude-code', identityName: 'Claude Code' }}
+                              agent={{ id: '__mini__', identityName: t('mini.mascot') }}
                               characters={characters}
-                              currentChar={claudeCharName}
-                              isOpen={openAccordionId === 'claude-code'}
-                              onToggle={() => setOpenAccordionId(openAccordionId === 'claude-code' ? null : 'claude-code')}
+                              currentChar={miniChar?.name || ''}
+                              isOpen={openAccordionId === '__mini__'}
+                              onToggle={() => setOpenAccordionId(openAccordionId === '__mini__' ? null : '__mini__')}
                               onOpenCreate={() => setIsCreateModalOpen(true)}
                               onDeleteChar={handleDeleteChar}
-                              onSelect={async (charName) => {
-                                setClaudeCharName(charName)
+                              onSelect={async (name) => {
                                 const store = await load('settings.json', { defaults: {}, autoSave: true })
-                                await store.set('claude_char', charName)
+                                await store.set('mini_character', name)
                                 await store.save()
+                                loadMiniChar()
                               }}
                             />
                           </div>
                         </div>
-                      )}
-                      {agents.length > 0 && characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0).length < agents.length && (
-                        <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
-                          {t('mini.notEnoughChars')}
-                        </div>
-                      )}
+                        {agents.length > 0 && (
+                          <div className="mb-8">
+                            <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">OpenClaw Agents</h2>
+                            <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
+                              {agents.map((agent) => (
+                                <AgentAccordionItem
+                                  key={agent.id}
+                                  agent={agent}
+                                  characters={characters}
+                                  currentChar={agentCharMap[agent.id] || DEFAULT_CHAR_NAME}
+                                  isOpen={openAccordionId === agent.id}
+                                  onToggle={() => setOpenAccordionId(openAccordionId === agent.id ? null : agent.id)}
+                                  sourceLabel={agentSourceLabels[agent.id]}
+                                  onOpenCreate={() => setIsCreateModalOpen(true)}
+                                  onDeleteChar={handleDeleteChar}
+                                  onSelect={async (charName) => {
+                                    const updated = { ...agentCharMap, [agent.id]: charName }
+                                    setAgentCharMap(updated)
+                                    await saveAgentCharMap(updated)
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {enableClaudeCode && (
+                          <div className="mb-8">
+                            <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">Claude Code</h2>
+                            <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
+                              <AgentAccordionItem
+                                agent={{ id: 'claude-code', identityName: 'Claude Code' }}
+                                characters={characters}
+                                currentChar={claudeCharName}
+                                isOpen={openAccordionId === 'claude-code'}
+                                onToggle={() => setOpenAccordionId(openAccordionId === 'claude-code' ? null : 'claude-code')}
+                                onOpenCreate={() => setIsCreateModalOpen(true)}
+                                onDeleteChar={handleDeleteChar}
+                                onSelect={async (charName) => {
+                                  setClaudeCharName(charName)
+                                  const store = await load('settings.json', { defaults: {}, autoSave: true })
+                                  await store.set('claude_char', charName)
+                                  await store.save()
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        {agents.length > 0 && characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0).length < agents.length && (
+                          <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">{t('mini.notEnoughChars')}</div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )}
-                {settingsNav === 'settings' && (
-                  <div className="h-full overflow-y-auto bg-[#151515] scrollbar-hidden">
-                    <SettingsTab disableSleepAnim={disableSleepAnim} onToggleSleepAnim={async (v) => { setDisableSleepAnim(v); const store = await getStore(); await store.set('disable_sleep_anim', v); await store.save() }} notifySound={notifySound} onChangeNotifySound={async (v) => { setNotifySound(v); const store = await getStore(); await store.set('notify_sound', v); await store.save() }} waitingSound={waitingSound} onToggleWaitingSound={async (v) => { setWaitingSound(v); const store = await getStore(); await store.set('waiting_sound', v); await store.save() }} mascotPosition={mascotPosition} onChangeMascotPosition={async (v) => { setMascotPosition(v); mascotPositionRef.current = v; const store = await getStore(); await store.set('mascot_position', v); await store.save() }} islandBg={islandBg} onChangeIslandBg={async (v) => { setIslandBg(v); const store = await getStore(); await store.set('island_bg', v); await store.save() }} bgPos={bgPos} onChangeBgPos={async (v) => { setBgPos(v); const store = await getStore(); await store.set('island_bg_pos', v); await store.save() }} />
-                  </div>
-                )}
-              </div>
-              <div style={{
-                background: '#1a1a1a', padding: '10px 14px',
-                borderRadius: '0 0 12px 12px', flexShrink: 0,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <span
-                  onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
+                  )}
+                  {settingsNav === 'settings' && (
+                    <div className="h-full overflow-y-auto bg-[#151515] scrollbar-hidden">
+                      <SettingsTab
+                        disableSleepAnim={disableSleepAnim}
+                        onToggleSleepAnim={async (v) => {
+                          setDisableSleepAnim(v)
+                          const store = await getStore()
+                          await store.set('disable_sleep_anim', v)
+                          await store.save()
+                        }}
+                        notifySound={notifySound}
+                        onChangeNotifySound={async (v) => {
+                          setNotifySound(v)
+                          const store = await getStore()
+                          await store.set('notify_sound', v)
+                          await store.save()
+                        }}
+                        waitingSound={waitingSound}
+                        onToggleWaitingSound={async (v) => {
+                          setWaitingSound(v)
+                          const store = await getStore()
+                          await store.set('waiting_sound', v)
+                          await store.save()
+                        }}
+                        mascotPosition={mascotPosition}
+                        onChangeMascotPosition={async (v) => {
+                          setMascotPosition(v)
+                          mascotPositionRef.current = v
+                          const store = await getStore()
+                          await store.set('mascot_position', v)
+                          await store.save()
+                        }}
+                        islandBg={islandBg}
+                        onChangeIslandBg={async (v) => {
+                          setIslandBg(v)
+                          const store = await getStore()
+                          await store.set('island_bg', v)
+                          await store.save()
+                        }}
+                        bgPos={bgPos}
+                        onChangeBgPos={async (v) => {
+                          setBgPos(v)
+                          const store = await getStore()
+                          await store.set('island_bg_pos', v)
+                          await store.save()
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+                <div
                   style={{
-                    color: 'rgba(255,255,255,0.35)', fontSize: 11, cursor: 'pointer',
-                    transition: 'color 0.25s, transform 0.25s, letter-spacing 0.25s',
-                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    background: '#1a1a1a',
+                    padding: '10px 14px',
+                    borderRadius: '0 0 12px 12px',
+                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = '#f5c542'; e.currentTarget.style.transform = 'scale(1.04)'; e.currentTarget.style.letterSpacing = '0.3px' }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.35)'; e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.letterSpacing = '0px' }}
                 >
-                  {t('mini.starPrompt')} <span style={{ fontSize: 13, lineHeight: 1 }}>⭐</span> {t('mini.starPromptSuffix')}
-                </span>
+                  <span
+                    onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
+                    style={{
+                      color: 'rgba(255,255,255,0.35)',
+                      fontSize: 11,
+                      cursor: 'pointer',
+                      transition: 'color 0.25s, transform 0.25s, letter-spacing 0.25s',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = '#f5c542'
+                      e.currentTarget.style.transform = 'scale(1.04)'
+                      e.currentTarget.style.letterSpacing = '0.3px'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = 'rgba(255,255,255,0.35)'
+                      e.currentTarget.style.transform = 'scale(1)'
+                      e.currentTarget.style.letterSpacing = '0px'
+                    }}
+                  >
+                    {t('mini.starPrompt')} <span style={{ fontSize: 13, lineHeight: 1 }}>⭐</span> {t('mini.starPromptSuffix')}
+                  </span>
+                </div>
               </div>
-            </div>
-          </motion.div>
-        </>
-      )}
+            </motion.div>
+          </>
+        )}
       </AnimatePresence>
 
       <CreateCharacterModal
