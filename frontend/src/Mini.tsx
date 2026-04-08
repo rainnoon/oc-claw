@@ -560,7 +560,7 @@ export default function Mini() {
       return next
     })
   }, [])
-  const [showIdleSessions, setShowIdleSessions] = useState(false)
+  // showIdleSessions removed — all sessions visible, important ones sorted to top
   const collapsingRef = useRef(false)
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
   const [moveMode, _setMoveMode] = useState(false)
@@ -1057,6 +1057,13 @@ export default function Mini() {
         for (const sid of seenCompletions) {
           if (!sessions.find((s: any) => s.sessionId === sid && s.lastResponse)) {
             seenCompletions.delete(sid)
+          }
+        }
+        // If the completion session's tab is now active, user has seen it — dismiss
+        if (completionSessionIdRef.current) {
+          const cs = sessions.find((s: any) => s.sessionId === completionSessionIdRef.current)
+          if (cs?.isActiveTab) {
+            setCompletionSessionId(null)
           }
         }
         setClaudeSessions(sessions)
@@ -1833,7 +1840,7 @@ export default function Mini() {
                     style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
                   >
                     <div className="flex flex-col bg-black" style={{ flex: 1, minHeight: 0 }}>
-                      <div className="flex-1 overflow-y-auto scrollbar-hidden" onClick={() => { setCompletionSessionId(null) }}>
+                      <div className="flex-1 overflow-y-auto scrollbar-hidden">
                         <AnimatePresence mode="popLayout">
                           {(() => {
                             const unified: { type: 'oc'; data: MiniSessionInfo; active: boolean; updatedAt: number }[] = allSessions.map((s) => ({
@@ -1848,14 +1855,21 @@ export default function Mini() {
                               active: cs.status === 'processing' || cs.status === 'tool_running',
                               updatedAt: cs.updatedAt || 0,
                             }))
-                            const allItems = [...unified, ...claudeUnified].sort((a, b) => b.updatedAt - a.updatedAt)
-                            const isItemWorking = (item: (typeof allItems)[0]) => {
-                              if (item.type === 'oc') return item.active
-                              const cs = item.data as any
-                              return item.active || cs.status === 'waiting' || cs.status === 'compacting'
+                            // Sort: waiting/completed sessions to top, then by updatedAt
+                            const getPriority = (item: (typeof unified)[0] | (typeof claudeUnified)[0]) => {
+                              if (item.type === 'claude') {
+                                const cs = item.data as any
+                                if (cs.status === 'waiting') return 0
+                                if (cs.lastResponse && cs.status === 'stopped') return 1
+                                if (item.active || cs.status === 'compacting') return 2
+                              } else if (item.active) return 2
+                              return 3
                             }
-                            const workingItems = allItems.filter(isItemWorking)
-                            const idleItems = allItems.filter((i) => !isItemWorking(i))
+                            const allItems = [...unified, ...claudeUnified].sort((a, b) => {
+                              const pa = getPriority(a), pb = getPriority(b)
+                              if (pa !== pb) return pa - pb
+                              return b.updatedAt - a.updatedAt
+                            })
 
                             if (allItems.length === 0) {
                               return (
@@ -1876,17 +1890,7 @@ export default function Mini() {
                               if (hrs < 24) return `${hrs}h`
                               return `${Math.floor(hrs / 24)}d`
                             }
-                            const hasWaiting = allItems.some((i) => i.type === 'claude' && (i.data as any).status === 'waiting')
-                            // Collapse others when there's a waiting session OR a just-completed popup
-                            const hasCompletionPopup = !!completionSessionId && allItems.some((i) => i.type === 'claude' && (i.data as any).sessionId === completionSessionId)
-                            const shouldCollapse = (hasWaiting && idleItems.length > 0) || (hasCompletionPopup && allItems.length > 1)
-                            const completionOnly = hasCompletionPopup ? allItems.filter((i) => i.type === 'claude' && (i.data as any).sessionId === completionSessionId) : []
-                            const collapsedItems = hasCompletionPopup
-                              ? (hasWaiting ? workingItems.filter((i) => !(i.type === 'claude' && (i.data as any).sessionId === completionSessionId)) : allItems.filter((i) => !(i.type === 'claude' && (i.data as any).sessionId === completionSessionId)))
-                              : idleItems
-                            const visibleItems = !shouldCollapse ? allItems
-                              : !showIdleSessions ? (hasCompletionPopup ? completionOnly : workingItems)
-                              : allItems
+                            const visibleItems = allItems
                             const elements: React.ReactNode[] = visibleItems.map((item, index) => {
                               if (item.type === 'oc') {
                                 const s = item.data
@@ -2065,7 +2069,7 @@ export default function Mini() {
                                        此面板。包含四个操作按钮：拒绝、允许一次、
                                        全部允许、自动批准。
                                        用途：让用户无需切换到终端即可快速处理权限请求。 */}
-                                    {isWaiting && !cs.isActiveTab && (
+                                    {isWaiting && (
                                       <div className="mt-2">
                                         {cs.tool && (
                                           <div className="flex items-center gap-1.5 mb-2">
@@ -2178,7 +2182,7 @@ export default function Mini() {
                                        任务完成且终端未激活时，显示用户问题和 AI 回复预览，
                                        点击跳转到对应终端。
                                        只有刚完成的 session 才展开弹窗，其余已完成的只显示标题行。 */}
-                                    {!isWaiting && !isWorking && cs.lastResponse && completionSessionId === cs.sessionId && !cs.isActiveTab && (
+                                    {!isWaiting && !isWorking && cs.lastResponse && completionSessionId === cs.sessionId && (
                                       <div
                                         data-no-drag
                                         className="mt-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] cursor-pointer hover:bg-[#222226] transition-colors overflow-hidden"
@@ -2205,34 +2209,6 @@ export default function Mini() {
                                 )
                               }
                             })
-                            if (shouldCollapse && !showIdleSessions && collapsedItems.length > 0) {
-                              elements.push(
-                                <motion.div
-                                  key="idle-toggle"
-                                  initial={{ opacity: 0 }}
-                                  animate={{ opacity: 1 }}
-                                  data-no-drag
-                                  onClick={(e) => { e.stopPropagation(); setShowIdleSessions(true) }}
-                                  className="flex items-center justify-center py-2.5 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                                >
-                                  <span className="text-[12px] text-slate-500">{`其余 ${collapsedItems.length} 个会话`}</span>
-                                </motion.div>,
-                              )
-                            }
-                            if (shouldCollapse && showIdleSessions) {
-                              elements.push(
-                                <motion.div
-                                  key="idle-collapse"
-                                  initial={{ opacity: 0 }}
-                                  animate={{ opacity: 1 }}
-                                  data-no-drag
-                                  onClick={(e) => { e.stopPropagation(); setShowIdleSessions(false) }}
-                                  className="flex items-center justify-center py-2 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                                >
-                                  <span className="text-[12px] text-slate-500">收起</span>
-                                </motion.div>,
-                              )
-                            }
                             return elements
                           })()}
                         </AnimatePresence>
