@@ -3,6 +3,8 @@
 * {
   -webkit-user-select: none;
   user-select: none;
+}
+:root, body {
   cursor: default;
 }
 input, textarea, pre, [contenteditable], .selectable-text, .selectable-text * {

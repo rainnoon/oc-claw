@@ -562,7 +562,9 @@ export default function Mini() {
   const [showIdleSessions, setShowIdleSessions] = useState(false)
   const collapsingRef = useRef(false)
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
-  const [moveMode, setMoveMode] = useState(false)
+  const [moveMode, _setMoveMode] = useState(false)
+  const moveModeRef = useRef(false)
+  const setMoveMode = (v: boolean) => { moveModeRef.current = v; _setMoveMode(v) }
 
   const { t } = useTranslation()
 
@@ -600,6 +602,12 @@ export default function Mini() {
         _setViewMode('efficiency')
         viewModeRef.current = 'efficiency'
         invoke('set_mini_expanded', { expanded: false, position: 'right', efficiency: true }).catch(() => {})
+      }
+      // Restore saved mascot position from a previous drag.
+      const pos = (await store.get('mini_custom_pos')) as { x: number; y: number } | null
+      if (pos) {
+        customPosRef.current = pos
+        invoke('set_mini_origin', pos).catch(() => {})
       }
     })
   }, [])
@@ -1251,10 +1259,14 @@ export default function Mini() {
             document.body.style.cursor = ''
           })
         } else {
-          // Save dragged position (macOS native coordinates)
-          invoke('get_mini_origin').then((pos) => {
+          // Save dragged position (macOS native coordinates) to memory
+          // and persist to settings so it survives restarts.
+          invoke('get_mini_origin').then(async (pos) => {
             const [x, y] = pos as [number, number]
             customPosRef.current = { x, y }
+            const store = await load('settings.json', { defaults: {}, autoSave: true })
+            await store.set('mini_custom_pos', { x, y })
+            await store.save()
           })
         }
       }
@@ -1346,7 +1358,7 @@ export default function Mini() {
   // A Rust-side 50ms poll of NSEvent.mouseLocation emits "efficiency-hover"
   // events which we handle here to open / close the panel on hover.
   useEffect(() => {
-    if (viewMode === 'efficiency') {
+    if (viewMode === 'efficiency' && !moveMode) {
       invoke('set_efficiency_hover_tracking', { active: true }).catch(() => {})
     } else {
       invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
@@ -1354,7 +1366,7 @@ export default function Mini() {
     return () => {
       invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
     }
-  }, [viewMode])
+  }, [viewMode, moveMode])
 
   useEffect(() => {
     if (viewMode !== 'efficiency') return
@@ -1366,8 +1378,8 @@ export default function Mini() {
           clearTimeout(hoverCloseTimerRef.current)
           hoverCloseTimerRef.current = null
         }
-        // If collapsed and not in a transition, expand via hover.
-        if (!expandedRef.current && !collapsingRef.current && !expandingRef.current) {
+        // If collapsed, not in a transition, and not in drag-move mode, expand via hover.
+        if (!expandedRef.current && !collapsingRef.current && !expandingRef.current && !moveModeRef.current) {
           hoverExpandedRef.current = true
           expandFnRef.current?.()
         }
@@ -1388,6 +1400,9 @@ export default function Mini() {
 
   const enterSettings = useCallback(async () => {
     if (settingsModeRef.current || settingsTransitioningRef.current) return
+    // Entering settings is an intentional action — disable hover auto-close
+    // so the panel stays open when the mouse leaves the window.
+    hoverExpandedRef.current = false
     settingsTransitioningRef.current = true
     setSelectedAgentId(null)
     setSelectedClaudeSession(null)
@@ -1535,7 +1550,6 @@ export default function Mini() {
       {!expanded && !hiding && (
         <div
           id="mini-panel"
-          onPointerDown={handleMascotPointerDown}
           onMouseEnter={() => {
             if (!moveMode && viewMode === 'efficiency') {
               hoverExpandedRef.current = true
@@ -1549,13 +1563,14 @@ export default function Mini() {
             alignItems: 'flex-start',
             justifyContent: 'center',
             background: viewMode === 'efficiency' ? 'rgba(0,0,0,0.01)' : undefined,
-            cursor: moveMode ? 'grab' : 'pointer',
             pointerEvents: 'auto',
           }}
         >
           <div
+            onPointerDown={handleMascotPointerDown}
             style={{
               position: 'relative',
+              cursor: moveMode ? 'grab' : 'pointer',
               animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : shouldBob ? 'bob 1.2s ease-in-out infinite' : 'none',
               ...(moveMode
                 ? {

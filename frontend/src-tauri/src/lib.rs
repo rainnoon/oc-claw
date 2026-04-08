@@ -3260,7 +3260,7 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
-async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>) -> Result<(), String> {
+async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, _efficiency: Option<bool>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
 
@@ -3315,18 +3315,14 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         }
                         (x, y, win_w, win_h)
                     } else {
-                        let is_efficiency = efficiency.unwrap_or(false);
-                        let (win_w, win_h, x) = if is_efficiency {
-                            let w = notch_off * 2.0 + 20.0;
-                            let h = 50.0;
-                            let x = sx + (sw - w) / 2.0;
-                            (w, h, x)
-                        } else {
-                            let w = 60.0;
-                            let h = 45.0;
-                            let x = collapsed_x(sx, sw, w, &pos, notch_off);
-                            (w, h, x)
-                        };
+                        // Both efficiency and island mode use the same small
+                        // collapsed window (60×45).  Hover detection for
+                        // efficiency mode is handled by the Rust cursor poll
+                        // which uses its own (wider) notch region, so the
+                        // window itself doesn't need to span the notch.
+                        let win_w = 60.0;
+                        let win_h = 45.0;
+                        let x = collapsed_x(sx, sw, win_w, &pos, notch_off);
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
@@ -3429,7 +3425,7 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
             } else {
                 // When collapsed, use a generous strip across the notch so the
                 // user can hover from either side of the menu bar.
-                let rw = notch_off * 2.0 + 200.0;
+                let rw = notch_off * 2.0 + 60.0;
                 let rh = 50.0;
                 let rx = sx + (sw - rw) / 2.0;
                 let ry = sy + sh - rh;
