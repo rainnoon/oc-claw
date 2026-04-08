@@ -6255,10 +6255,20 @@ fn process_claude_event(
 
                 // Store AI's last response for the completion reminder popup.
                 // Clear on new prompt so stale responses don't linger.
+                // Check at Stop time (real-time, not polling) whether the user
+                // is already looking at this terminal tab. If so, skip setting
+                // last_response so the completion popup never triggers.
                 if hook_event == "Stop" {
-                    session.last_response = event.get("lastResponse")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                    let is_tab_active = session.terminal_id.as_ref()
+                        .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+                        .unwrap_or(false);
+                    if is_tab_active {
+                        session.last_response = None;
+                    } else {
+                        session.last_response = event.get("lastResponse")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                    }
                 } else if hook_event == "UserPromptSubmit" {
                     session.last_response = None;
                 }
