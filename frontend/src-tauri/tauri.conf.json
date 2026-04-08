@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "oc-claw",
-  "version": "1.6.2",
+  "version": "1.6.4",
   "identifier": "com.openclaw.ooclaw",
   "build": {
     "frontendDist": "../dist",
