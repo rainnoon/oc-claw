@@ -29,6 +29,10 @@ When the user references a UI element or component by name (e.g. "the little cha
 - List the candidate files/components that match the description.
 - Ask the user to confirm the correct target before making any changes.
 
+## Efficiency Mode — Reminder Popup (提醒弹窗)
+
+In efficiency mode, when a Claude Code session requires user approval (`PermissionRequest` → `isWaiting`) **and** the session's corresponding terminal tab is not currently active/focused, the panel automatically expands to show a **reminder popup**. The popup displays the tool name, tool input preview, and four action buttons: Deny (拒绝), Allow Once (允许一次), Allow All (全部允许), Auto Approve (自动批准). This lets the user handle permission requests without switching to the terminal. The popup is rendered inline within the efficiency mode session list in `Mini.tsx` (search for "提醒弹窗").
+
 # OpenClaw Data Format
 
 When modifying anything related to OpenClaw session activity detection, health polling, or JSONL parsing:

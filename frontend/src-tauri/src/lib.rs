@@ -4488,6 +4488,10 @@ pub struct ClaudeSession {
     /// Raw permission_suggestions JSON from the PermissionRequest hook event.
     #[serde(rename = "permissionSuggestions", skip_serializing_if = "Option::is_none")]
     pub permission_suggestions: Option<serde_json::Value>,
+    /// AI's last response text (truncated), forwarded from the Stop hook event.
+    /// Shown in the efficiency-mode completion reminder popup.
+    #[serde(rename = "lastResponse", skip_serializing_if = "Option::is_none")]
+    pub last_response: Option<String>,
     /// Ghostty terminal `id` captured when the session is first seen.
     /// Used by `jump_to_claude_terminal` to select the exact tab instead
     /// of relying on CWD/title matching which is ambiguous.
@@ -5881,6 +5885,11 @@ tool_input = input_data.get('tool_input', {})
 if tool_input:
     output['toolInput'] = json.dumps(tool_input)[:200]
 
+if hook_event == 'Stop':
+    msg = input_data.get('last_assistant_message', '')
+    if msg:
+        output['lastResponse'] = msg[:300]
+
 if hook_event == 'PermissionRequest':
     output['permission_suggestions'] = input_data.get('permission_suggestions', [])
 
@@ -6123,6 +6132,7 @@ fn process_claude_event(
                     is_processing: false,
                     pid: None,
                     pending_agents: 0,
+                    last_response: None,
                     permission_suggestions: None,
                     terminal_id: None,
                 });
@@ -6184,6 +6194,16 @@ fn process_claude_event(
                 if hook_event == "Stop" || hook_event == "SubagentStop" {
                     session.tool = None;
                     session.tool_input = None;
+                }
+
+                // Store AI's last response for the completion reminder popup.
+                // Clear on new prompt so stale responses don't linger.
+                if hook_event == "Stop" {
+                    session.last_response = event.get("lastResponse")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                } else if hook_event == "UserPromptSubmit" {
+                    session.last_response = None;
                 }
 
                 if hook_event == "PermissionRequest" {

@@ -545,6 +545,7 @@ export default function Mini() {
   }
   const [hiding, setHiding] = useState(false)
   const [pinned, setPinned] = useState(false)
+  const pinnedRef = useRef(false)
   const [viewMode, _setViewMode] = useState<'island' | 'efficiency'>('island')
   const viewModeRef = useRef<'island' | 'efficiency'>('island')
   const expandedRef = useRef(false)
@@ -1034,9 +1035,30 @@ export default function Mini() {
       setClaudeSessions([])
       return
     }
+    // Track which sessions already had lastResponse so we only auto-expand once.
+    const seenCompletions = new Set<string>()
     const poll = async () => {
       try {
         const sessions = (await invoke('get_claude_sessions')) as any[]
+        // In efficiency mode, auto-expand panel when a session just completed
+        // with an AI response (lastResponse appeared for the first time).
+        if (viewModeRef.current === 'efficiency' && !expandedRef.current && !expandingRef.current && !collapsingRef.current) {
+          for (const s of sessions) {
+            if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId)) {
+              seenCompletions.add(s.sessionId)
+              hoverExpandedRef.current = true
+              setCompletionSessionId(s.sessionId)
+              expandFnRef.current?.()
+              break
+            }
+          }
+        }
+        // Keep seenCompletions in sync: remove sessions that no longer have lastResponse
+        for (const sid of seenCompletions) {
+          if (!sessions.find((s: any) => s.sessionId === sid && s.lastResponse)) {
+            seenCompletions.delete(sid)
+          }
+        }
         setClaudeSessions(sessions)
       } catch {
         /* ignore */
@@ -1188,6 +1210,15 @@ export default function Mini() {
   const expandingRef = useRef(false)
   const expandFnRef = useRef<(() => void) | null>(null)
   const hoverExpandedRef = useRef(false)
+  // Track which session triggered auto-expand on completion, so we can
+  // show only that session's completion popup and collapse the rest.
+  // State drives re-render; ref allows reads from async callbacks.
+  const [completionSessionId, _setCompletionSessionId] = useState<string | null>(null)
+  const completionSessionIdRef = useRef<string | null>(null)
+  const setCompletionSessionId = useCallback((id: string | null) => {
+    completionSessionIdRef.current = id
+    _setCompletionSessionId(id)
+  }, [])
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expand = useCallback(async () => {
     if (collapsingRef.current || expandingRef.current) return
@@ -1212,6 +1243,7 @@ export default function Mini() {
       // Normal mode: click to expand
       if (!moveMode) {
         hoverExpandedRef.current = false
+        setCompletionSessionId(null)
         expand()
         return
       }
@@ -1301,6 +1333,7 @@ export default function Mini() {
     if (collapsingRef.current) return
     collapsingRef.current = true
     hoverExpandedRef.current = false
+    setCompletionSessionId(null)
     if (hoverCloseTimerRef.current) {
       clearTimeout(hoverCloseTimerRef.current)
       hoverCloseTimerRef.current = null
@@ -1384,9 +1417,9 @@ export default function Mini() {
           expandFnRef.current?.()
         }
       } else {
-        // Cursor left the region.  If the panel was hover-opened, schedule
-        // auto-close after a short grace period.
-        if (expandedRef.current && hoverExpandedRef.current) {
+        // Cursor left the region.  If the panel was hover-opened (and not pinned),
+        // schedule auto-close after a short grace period.
+        if (expandedRef.current && hoverExpandedRef.current && !pinnedRef.current) {
           hoverCloseTimerRef.current = setTimeout(() => {
             hoverExpandedRef.current = false
             hoverCloseTimerRef.current = null
@@ -1551,10 +1584,7 @@ export default function Mini() {
         <div
           id="mini-panel"
           onMouseEnter={() => {
-            if (!moveMode && viewMode === 'efficiency') {
-              hoverExpandedRef.current = true
-              expand()
-            }
+            // Hover expand disabled — efficiency mode only opens on click.
           }}
           style={{
             width: '100%',
@@ -1635,7 +1665,7 @@ export default function Mini() {
             }
           }}
           onMouseLeave={() => {
-            if (hoverExpandedRef.current) {
+            if (hoverExpandedRef.current && !pinnedRef.current) {
               hoverCloseTimerRef.current = setTimeout(() => {
                 hoverExpandedRef.current = false
                 hoverCloseTimerRef.current = null
@@ -1691,7 +1721,12 @@ export default function Mini() {
                   data-no-drag
                   onClick={(e) => {
                     e.stopPropagation()
-                    setPinned(!pinned)
+                    const next = !pinned
+                    setPinned(next)
+                    pinnedRef.current = next
+                    // If pinning while hover-opened, upgrade to intentional open
+                    // so mouse-leave won't auto-close.
+                    if (next) hoverExpandedRef.current = false
                   }}
                   className={`transition-colors ${pinned ? 'text-[#F0D140]' : 'text-slate-400 hover:text-slate-200'}`}
                   title={pinned ? t('mini.unpin') : t('mini.pin')}
@@ -1798,7 +1833,7 @@ export default function Mini() {
                     style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
                   >
                     <div className="flex flex-col bg-black" style={{ flex: 1, minHeight: 0 }}>
-                      <div className="flex-1 overflow-y-auto scrollbar-hidden">
+                      <div className="flex-1 overflow-y-auto scrollbar-hidden" onClick={() => { setCompletionSessionId(null) }}>
                         <AnimatePresence mode="popLayout">
                           {(() => {
                             const unified: { type: 'oc'; data: MiniSessionInfo; active: boolean; updatedAt: number }[] = allSessions.map((s) => ({
@@ -1842,8 +1877,16 @@ export default function Mini() {
                               return `${Math.floor(hrs / 24)}d`
                             }
                             const hasWaiting = allItems.some((i) => i.type === 'claude' && (i.data as any).status === 'waiting')
-                            const shouldCollapse = hasWaiting && idleItems.length > 0
-                            const visibleItems = shouldCollapse && !showIdleSessions ? workingItems : allItems
+                            // Collapse others when there's a waiting session OR a just-completed popup
+                            const hasCompletionPopup = !!completionSessionId && allItems.some((i) => i.type === 'claude' && (i.data as any).sessionId === completionSessionId)
+                            const shouldCollapse = (hasWaiting && idleItems.length > 0) || (hasCompletionPopup && allItems.length > 1)
+                            const completionOnly = hasCompletionPopup ? allItems.filter((i) => i.type === 'claude' && (i.data as any).sessionId === completionSessionId) : []
+                            const collapsedItems = hasCompletionPopup
+                              ? (hasWaiting ? workingItems.filter((i) => !(i.type === 'claude' && (i.data as any).sessionId === completionSessionId)) : allItems.filter((i) => !(i.type === 'claude' && (i.data as any).sessionId === completionSessionId)))
+                              : idleItems
+                            const visibleItems = !shouldCollapse ? allItems
+                              : !showIdleSessions ? (hasCompletionPopup ? completionOnly : workingItems)
+                              : allItems
                             const elements: React.ReactNode[] = visibleItems.map((item, index) => {
                               if (item.type === 'oc') {
                                 const s = item.data
@@ -2015,73 +2058,144 @@ export default function Mini() {
                                         </div>
                                       </div>
                                     </div>
+                                    {/* ── 提醒弹窗 (Reminder Popup) ──
+                                       在效率模式下，当 CC session 需要用户批准
+                                       (PermissionRequest → isWaiting) 且该 session
+                                       对应的终端 tab 不在当前激活状态时，自动弹出
+                                       此面板。包含四个操作按钮：拒绝、允许一次、
+                                       全部允许、自动批准。
+                                       用途：让用户无需切换到终端即可快速处理权限请求。 */}
                                     {isWaiting && (
                                       <div className="mt-2">
                                         {cs.tool && (
                                           <div className="flex items-center gap-1.5 mb-2">
                                             <span className="text-amber-400 text-[12px]">⚠</span>
-                                            <span className="text-amber-400 text-[12px] font-normal">{cs.tool}</span>
+                                            <span className="text-amber-400 text-[12px] font-bold">{cs.tool}</span>
                                           </div>
                                         )}
                                         {cs.toolInput &&
                                           (() => {
                                             try {
                                               const input = JSON.parse(cs.toolInput)
-                                              const preview = input.command || input.file_path || input.content?.slice(0, 100) || cs.toolInput.slice(0, 100)
+                                              // Write/Edit: show file name + numbered code lines
+                                              if ((cs.tool === 'Write' || cs.tool === 'Edit') && (input.file_path || input.content)) {
+                                                const fileName = input.file_path ? input.file_path.split('/').pop() : ''
+                                                const isNew = cs.tool === 'Write'
+                                                const content = input.content || input.new_string || input.old_string || ''
+                                                const lines = content.split('\n').slice(0, 12)
+                                                return (
+                                                  <div className="mb-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-hidden">
+                                                    {fileName && (
+                                                      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#2a2a2e]">
+                                                        <span className="text-[12px] text-slate-300 font-mono">{fileName}</span>
+                                                        {isNew && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400">{t('mini.newFile', '新文件')}</span>}
+                                                      </div>
+                                                    )}
+                                                    <div className="px-3 py-2 max-h-[140px] overflow-hidden">
+                                                      {lines.map((line: string, i: number) => (
+                                                        <div key={i} className="flex gap-3 leading-[1.6]">
+                                                          <span className="text-[11px] text-slate-600 font-mono select-none w-5 text-right shrink-0">{i + 1}</span>
+                                                          <pre className="text-[11px] text-slate-300 font-mono whitespace-pre-wrap break-all">{line || ' '}</pre>
+                                                        </div>
+                                                      ))}
+                                                    </div>
+                                                  </div>
+                                                )
+                                              }
+                                              // Bash: show command
+                                              if (cs.tool === 'Bash' && input.command) {
+                                                return (
+                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
+                                                    <pre className="text-[11px] text-slate-300 font-mono whitespace-pre-wrap break-all leading-tight">{input.command}</pre>
+                                                  </div>
+                                                )
+                                              }
+                                              // Fallback: show parsed fields
+                                              const preview = input.command || input.file_path || input.content?.slice(0, 150) || cs.toolInput.slice(0, 150)
                                               return (
-                                                <div className="mb-2 p-2 rounded bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
+                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
                                                   <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{preview}</pre>
                                                 </div>
                                               )
                                             } catch {
                                               return (
-                                                <div className="mb-2 p-2 rounded bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
-                                                  <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{cs.toolInput.slice(0, 100)}</pre>
+                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
+                                                  <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{cs.toolInput.slice(0, 150)}</pre>
                                                 </div>
                                               )
                                             }
                                           })()}
                                         <div className="flex gap-2">
+                                          {(() => {
+                                            // Immediately clear the waiting state locally so
+                                            // the permission popup closes without waiting for
+                                            // the next 2s poll cycle.
+                                            const resolvePermission = (decision: string) => {
+                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision }).catch(() => {})
+                                              // Collapse the panel immediately after permission action
+                                              if (hoverExpandedRef.current) {
+                                                hoverExpandedRef.current = false
+                                                collapse()
+                                              }
+                                            }
+                                            return (<>
                                           <button
                                             data-no-drag
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'deny' }).catch(() => {})
-                                            }}
+                                            onClick={(e) => { e.stopPropagation(); resolvePermission('deny') }}
                                             className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
                                           >
                                             {t('mini.deny', '拒绝')}
                                           </button>
                                           <button
                                             data-no-drag
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'allow_once' }).catch(() => {})
-                                            }}
+                                            onClick={(e) => { e.stopPropagation(); resolvePermission('allow_once') }}
                                             className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
                                           >
                                             {t('mini.allowOnce', '允许一次')}
                                           </button>
                                           <button
                                             data-no-drag
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'allow_all' }).catch(() => {})
-                                            }}
+                                            onClick={(e) => { e.stopPropagation(); resolvePermission('allow_all') }}
                                             className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-emerald-900/50 text-emerald-300 hover:bg-emerald-800/50 transition-colors"
                                           >
                                             {t('mini.allowAll', '全部允许')}
                                           </button>
                                           <button
                                             data-no-drag
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'auto_approve' }).catch(() => {})
-                                            }}
+                                            onClick={(e) => { e.stopPropagation(); resolvePermission('auto_approve') }}
                                             className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-rose-900/50 text-rose-300 hover:bg-rose-800/50 transition-colors"
                                           >
                                             {t('mini.autoApprove', '自动批准')}
                                           </button>
+                                            </>)
+                                          })()}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {/* ── 完成提醒弹窗 (Completion Reminder) ──
+                                       任务完成且终端未激活时，显示用户问题和 AI 回复预览，
+                                       点击跳转到对应终端。
+                                       只有刚完成的 session 才展开弹窗，其余已完成的只显示标题行。 */}
+                                    {!isWaiting && !isWorking && cs.lastResponse && completionSessionId === cs.sessionId && (
+                                      <div
+                                        data-no-drag
+                                        className="mt-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] cursor-pointer hover:bg-[#222226] transition-colors overflow-hidden"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          setCompletionSessionId(null)
+                                          invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                        }}
+                                      >
+                                        {cs.userPrompt && (
+                                          <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a2a2e]">
+                                            <span className="text-[12px] text-slate-300 truncate">
+                                              <span className="text-slate-500">{t('mini.you', '你')}：</span>{cs.userPrompt}
+                                            </span>
+                                            <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
+                                          </div>
+                                        )}
+                                        <div className="px-3 py-2">
+                                          <p className="text-[12px] text-slate-400 line-clamp-3 whitespace-pre-wrap">{cs.lastResponse}</p>
                                         </div>
                                       </div>
                                     )}
@@ -2089,17 +2203,17 @@ export default function Mini() {
                                 )
                               }
                             })
-                            if (shouldCollapse && !showIdleSessions) {
+                            if (shouldCollapse && !showIdleSessions && collapsedItems.length > 0) {
                               elements.push(
                                 <motion.div
                                   key="idle-toggle"
                                   initial={{ opacity: 0 }}
                                   animate={{ opacity: 1 }}
                                   data-no-drag
-                                  onClick={() => setShowIdleSessions(true)}
+                                  onClick={(e) => { e.stopPropagation(); setShowIdleSessions(true) }}
                                   className="flex items-center justify-center py-2.5 hover:bg-white/[0.04] transition-colors cursor-pointer"
                                 >
-                                  <span className="text-[12px] text-slate-500">{`其余 ${idleItems.length} 个 session`}</span>
+                                  <span className="text-[12px] text-slate-500">{`其余 ${collapsedItems.length} 个会话`}</span>
                                 </motion.div>,
                               )
                             }
@@ -2110,7 +2224,7 @@ export default function Mini() {
                                   initial={{ opacity: 0 }}
                                   animate={{ opacity: 1 }}
                                   data-no-drag
-                                  onClick={() => setShowIdleSessions(false)}
+                                  onClick={(e) => { e.stopPropagation(); setShowIdleSessions(false) }}
                                   className="flex items-center justify-center py-2 hover:bg-white/[0.04] transition-colors cursor-pointer"
                                 >
                                   <span className="text-[12px] text-slate-500">收起</span>
