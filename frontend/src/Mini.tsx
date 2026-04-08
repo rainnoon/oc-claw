@@ -1340,6 +1340,52 @@ export default function Mini() {
     }, delay)
   }, [fetchAgents])
 
+  // ── Efficiency-mode notch hover tracking (native cursor polling) ──
+  // On macOS the mini window sits in the menu-bar / notch area where the
+  // system intercepts mouse events, so web-level onMouseEnter never fires.
+  // A Rust-side 50ms poll of NSEvent.mouseLocation emits "efficiency-hover"
+  // events which we handle here to open / close the panel on hover.
+  useEffect(() => {
+    if (viewMode === 'efficiency') {
+      invoke('set_efficiency_hover_tracking', { active: true }).catch(() => {})
+    } else {
+      invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
+    }
+    return () => {
+      invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
+    }
+  }, [viewMode])
+
+  useEffect(() => {
+    if (viewMode !== 'efficiency') return
+    const unlisten = listen<boolean>('efficiency-hover', (event) => {
+      if (event.payload) {
+        // Cursor entered the notch / panel region.
+        // Cancel any pending auto-close timer first.
+        if (hoverCloseTimerRef.current) {
+          clearTimeout(hoverCloseTimerRef.current)
+          hoverCloseTimerRef.current = null
+        }
+        // If collapsed and not in a transition, expand via hover.
+        if (!expandedRef.current && !collapsingRef.current && !expandingRef.current) {
+          hoverExpandedRef.current = true
+          expandFnRef.current?.()
+        }
+      } else {
+        // Cursor left the region.  If the panel was hover-opened, schedule
+        // auto-close after a short grace period.
+        if (expandedRef.current && hoverExpandedRef.current) {
+          hoverCloseTimerRef.current = setTimeout(() => {
+            hoverExpandedRef.current = false
+            hoverCloseTimerRef.current = null
+            collapse()
+          }, 300)
+        }
+      }
+    })
+    return () => { unlisten.then((fn) => fn()) }
+  }, [viewMode, collapse])
+
   const enterSettings = useCallback(async () => {
     if (settingsModeRef.current || settingsTransitioningRef.current) return
     settingsTransitioningRef.current = true

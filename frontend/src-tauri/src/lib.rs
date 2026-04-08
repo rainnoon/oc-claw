@@ -7,6 +7,23 @@ use std::time::SystemTime;
 #[cfg(target_os = "windows")]
 static FULLSCREEN_HIDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use percent_encoding::percent_decode_str;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether the efficiency-mode notch hover tracking thread is running.
+static EFFICIENCY_HOVER_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the mini panel is currently expanded (used by the hover poll to
+/// decide which detection region to check — collapsed notch area vs expanded
+/// panel area).
+static EFFICIENCY_EXPANDED: AtomicBool = AtomicBool::new(false);
+/// Cached screen geometry for the notch hover poll thread so it doesn't need
+/// to access NSWindow from a background thread.
+/// (screen_x, screen_y, screen_width, screen_height, notch_offset)
+static NOTCH_SCREEN_INFO: Mutex<Option<(f64, f64, f64, f64, f64)>> = Mutex::new(None);
+/// Cached mini window frame (x, y, w, h) in macOS screen coordinates
+/// (bottom-left origin).  Updated by `set_mini_expanded` and
+/// `resize_mini_height` so the hover poll can use the real frame size
+/// instead of hard-coded constants.
+static MINI_WINDOW_FRAME: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
 
 /// Per-host SSH backoff state.
 struct SshBackoffState {
@@ -3278,10 +3295,16 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 };
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
+                    // Cache screen geometry for the efficiency hover poll thread.
+                    if let Ok(mut info) = NOTCH_SCREEN_INFO.lock() {
+                        *info = Some((sx, sy, sw, sh, notch_off));
+                    }
+                    EFFICIENCY_EXPANDED.store(expanded, Ordering::SeqCst);
+
                     unsafe {
                         let _: () = msg_send![obj, setLevel: 27isize];
                     }
-                    if expanded {
+                    let (final_x, final_y, final_w, final_h) = if expanded {
                         let win_w = 500.0;
                         let win_h = 400.0;
                         let x = sx + (sw - win_w) / 2.0;
@@ -3290,6 +3313,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
                         }
+                        (x, y, win_w, win_h)
                     } else {
                         let is_efficiency = efficiency.unwrap_or(false);
                         let (win_w, win_h, x) = if is_efficiency {
@@ -3308,6 +3332,11 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
                         }
+                        (x, y, win_w, win_h)
+                    };
+                    // Cache the real window frame for the hover poll thread.
+                    if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                        *f = Some((final_x, final_y, final_w, final_h));
                     }
                 }
             }
@@ -3348,6 +3377,103 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
     Ok(())
 }
 
+/// Start or stop cursor-position polling for efficiency-mode hover detection.
+///
+/// On macOS the mini window sits in the menu-bar / notch area. The system
+/// menu bar intercepts mouse-move events, so the webview never receives
+/// `mouseenter` / `mouseleave` DOM events there.  This command spawns a
+/// lightweight background thread (50 ms poll) that reads `NSEvent.mouseLocation`
+/// and compares it against the notch region (collapsed) or the panel region
+/// (expanded).  It emits `"efficiency-hover"` events (`true` = entered,
+/// `false` = left) so the frontend can open / close the panel.
+#[tauri::command]
+async fn set_efficiency_hover_tracking(app: tauri::AppHandle, active: bool) -> Result<(), String> {
+    let was = EFFICIENCY_HOVER_ACTIVE.swap(active, Ordering::SeqCst);
+    if active && !was {
+        let app2 = app.clone();
+        std::thread::spawn(move || efficiency_hover_poll(app2));
+    }
+    Ok(())
+}
+
+/// Background polling loop for efficiency-mode hover.
+/// Checks the cursor position against two regions:
+///  - **Collapsed**: a wide strip around the notch (notch_off*2 + 200 px,
+///    50 px tall at the top of the screen) — much wider than the actual
+///    window so the user can approach from either side.
+///  - **Expanded**: the panel area (500 × 400 px, top-center).
+fn efficiency_hover_poll(app: tauri::AppHandle) {
+    use std::time::{Duration, Instant};
+    let mut was_inside = false;
+    // Track when we last emitted `true` so we can re-announce periodically.
+    // This is needed because the frontend may ignore the first enter event
+    // while a collapse animation is still in progress (collapsingRef is true).
+    // Without re-announcement the poll sees no state *change* and never
+    // emits again, leaving the panel stuck closed even though the cursor is
+    // in the notch area.
+    let mut last_enter_emit = Instant::now();
+    while EFFICIENCY_HOVER_ACTIVE.load(Ordering::SeqCst) {
+        let info = NOTCH_SCREEN_INFO.lock().ok().and_then(|g| *g);
+        if let Some((sx, sy, sw, sh, notch_off)) = info {
+            let cursor = macos_cursor_position();
+            let is_expanded = EFFICIENCY_EXPANDED.load(Ordering::SeqCst);
+
+            let inside = if is_expanded {
+                // Exact window frame — close as soon as cursor leaves the panel.
+                if let Some((fx, fy, fw, fh)) = MINI_WINDOW_FRAME.lock().ok().and_then(|g| *g) {
+                    cursor.0 >= fx && cursor.0 <= fx + fw
+                        && cursor.1 >= fy && cursor.1 <= fy + fh
+                } else {
+                    false
+                }
+            } else {
+                // When collapsed, use a generous strip across the notch so the
+                // user can hover from either side of the menu bar.
+                let rw = notch_off * 2.0 + 200.0;
+                let rh = 50.0;
+                let rx = sx + (sw - rw) / 2.0;
+                let ry = sy + sh - rh;
+                cursor.0 >= rx && cursor.0 <= rx + rw
+                    && cursor.1 >= ry && cursor.1 <= ry + rh
+            };
+
+            if inside && !was_inside {
+                let _ = app.emit("efficiency-hover", true);
+                last_enter_emit = Instant::now();
+            } else if inside && was_inside && last_enter_emit.elapsed() > Duration::from_millis(300) {
+                // Re-announce so the frontend can act after a collapse transition clears.
+                let _ = app.emit("efficiency-hover", true);
+                last_enter_emit = Instant::now();
+            } else if !inside && was_inside {
+                let _ = app.emit("efficiency-hover", false);
+            }
+            was_inside = inside;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
+/// Read the current mouse cursor position via `[NSEvent mouseLocation]`.
+/// Returns (x, y) in macOS screen coordinates (bottom-left origin).
+#[cfg(target_os = "macos")]
+fn macos_cursor_position() -> (f64, f64) {
+    unsafe {
+        use objc2::msg_send;
+        use objc2_foundation::NSPoint;
+        if let Some(cls) = objc2::runtime::AnyClass::get(c"NSEvent") {
+            let loc: NSPoint = msg_send![cls, mouseLocation];
+            (loc.x, loc.y)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_cursor_position() -> (f64, f64) {
+    (0.0, 0.0)
+}
+
 /// Resize the expanded mini window height while keeping it top-aligned.
 /// macOS: bottom-left origin, so adjust y to keep bottom aligned.
 /// Windows: top-left origin, so just resize height.
@@ -3382,12 +3508,18 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64) -> Result<(), St
                 } else { screen };
                 let sf: NSRect = unsafe { msg_send![&*screen_ptr, frame] };
                 let cur: NSRect = unsafe { msg_send![obj, frame] };
+                let new_y = sf.origin.y + sf.size.height - h;
                 let new_frame = NSRect::new(
-                    NSPoint::new(cur.origin.x, sf.origin.y + sf.size.height - h),
+                    NSPoint::new(cur.origin.x, new_y),
                     NSSize::new(cur.size.width, h),
                 );
                 unsafe {
                     let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: false];
+                }
+                // Keep the hover poll's cached frame in sync with the
+                // actual window size after a dynamic height resize.
+                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                    *f = Some((cur.origin.x, new_y, cur.size.width, h));
                 }
             }
         }).map_err(|e| e.to_string())?;
@@ -6484,7 +6616,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
