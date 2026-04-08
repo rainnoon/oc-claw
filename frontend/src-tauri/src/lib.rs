@@ -4756,6 +4756,266 @@ async fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Activate a macOS app by its name (e.g. "Feishu", "Telegram", "Lark").
+#[tauri::command]
+async fn activate_app(app_name: String) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(r#"tell application "{}" to activate"#, app_name);
+        std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(format!("Activated {}", app_name))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(format!("activate_app not supported on this platform"))
+    }
+}
+
+/// Jump to the terminal running a Claude Code session.
+/// Walks the parent process chain from the given PID to identify the terminal app,
+/// then uses AppleScript (macOS) to activate and focus the matching window.
+#[tauri::command]
+async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, ClaudeState>) -> Result<String, String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions.get(&session_id).ok_or("Session not found")?;
+    let pid = session.pid.ok_or("No PID tracked for this session")?;
+    let cwd = session.cwd.clone();
+    drop(sessions);
+
+    #[cfg(target_os = "macos")]
+    {
+        // Walk parent process chain to find the terminal application
+        let terminal_app = find_terminal_app_for_pid(pid);
+
+        let tty = get_tty_for_pid(pid);
+        let escaped_cwd = cwd.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_tty = tty.as_deref().unwrap_or("").replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_sid = session_id.replace('\\', "\\\\").replace('"', "\\\"");
+
+        match terminal_app.as_deref() {
+            Some("Ghostty" | "ghostty") => {
+                // Ghostty exposes id, working directory, and name (title) per terminal
+                // but NOT tty. Claude Code sets tab titles containing the session ID,
+                // so matching by session ID substring in the title is the most precise.
+                let script = format!(
+                    r#"tell application "Ghostty"
+    if not (it is running) then return ""
+    activate
+
+    set targetWindow to missing value
+    set targetTab to missing value
+    set targetTerminal to missing value
+
+    -- Pass 1: match by session ID in tab title (most precise)
+    if "{sid}" is not "" then
+        repeat with aWindow in windows
+            repeat with aTab in tabs of aWindow
+                repeat with aTerminal in terminals of aTab
+                    try
+                        if (name of aTerminal as text) contains "{sid_prefix}" then
+                            set targetWindow to aWindow
+                            set targetTab to aTab
+                            set targetTerminal to aTerminal
+                            exit repeat
+                        end if
+                    end try
+                end repeat
+                if targetTerminal is not missing value then exit repeat
+            end repeat
+            if targetTerminal is not missing value then exit repeat
+        end repeat
+    end if
+
+    -- Pass 2: match by working directory (fallback for non-Claude tabs)
+    if targetTerminal is missing value and "{cwd}" is not "" then
+        repeat with aWindow in windows
+            repeat with aTab in tabs of aWindow
+                repeat with aTerminal in terminals of aTab
+                    try
+                        if (working directory of aTerminal as text) is "{cwd}" then
+                            set targetWindow to aWindow
+                            set targetTab to aTab
+                            set targetTerminal to aTerminal
+                            exit repeat
+                        end if
+                    end try
+                end repeat
+                if targetTerminal is not missing value then exit repeat
+            end repeat
+            if targetTerminal is not missing value then exit repeat
+        end repeat
+    end if
+
+    if targetTerminal is missing value then return ""
+
+    if targetWindow is not missing value then
+        activate window targetWindow
+        delay 0.04
+    end if
+    if targetTab is not missing value then
+        select tab targetTab
+        delay 0.04
+    end if
+    focus targetTerminal
+    return "matched"
+end tell"#,
+                    sid = escaped_sid,
+                    // Use first 8+ chars of session ID for title matching
+                    sid_prefix = &escaped_sid[..escaped_sid.len().min(12)],
+                    cwd = escaped_cwd,
+                );
+                let _ = std::process::Command::new("osascript")
+                    .args(["-e", &script])
+                    .output();
+                Ok("Jumped to Ghostty".to_string())
+            }
+            Some("iTerm" | "iTerm2" | "iterm2") => {
+                if !escaped_tty.is_empty() {
+                    let script = format!(
+                        r#"tell application "iTerm2"
+    activate
+    repeat with aWindow in windows
+        repeat with aTab in tabs of aWindow
+            repeat with aSession in sessions of aTab
+                if tty of aSession is "{tty}" then
+                    select aSession
+                    tell aWindow to select
+                    return "found"
+                end if
+            end repeat
+        end repeat
+    end repeat
+end tell"#,
+                        tty = escaped_tty
+                    );
+                    let _ = std::process::Command::new("osascript")
+                        .args(["-e", &script])
+                        .output();
+                } else {
+                    let _ = std::process::Command::new("osascript")
+                        .args(["-e", r#"tell application "iTerm2" to activate"#])
+                        .output();
+                }
+                Ok("Jumped to iTerm2".to_string())
+            }
+            Some("Terminal" | "Apple_Terminal") => {
+                if !escaped_tty.is_empty() {
+                    let script = format!(
+                        r#"tell application "Terminal"
+    activate
+    repeat with aWindow in windows
+        repeat with aTab in tabs of aWindow
+            if tty of aTab is "{tty}" then
+                set selected tab of aWindow to aTab
+                set index of aWindow to 1
+                return "found"
+            end if
+        end repeat
+    end repeat
+end tell"#,
+                        tty = escaped_tty
+                    );
+                    let _ = std::process::Command::new("osascript")
+                        .args(["-e", &script])
+                        .output();
+                } else {
+                    let _ = std::process::Command::new("osascript")
+                        .args(["-e", r#"tell application "Terminal" to activate"#])
+                        .output();
+                }
+                Ok("Jumped to Terminal.app".to_string())
+            }
+            Some(app_name) => {
+                let script = format!(
+                    r#"tell application "{}" to activate"#,
+                    app_name.replace('"', "\\\"")
+                );
+                let _ = std::process::Command::new("osascript")
+                    .args(["-e", &script])
+                    .output();
+                Ok(format!("Jumped to {}", app_name))
+            }
+            None => {
+                if !cwd.is_empty() {
+                    let _ = std::process::Command::new("open").arg(&cwd).spawn();
+                }
+                Err("Could not identify the terminal application".to_string())
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // On Windows/Linux, try to open the working directory
+        if !cwd.is_empty() {
+            let _ = std::process::Command::new("open").arg(&cwd).spawn();
+        }
+        Ok("Opened working directory".to_string())
+    }
+}
+
+/// Walk the parent process chain to find the terminal app name.
+/// Returns the process name of the first recognized terminal emulator.
+#[cfg(target_os = "macos")]
+fn find_terminal_app_for_pid(pid: u32) -> Option<String> {
+    let known_terminals = [
+        "Ghostty", "ghostty",
+        "iTerm2", "iterm2",
+        "Terminal", "Apple_Terminal",
+        "WezTerm", "wezterm-gui",
+        "Warp", "warp",
+        "kitty",
+        "Alacritty", "alacritty",
+        "kaku",
+    ];
+
+    let mut current_pid = pid;
+    for _ in 0..20 {
+        let output = std::process::Command::new("ps")
+            .args(["-p", &current_pid.to_string(), "-o", "ppid=,comm="])
+            .output()
+            .ok()?;
+        let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if line.is_empty() { return None; }
+
+        let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
+        if parts.len() < 2 { return None; }
+
+        let ppid: u32 = parts[0].trim().parse().ok()?;
+        let comm = parts[1].trim();
+        // Extract basename from full path
+        let name = comm.rsplit('/').next().unwrap_or(comm);
+
+        if known_terminals.iter().any(|t| name.eq_ignore_ascii_case(t)) {
+            return Some(name.to_string());
+        }
+
+        if ppid <= 1 { return None; }
+        current_pid = ppid;
+    }
+    None
+}
+
+/// Get the TTY device path for a given PID.
+#[cfg(target_os = "macos")]
+fn get_tty_for_pid(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "tty="])
+        .output()
+        .ok()?;
+    let tty = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if tty.is_empty() || tty == "??" { return None; }
+    // Normalize: ps outputs like "ttys003", convert to "/dev/ttys003"
+    if tty.starts_with("/dev/") {
+        Some(tty)
+    } else {
+        Some(format!("/dev/{}", tty))
+    }
+}
+
 /// Check for updates by fetching the version manifest from the official website.
 /// The manifest is a static JSON file hosted on Vercel at /update/latest.json,
 /// which is manually updated on each release — giving us full control over
@@ -6038,7 +6298,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, get_claude_stats, open_url, activate_app, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

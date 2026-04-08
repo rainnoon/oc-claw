@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud } from 'lucide-react'
+import { ChevronDown, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud, PanelLeft, Rows } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
@@ -482,6 +482,7 @@ export default function Mini() {
   const setIsCreateModalOpen = (v: boolean) => { isCreateModalOpenRef.current = v; _setIsCreateModalOpen(v) }
   const [hiding, setHiding] = useState(false)
   const [pinned, setPinned] = useState(false)
+  const [viewMode, setViewMode] = useState<'island' | 'list'>('island')
   const collapsingRef = useRef(false)
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
   const [moveMode, setMoveMode] = useState(false)
@@ -1374,6 +1375,13 @@ export default function Mini() {
                   </button>
                 )}
                 <button data-no-drag
+                  onClick={(e) => { e.stopPropagation(); setViewMode(v => v === 'island' ? 'list' : 'island') }}
+                  className="text-slate-400 hover:text-[#F0D140] transition-colors"
+                  title={viewMode === 'island' ? 'List View' : 'Island View'}
+                >
+                  {viewMode === 'island' ? <Rows className="w-4 h-4" strokeWidth={2.5} /> : <PanelLeft className="w-4 h-4" strokeWidth={2.5} />}
+                </button>
+                <button data-no-drag
                   onClick={async (e) => {
                     e.stopPropagation()
                     const next = !soundEnabled
@@ -1433,6 +1441,211 @@ export default function Mini() {
             {/* ===== Normal content (always rendered when expanded) ===== */}
               <AnimatePresence mode="wait">
               {(!inAgentDetail && !selectedClaudeSession && !selectedSessionKey && !showClaudeStats) ? (
+              viewMode === 'list' ? (
+              /* ===== List View: anime-process-manager style ===== */
+              <motion.div key="list-view"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+              >
+                <div className="flex flex-col bg-black" style={{ flex: 1, minHeight: 0 }}>
+                  <div className="flex-1 overflow-y-auto scrollbar-hidden">
+                    <AnimatePresence mode="popLayout">
+                    {(() => {
+                      const unified: { type: 'oc', data: MiniSessionInfo, active: boolean, updatedAt: number }[] = allSessions.map(s => ({ type: 'oc' as const, data: s, active: s.active, updatedAt: s.updatedAt }))
+                      const claudeUnified = claudeSessions.map(cs => ({ type: 'claude' as const, data: cs, active: cs.status === 'processing' || cs.status === 'tool_running', updatedAt: cs.updatedAt || 0 }))
+                      const merged = [...unified, ...claudeUnified].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
+
+                      if (merged.length === 0) {
+                        return (
+                          <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            className="text-center py-10 px-4 flex flex-col items-center gap-2.5"
+                          >
+                            {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
+                          </motion.div>
+                        )
+                      }
+
+                      const agentSeqCount: Record<string, number> = {}
+                      const formatTimeAgo = (ts: number) => {
+                        if (!ts) return ''
+                        const diff = Date.now() - ts
+                        const mins = Math.floor(diff / 60000)
+                        if (mins < 1) return '<1m'
+                        if (mins < 60) return `${mins}m`
+                        const hrs = Math.floor(mins / 60)
+                        if (hrs < 24) return `${hrs}h`
+                        return `${Math.floor(hrs / 24)}d`
+                      }
+                      return merged.map((item, index) => {
+                        if (item.type === 'oc') {
+                          const s = item.data
+                          const agent = agents.find(a => a.id === s.agentId)
+                          const seq = (agentSeqCount[s.agentId] = (agentSeqCount[s.agentId] || 0) + 1)
+                          const agentName = `${agent?.identityEmoji || ''} ${agent?.identityName || s.agentId}`.trim()
+                          const charName = agentCharMap[s.agentId]
+                          const charMeta = characters.find(c => c.name === charName)
+                          const gif = charMeta ? getMiniGif(charMeta, s.active ? 'working' : 'idle') : undefined
+                          const title = `${agentName} #${seq}`
+                          const subtitle = s.lastUserMsg || ''
+                          const timeAgo = formatTimeAgo(s.updatedAt)
+                          const isWorking = s.active
+                          return (
+                            <motion.div
+                              key={`list-oc-${s.agentId}-${s.key}`}
+                              layout
+                              initial={{ opacity: 0, x: -10 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              exit={{ opacity: 0, filter: 'blur(4px)' }}
+                              transition={{ duration: 0.2, delay: index * 0.05 }}
+                              data-no-drag
+                              onClick={() => {
+                                const ch = (s.channel || '').toLowerCase()
+                                const appName = ch.includes('feishu') || ch.includes('lark') ? 'Lark'
+                                  : ch.includes('telegram') ? 'Telegram'
+                                  : ch.includes('discord') ? 'Discord'
+                                  : ch.includes('slack') ? 'Slack'
+                                  : ch.includes('wechat') || ch.includes('weixin') ? 'WeChat'
+                                  : null
+                                if (appName) {
+                                  invoke('activate_app', { appName }).catch((err: unknown) => console.warn('activate failed:', err))
+                                }
+                              }}
+                              className="group flex items-center gap-3 px-4 border-b border-[#1f1f24] last:border-0 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                              style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
+                            >
+                              {isWorking && (
+                                <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
+                                  {gif ? (
+                                    <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
+                                  ) : (
+                                    <span className="text-white/40 text-lg">{agent?.identityEmoji || '?'}</span>
+                                  )}
+                                  <div style={{
+                                    position: 'absolute', bottom: 0, right: 0,
+                                    width: 8, height: 8, borderRadius: '50%',
+                                    background: '#2ecc71',
+                                    border: '1.5px solid rgba(0,0,0,0.3)',
+                                  }} />
+                                </div>
+                              )}
+                              {!isWorking && (
+                                <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                                </div>
+                              )}
+                              <div className="flex min-w-0 flex-1 items-center gap-2">
+                                <span className={`text-[13px] font-bold truncate ${isWorking ? 'text-slate-200' : 'text-slate-400'}`}>
+                                  {title}{subtitle ? ` · ${subtitle}` : ''}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {s.channel && (
+                                  <span className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-[#27272a] text-slate-300">
+                                    {s.channel}
+                                  </span>
+                                )}
+                                <span className="text-[11px] text-slate-500 font-medium group-hover:hidden">{timeAgo}</span>
+                                <button
+                                  data-no-drag
+                                  onClick={(e) => { e.stopPropagation(); dismissedSessionsRef.current.set(`${s.agentId}:${s.key}`, s.updatedAt); setAllSessions(prev => prev.filter(ss => !(ss.agentId === s.agentId && ss.key === s.key))) }}
+                                  className="hidden group-hover:block text-slate-500 hover:text-rose-500 transition-colors outline-none"
+                                  title={t('mini.remove')}
+                                >
+                                  <X className="w-3.5 h-3.5" strokeWidth={2.5} />
+                                </button>
+                              </div>
+                            </motion.div>
+                          )
+                        } else {
+                          const cs = item.data
+                          const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                          const isActive = item.active
+                          const isWaiting = cs.status === 'waiting'
+                          const isCompacting = cs.status === 'compacting'
+                          const isWorking = isActive || isWaiting || isCompacting
+                          const charMeta = characters.find(c => c.name === claudeCharName)
+                          const gif = charMeta ? getMiniGif(charMeta, isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle') : undefined
+                          const subtitle = cs.userPrompt || ''
+                          const timeAgo = formatTimeAgo(cs.updatedAt || 0)
+                          return (
+                            <motion.div
+                              key={`list-claude-${cs.sessionId}`}
+                              layout
+                              initial={{ opacity: 0, x: -10 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              exit={{ opacity: 0, filter: 'blur(4px)' }}
+                              transition={{ duration: 0.2, delay: index * 0.05 }}
+                              data-no-drag
+                              onClick={() => {
+                                invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
+                              }}
+                              className="group flex items-center gap-3 border-b border-[#1f1f24] last:border-0 hover:bg-white/[0.04] transition-colors cursor-pointer"
+                              style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
+                            >
+                              {isWorking && (
+                                <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
+                                  {gif ? (
+                                    <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
+                                  ) : (
+                                    <span className="text-white/40 text-lg">🤖</span>
+                                  )}
+                                  <div style={{
+                                    position: 'absolute', bottom: 0, right: 0,
+                                    width: 8, height: 8, borderRadius: '50%',
+                                    background: isWaiting ? '#f59e0b' : '#2ecc71',
+                                    border: '1.5px solid rgba(0,0,0,0.3)',
+                                  }} />
+                                </div>
+                              )}
+                              {!isWorking && (
+                                <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                                </div>
+                              )}
+                              <div className="flex min-w-0 flex-1 items-center gap-2">
+                                <span className={`text-[13px] font-bold truncate ${isWorking ? 'text-slate-200' : 'text-slate-400'}`}>
+                                  {projectName}{subtitle ? ` · ${subtitle}` : ''}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-[#3f211d] text-[#e87a65]">
+                                  Claude
+                                </span>
+                                <span className="text-[11px] text-slate-500 font-medium group-hover:hidden">{timeAgo}</span>
+                                <button
+                                  data-no-drag
+                                  onClick={(e) => { e.stopPropagation(); invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {}); setClaudeSessions(prev => prev.filter(s => s.sessionId !== cs.sessionId)) }}
+                                  className="hidden group-hover:block text-slate-500 hover:text-rose-500 transition-colors outline-none"
+                                  title={t('mini.remove')}
+                                >
+                                  <X className="w-3.5 h-3.5" strokeWidth={2.5} />
+                                </button>
+                              </div>
+                            </motion.div>
+                          )
+                        }
+                      })
+                    })()}
+                    </AnimatePresence>
+                  </div>
+                  {/* Footer */}
+                  <div className="mt-auto pt-1.5 pb-1 flex justify-center items-center select-none">
+                    <span
+                      data-no-drag
+                      onClick={() => invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' })}
+                      className="text-[10px] font-black tracking-[0.25em] text-slate-500 uppercase cursor-pointer hover:text-slate-300 transition-colors"
+                    >
+                      oc–claw.ai
+                    </span>
+                  </div>
+                </div>
+              </motion.div>
+              ) : (
               /* ===== Normal: character island + sessions ===== */
               <motion.div key="main"
                 initial={{ opacity: 0 }}
@@ -1708,6 +1921,7 @@ export default function Mini() {
                   </div>
                 </div>
               </motion.div>
+              )
             ) : selectedSessionKey ? (
               /* ===== OpenClaw session chat ===== */
               <motion.div key="oc-chat"
