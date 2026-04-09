@@ -1268,7 +1268,12 @@ export default function Mini() {
     expandingRef.current = true
     setHiding(true)
     await new Promise<void>((r) => setTimeout(r, 50))
-    await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current, maxHeight: panelMaxHeightRef.current })
+    await invoke('set_mini_expanded', {
+      expanded: true,
+      position: mascotPositionRef.current,
+      efficiency: viewModeRef.current === 'efficiency',
+      maxHeight: panelMaxHeightRef.current,
+    })
     setHiding(false)
     setExpanded(true)
     expandedRef.current = true
@@ -1516,7 +1521,12 @@ export default function Mini() {
     setEnableCursor(cur !== false)
     fetchAgents()
     try {
-      await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current, maxHeight: panelMaxHeightRef.current })
+      await invoke('set_mini_expanded', {
+        expanded: true,
+        position: mascotPositionRef.current,
+        efficiency: viewModeRef.current === 'efficiency',
+        maxHeight: panelMaxHeightRef.current,
+      })
     } catch {}
     setSettingsTransitioning(false)
     settingsTransitioningRef.current = false
@@ -1610,10 +1620,9 @@ export default function Mini() {
   const inAgentDetail = selectedAgentId !== null
   const selectedAgent = agents.find((a) => a.id === selectedAgentId)
 
-  // Panel dimensions — CSS uses fixed base sizes (380/400); on Windows high-DPI
-  // screens the panel root applies `zoom: uiScale` so all content (text, icons,
-  // spacing) scales uniformly to match the Rust-side window enlargement.
-  const panelW = 475
+  // Panel dimensions — CSS uses fixed base sizes; on Windows high-DPI screens
+  // the panel root applies `zoom: uiScale` so all content scales uniformly.
+  const panelW = viewMode === 'efficiency' ? 575 : 475
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -2022,7 +2031,7 @@ export default function Mini() {
                                       }
                                     }}
                                     className="group flex items-center gap-3 px-4 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                                    style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
+                                    style={{ padding: '10px 16px' }}
                                   >
                                     {isWorking && (
                                       <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
@@ -2047,7 +2056,7 @@ export default function Mini() {
                                     )}
                                     {!isWorking && (
                                       <div className="shrink-0 flex items-center justify-center w-10">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                                        <span className="w-1 h-1 rounded-full bg-slate-600" />
                                       </div>
                                     )}
                                     <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -2109,7 +2118,7 @@ export default function Mini() {
                                       }
                                     }}
                                     className={`group hover:bg-white/[0.04] transition-colors ${isWaiting ? '' : 'cursor-pointer'}`}
-                                    style={{ padding: showCharGif ? '10px 16px' : '8px 16px' }}
+                                    style={{ padding: '10px 16px' }}
                                   >
                                     <div className="flex items-center gap-3">
                                       {showCharGif && (
@@ -2135,7 +2144,7 @@ export default function Mini() {
                                       )}
                                       {!showCharGif && (
                                         <div className="shrink-0 flex items-center justify-center w-10">
-                                          <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                                          <span className="w-1 h-1 rounded-full bg-slate-600" />
                                         </div>
                                       )}
                                       <div className="flex min-w-0 flex-1 items-center gap-1.5">

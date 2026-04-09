@@ -3262,7 +3262,7 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
-async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, _efficiency: Option<bool>, max_height: Option<f64>) -> Result<(), String> {
+async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>, max_height: Option<f64>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
 
@@ -3307,7 +3307,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         let _: () = msg_send![obj, setLevel: 27isize];
                     }
                     let (final_x, final_y, final_w, final_h) = if expanded {
-                        let win_w = 500.0;
+                        let win_w = if efficiency.unwrap_or(false) { 600.0 } else { 500.0 };
                         let win_h = max_height.unwrap_or(350.0).max(200.0).min(500.0);
                         let x = sx + (sw - win_w) / 2.0;
                         let y = sy + sh - win_h;
@@ -3360,7 +3360,8 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
             let sw = monitor.size().width as f64 / scale;
             let ui = win_ui_scale(&monitor);
             if expanded {
-                let win_w = (500.0 * ui).round();
+                let base_w = if efficiency.unwrap_or(false) { 600.0 } else { 500.0 };
+                let win_w = (base_w * ui).round();
                 let win_h = (400.0 * ui).round();
                 let x = mx + (sw - win_w) / 2.0;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
