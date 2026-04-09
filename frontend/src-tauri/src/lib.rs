@@ -4694,6 +4694,30 @@ fn get_active_ghostty_terminal_id() -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 fn get_active_ghostty_terminal_id() -> Option<String> { None }
 
+/// Check if the user is actively looking at Cursor. Returns true if the
+/// frontmost app is Cursor or oc-claw (our notch panel steals focus).
+/// Uses NSWorkspace via osascript — no Accessibility permission required.
+#[cfg(target_os = "macos")]
+fn is_cursor_active() -> bool {
+    let script = r#"
+        set appName to short name of (info for (path to frontmost application))
+        return appName
+    "#;
+    let output = std::process::Command::new("osascript")
+        .arg("-e").arg(script)
+        .output();
+    match output {
+        Ok(o) => {
+            let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            name == "Cursor" || name == "oc-claw"
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_cursor_active() -> bool { false }
+
 #[tauri::command]
 async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec<ClaudeSession>, String> {
     // Stale session guard: if the CC process was killed (Ctrl+C / SIGKILL)
@@ -4701,19 +4725,35 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     // processing, tool_running, compacting) would get stuck forever.
     // Check PID liveness for all non-terminal statuses and clear to "stopped".
     // Uses per-session PID tracking + kill(pid, 0) — a zero-cost syscall.
+    //
+    // Cursor sessions use a different strategy: Cursor's hook processes are
+    // short-lived (one per event), so $PPID dies immediately after each hook.
+    // Instead of PID-alive checks, use a timeout: if no event arrives within
+    // 120s, assume Cursor has stopped working.
     {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         for session in sessions.values_mut() {
             let dominated = matches!(session.status.as_str(),
                 "waiting" | "processing" | "tool_running" | "compacting");
-            if dominated {
+            if !dominated { continue; }
+
+            if session.source == "cursor" {
+                // Cursor: timeout-based staleness (120s without any event update)
+                let age_ms = now_ms.saturating_sub(session.updated_at);
+                if age_ms > 120_000 {
+                    log::info!("[get_claude_sessions] Cursor session {} stale ({}ms since last event), clearing {}",
+                        session.session_id, age_ms, session.status);
+                    session.status = "stopped".to_string();
+                    session.pending_agents = 0;
+                }
+            } else {
+                // CC: PID-alive check
                 if let Some(pid) = session.pid {
                     if !is_pid_alive(pid) {
                         log::info!("[get_claude_sessions] CC pid {} dead, clearing {} for {}", pid, session.status, session.session_id);
                         session.status = "stopped".to_string();
-                        // Reset pending_agents so future Stop events aren't
-                        // permanently suppressed (SubagentStop will never arrive
-                        // from a dead CC process).
                         session.pending_agents = 0;
                     }
                 }
@@ -4729,10 +4769,14 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
         .filter(|s| !s.cwd.is_empty())
         .cloned()
         .collect();
-    // Mark the session whose terminal tab is currently focused
+    // Only mark CC sessions' active tab via Ghostty terminal ID.
+    // Cursor sessions set is_active_tab at Stop time (in process_claude_event)
+    // to avoid running AppleScript on every 2s poll.
     if let Some(ref tid) = active_tid {
         for s in &mut list {
-            s.is_active_tab = s.terminal_id.as_deref() == Some(tid.as_str());
+            if s.source != "cursor" {
+                s.is_active_tab = s.terminal_id.as_deref() == Some(tid.as_str());
+            }
         }
     }
     list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -6116,18 +6160,25 @@ fn process_claude_event(
 
         let raw_hook_event = event.get("event").or_else(|| event.get("hook_event_name"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
-        // Normalize Cursor's camelCase event names to CC's PascalCase
+        // Normalize Cursor's camelCase event names to CC's PascalCase.
+        // Cursor and CC have different hook event sets:
+        //   Cursor: beforeSubmitPrompt, stop, beforeShellExecution, afterShellExecution,
+        //           beforeMCPExecution, afterMCPExecution, afterFileEdit, beforeReadFile,
+        //           afterAgentThought, afterAgentResponse
+        //   CC:     UserPromptSubmit, Stop, PreToolUse, PostToolUse, SessionStart, etc.
         let hook_event = match raw_hook_event.as_str() {
             "beforeSubmitPrompt" => "UserPromptSubmit".to_string(),
             "sessionStart" => "SessionStart".to_string(),
             "sessionEnd" => "SessionEnd".to_string(),
             "preToolUse" => "PreToolUse".to_string(),
-            "postToolUse" => "PostToolUse".to_string(),
-            "postToolUseFailure" => "PostToolUse".to_string(),
-            "subagentStart" => "PreToolUse".to_string(), // treat as Agent tool start
+            "postToolUse" | "postToolUseFailure" => "PostToolUse".to_string(),
+            "subagentStart" => "PreToolUse".to_string(),
             "subagentStop" => "SubagentStop".to_string(),
             "preCompact" => "PreCompact".to_string(),
-            "afterAgentThought" => "PostToolUse".to_string(), // treat as processing
+            // Cursor-specific tool events → map to PreToolUse/PostToolUse
+            "beforeShellExecution" | "beforeMCPExecution" | "beforeReadFile" => "PreToolUse".to_string(),
+            "afterShellExecution" | "afterMCPExecution" | "afterFileEdit" => "PostToolUse".to_string(),
+            "afterAgentThought" | "afterAgentResponse" => "PostToolUse".to_string(),
             "stop" => "Stop".to_string(),
             other => other.to_string(),
         };
@@ -6283,15 +6334,31 @@ fn process_claude_event(
                 // is already looking at this terminal tab. If so, skip setting
                 // last_response so the completion popup never triggers.
                 if hook_event == "Stop" {
-                    let is_tab_active = session.terminal_id.as_ref()
-                        .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
-                        .unwrap_or(false);
+                    // CC: check if the user is looking at this session's Ghostty tab
+                    // Cursor: check if Cursor (or oc-claw) is the frontmost app
+                    let is_tab_active = if session.source == "cursor" {
+                        is_cursor_active()
+                    } else {
+                        session.terminal_id.as_ref()
+                            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+                            .unwrap_or(false)
+                    };
                     if is_tab_active {
                         session.last_response = None;
                     } else {
-                        session.last_response = event.get("lastResponse")
+                        let resp = event.get("lastResponse")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
+                        // Cursor's stop event doesn't include last_assistant_message,
+                        // but we still want to trigger the completion popup.
+                        // Use a placeholder so the frontend's lastResponse check passes.
+                        session.last_response = resp.or_else(|| {
+                            if session.source == "cursor" {
+                                Some("✓".to_string())
+                            } else {
+                                None
+                            }
+                        });
                     }
                 } else if hook_event == "UserPromptSubmit" {
                     session.last_response = None;
@@ -6398,29 +6465,43 @@ output['source'] = 'cursor'
 if cwd:
     output['cwd'] = cwd
 
-# Map tool info
+# Map tool info — Cursor events use different field names than CC:
+#   beforeShellExecution: command, cwd
+#   beforeMCPExecution: tool_name, tool_input
+#   afterFileEdit: file_path, edits
+#   beforeReadFile: file_path, content
 tool_name = input_data.get('tool_name', '')
-if tool_name:
+if hook_event == 'beforeShellExecution' or hook_event == 'afterShellExecution':
+    output['tool'] = 'Shell'
+    cmd = input_data.get('command', '')
+    if cmd:
+        output['toolInput'] = json.dumps({{'command': cmd[:500]}})
+elif hook_event in ('beforeMCPExecution', 'afterMCPExecution'):
+    output['tool'] = tool_name or 'MCP'
+    ti = input_data.get('tool_input', {{}})
+    if ti:
+        output['toolInput'] = json.dumps(ti)[:300]
+elif hook_event == 'afterFileEdit':
+    output['tool'] = 'Edit'
+    fp = input_data.get('file_path', '')
+    edits = input_data.get('edits', [])
+    slim = {{}}
+    if fp:
+        slim['file_path'] = fp
+    if edits:
+        combined = '\\n'.join(e.get('new_string', '')[:1000] for e in edits[:3])
+        slim['content'] = combined[:5000]
+    output['toolInput'] = json.dumps(slim)
+elif hook_event == 'beforeReadFile':
+    output['tool'] = 'Read'
+    fp = input_data.get('file_path', '')
+    if fp:
+        output['toolInput'] = json.dumps({{'file_path': fp}})
+elif tool_name:
     output['tool'] = tool_name
-
-tool_input = input_data.get('tool_input', {{}})
-if tool_input:
-    tn = tool_name
-    if tn in ('Write', 'Edit'):
-        slim = {{}}
-        if tool_input.get('file_path'):
-            slim['file_path'] = tool_input['file_path']
-        c = tool_input.get('content') or tool_input.get('new_string') or tool_input.get('old_string') or ''
-        if c:
-            slim['content'] = c[:5000]
-        output['toolInput'] = json.dumps(slim)
-    elif tn == 'Bash' or tn == 'Shell':
-        slim = {{}}
-        if tool_input.get('command'):
-            slim['command'] = tool_input['command'][:500]
-        output['toolInput'] = json.dumps(slim)
-    else:
-        output['toolInput'] = json.dumps(tool_input)[:300]
+    ti = input_data.get('tool_input', {{}})
+    if ti:
+        output['toolInput'] = json.dumps(ti)[:300]
 
 # Stop event: extract status and last response
 if hook_event == 'stop':
@@ -6455,9 +6536,15 @@ try:
 except:
     pass
 
-# Required stdout for Cursor: beforeSubmitPrompt is a gating hook
+# Required stdout for Cursor:
+#   beforeSubmitPrompt → gating hook, needs {{'continue': true}}
+#   beforeShellExecution, beforeMCPExecution → permission hooks, need {{'permission': 'allow'}}
+#   beforeReadFile → permission hook, needs {{'permission': 'allow'}}
+#   everything else → {{}}
 if hook_event == 'beforeSubmitPrompt':
     print(json.dumps({{'continue': True}}))
+elif hook_event in ('beforeShellExecution', 'beforeMCPExecution', 'beforeReadFile'):
+    print(json.dumps({{'permission': 'allow'}}))
 else:
     print('{{}}')
 "
@@ -6495,6 +6582,8 @@ try {
     $hookName = ($raw | ConvertFrom-Json).hook_event_name
     if ($hookName -eq 'beforeSubmitPrompt') {
         Write-Output '{"continue":true}'
+    } elseif ($hookName -eq 'beforeShellExecution' -or $hookName -eq 'beforeMCPExecution' -or $hookName -eq 'beforeReadFile') {
+        Write-Output '{"permission":"allow"}'
     } else {
         Write-Output '{}'
     }
@@ -6527,22 +6616,46 @@ try {
     let hook_command = format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
         hooks_dir.join("occlaw-cursor-hook.ps1").to_string_lossy());
 
+    // Cursor's actual supported hook events (as of 2026-04):
+    // - beforeShellExecution, beforeMCPExecution: permission hooks (need {"permission":"allow"})
+    // - afterFileEdit, beforeReadFile: notification hooks
+    // - beforeSubmitPrompt: gating hook (needs {"continue":true})
+    // - stop: notification hook
+    // NOTE: preToolUse/postToolUse/sessionStart/sessionEnd/subagentStart/subagentStop
+    // are NOT supported by Cursor — those are Claude Code events.
     let cursor_events = [
-        "sessionStart", "sessionEnd", "beforeSubmitPrompt",
-        "preToolUse", "postToolUse", "postToolUseFailure",
-        "subagentStart", "subagentStop", "preCompact",
-        "afterAgentThought", "stop",
+        "beforeSubmitPrompt", "stop",
+        "beforeShellExecution", "afterShellExecution",
+        "beforeMCPExecution", "afterMCPExecution",
+        "afterFileEdit", "beforeReadFile",
+        "afterAgentThought", "afterAgentResponse",
     ];
     let marker = "occlaw-cursor-hook";
 
     let hooks = config["hooks"].as_object_mut().ok_or("hooks is not an object")?;
+
+    // Clean up our hook from old event names that Cursor doesn't actually support.
+    // Previous versions incorrectly registered CC-only events like preToolUse, sessionStart, etc.
+    let stale_events = [
+        "sessionStart", "sessionEnd", "preToolUse", "postToolUse",
+        "postToolUseFailure", "subagentStart", "subagentStop", "preCompact",
+    ];
+    for stale in &stale_events {
+        if let Some(arr) = hooks.get_mut(*stale).and_then(|v| v.as_array_mut()) {
+            arr.retain(|entry| {
+                !entry.get("command").and_then(|c| c.as_str())
+                    .map(|c| c.contains(marker))
+                    .unwrap_or(false)
+            });
+        }
+    }
+
     for event_name in &cursor_events {
         let arr = hooks.entry(event_name.to_string())
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
             .ok_or("hook event is not an array")?;
 
-        // Check if our hook already exists
         let existing_idx = arr.iter().position(|entry| {
             entry.get("command").and_then(|c| c.as_str())
                 .map(|c| c.contains(marker))
@@ -6551,7 +6664,7 @@ try {
 
         let entry = serde_json::json!({"command": hook_command});
         if let Some(idx) = existing_idx {
-            arr[idx] = entry; // update in-place
+            arr[idx] = entry;
         } else {
             arr.push(entry);
         }

@@ -72,9 +72,12 @@ The hook script sends **structured slim JSON** for Write/Edit/Bash tools (not tr
 Cursor is a VS Code-based IDE (not a terminal). Its hook system differs from Claude Code:
 
 1. **Hook config**: `~/.cursor/hooks.json` with format `{version: 1, hooks: {eventName: [{command: "..."}]}}`
-2. **Hook stdin**: JSON with `hook_event_name` field (not argv like CC)
-3. **Hook stdout**: Must return `{"continue": true}` for `beforeSubmitPrompt` (gating hook), `{}` for others
-4. **11 events**: `sessionStart`, `sessionEnd`, `beforeSubmitPrompt`, `preToolUse`, `postToolUse`, `postToolUseFailure`, `subagentStart`, `subagentStop`, `preCompact`, `afterAgentThought`, `stop`
+2. **Hook stdin**: JSON with `hook_event_name` field and `conversation_id` (not `session_id` like CC)
+3. **Hook stdout**: Varies by event type:
+   - `beforeSubmitPrompt` → `{"continue": true}` (gating hook)
+   - `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile` → `{"permission": "allow"}` (permission hooks)
+   - All others → `{}`
+4. **Supported events**: `beforeSubmitPrompt`, `stop`, `beforeShellExecution`, `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution`, `afterFileEdit`, `beforeReadFile`, `afterAgentThought`, `afterAgentResponse`. NOTE: CC-specific events like `preToolUse`, `postToolUse`, `sessionStart`, `sessionEnd`, `subagentStart`, `subagentStop` are NOT supported by Cursor.
 5. **No terminal ID** — no Ghostty integration; clicking a Cursor session activates the Cursor app window
 6. **No permission popup** — Cursor handles permissions internally; `cs.source !== 'cursor'` guards the popup
 
@@ -89,13 +92,18 @@ Cursor is a VS Code-based IDE (not a terminal). Its hook system differs from Cla
 
 ### Event Name Mapping
 
-Cursor uses camelCase event names, normalized to CC's PascalCase in `process_claude_event()`:
+Cursor's event names are normalized to CC's PascalCase in `process_claude_event()`:
 - `beforeSubmitPrompt` → `UserPromptSubmit`
-- `sessionStart/End` → `SessionStart/End`
-- `preToolUse/postToolUse` → `PreToolUse/PostToolUse`
-- `subagentStart` → increments `pending_agents` (like `PreToolUse` with `tool=Agent`)
-- `subagentStop` → `SubagentStop`
+- `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile` → `PreToolUse`
+- `afterShellExecution`, `afterMCPExecution`, `afterFileEdit` → `PostToolUse`
+- `afterAgentThought`, `afterAgentResponse` → `PostToolUse`
 - `stop` → `Stop`
+
+The hook script also maps tool info from Cursor's event-specific fields to generic `tool`/`toolInput`:
+- `beforeShellExecution` → `tool: "Shell"`, `toolInput: {"command": ...}`
+- `beforeMCPExecution` → `tool: <tool_name>`, `toolInput: <tool_input>`
+- `afterFileEdit` → `tool: "Edit"`, `toolInput: {"file_path": ..., "content": ...}`
+- `beforeReadFile` → `tool: "Read"`, `toolInput: {"file_path": ...}`
 
 # OpenClaw Data Format
 

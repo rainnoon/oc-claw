@@ -2230,7 +2230,7 @@ export default function Mini() {
                                           </div>
                                         )}
                                         <div className="px-3 py-2">
-                                          <p className="text-[12px] text-slate-400 line-clamp-3 whitespace-pre-wrap">{cs.lastResponse}</p>
+                                          <p className="text-[12px] text-slate-400 line-clamp-3 whitespace-pre-wrap">{cs.source === 'cursor' && cs.lastResponse === '✓' ? t('mini.cursorDone', 'Cursor has finished working. Click to view.') : cs.lastResponse}</p>
                                         </div>
                                       </div>
                                     )}
