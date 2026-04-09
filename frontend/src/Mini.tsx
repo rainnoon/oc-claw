@@ -1505,6 +1505,13 @@ export default function Mini() {
     settingsModeRef.current = false
     setSettingsMode(false)
     setSettingsNav('pairing')
+    // Re-sync feature toggles from store
+    load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+      const cc = await store.get('enable_claudecode')
+      setEnableClaudeCode(cc !== false)
+      const cur = await store.get('enable_cursor')
+      setEnableCursor(cur !== false)
+    })
     fetchAgents()
     try {
       await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current, maxHeight: panelMaxHeightRef.current })
