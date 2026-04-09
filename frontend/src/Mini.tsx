@@ -520,8 +520,10 @@ export default function Mini() {
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [enableCursor, setEnableCursor] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
+  const [cursorSoundEnabled, setCursorSoundEnabled] = useState(true)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
+  const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
   const [panelMaxHeight, setPanelMaxHeight] = useState(350)
   const panelMaxHeightRef = useRef(350)
@@ -1017,10 +1019,14 @@ export default function Mini() {
       if (cur !== false) invoke('install_cursor_hooks').catch(() => {})
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
+      const csnd = await store.get('cursor_sound_enabled')
+      if (typeof csnd === 'boolean') setCursorSoundEnabled(csnd)
       const ns = (await store.get('notify_sound')) as string
       if (ns === 'default' || ns === 'manbo') setNotifySound(ns)
       const ws = await store.get('waiting_sound')
       if (typeof ws === 'boolean') setWaitingSound(ws)
+      const acc = await store.get('auto_close_completion')
+      if (typeof acc === 'boolean') setAutoCloseCompletion(acc)
       const dsa = await store.get('disable_sleep_anim')
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const pmh = await store.get('panel_max_height')
@@ -1086,13 +1092,18 @@ export default function Mini() {
     return () => clearInterval(t)
   }, [enableClaudeCode])
 
-  // Listen for Claude task completion → play sound
+  // Listen for Claude/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
   soundEnabledRef.current = soundEnabled
+  const cursorSoundEnabledRef = useRef(cursorSoundEnabled)
+  cursorSoundEnabledRef.current = cursorSoundEnabled
   const notifySoundRef = useRef(notifySound)
   notifySoundRef.current = notifySound
   const waitingSoundRef = useRef(waitingSound)
   waitingSoundRef.current = waitingSound
+  const autoCloseCompletionRef = useRef(autoCloseCompletion)
+  autoCloseCompletionRef.current = autoCloseCompletion
+  const autoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (!enableClaudeCode) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
@@ -1101,7 +1112,9 @@ export default function Mini() {
           expandFnRef.current()
         }
       }
-      if (!soundEnabledRef.current) return
+      const isCursor = ev.payload?.source === 'cursor'
+      const shouldSound = isCursor ? cursorSoundEnabledRef.current : soundEnabledRef.current
+      if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
       if (notifySoundRef.current === 'manbo') {
         new Audio('/audio/manbo.m4a').play().catch(() => {})
@@ -1236,6 +1249,17 @@ export default function Mini() {
   const setCompletionSessionId = useCallback((id: string | null) => {
     completionSessionIdRef.current = id
     _setCompletionSessionId(id)
+    if (autoCloseTimerRef.current) {
+      clearTimeout(autoCloseTimerRef.current)
+      autoCloseTimerRef.current = null
+    }
+    if (id && autoCloseCompletionRef.current) {
+      autoCloseTimerRef.current = setTimeout(() => {
+        completionSessionIdRef.current = null
+        _setCompletionSessionId(null)
+        autoCloseTimerRef.current = null
+      }, 5000)
+    }
   }, [])
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expand = useCallback(async () => {
@@ -1777,20 +1801,23 @@ export default function Mini() {
                 data-no-drag
                 onClick={async (e) => {
                   e.stopPropagation()
-                  const next = !soundEnabled
+                  const allOn = soundEnabled || cursorSoundEnabled
+                  const next = !allOn
                   setSoundEnabled(next)
+                  setCursorSoundEnabled(next)
                   const store = await load('settings.json', { defaults: {}, autoSave: true })
                   await store.set('sound_enabled', next)
+                  await store.set('cursor_sound_enabled', next)
                   await store.save()
                   if (next) {
                     if (notifySound === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {})
                     else playDefaultSound()
                   }
                 }}
-                className={`transition-colors ${soundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
-                title={soundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
+                className={`transition-colors ${soundEnabled || cursorSoundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
+                title={soundEnabled || cursorSoundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
               >
-                {soundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
+                {soundEnabled || cursorSoundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
               </button>
             </div>
             <div className="flex items-center gap-4">
@@ -3019,11 +3046,32 @@ export default function Mini() {
                           await store.set('notify_sound', v)
                           await store.save()
                         }}
+                        soundEnabled={soundEnabled}
+                        onToggleSoundEnabled={async (v) => {
+                          setSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('sound_enabled', v)
+                          await store.save()
+                        }}
+                        cursorSoundEnabled={cursorSoundEnabled}
+                        onToggleCursorSoundEnabled={async (v) => {
+                          setCursorSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('cursor_sound_enabled', v)
+                          await store.save()
+                        }}
                         waitingSound={waitingSound}
                         onToggleWaitingSound={async (v) => {
                           setWaitingSound(v)
                           const store = await getStore()
                           await store.set('waiting_sound', v)
+                          await store.save()
+                        }}
+                        autoCloseCompletion={autoCloseCompletion}
+                        onToggleAutoCloseCompletion={async (v) => {
+                          setAutoCloseCompletion(v)
+                          const store = await getStore()
+                          await store.set('auto_close_completion', v)
                           await store.save()
                         }}
                         mascotPosition={mascotPosition}

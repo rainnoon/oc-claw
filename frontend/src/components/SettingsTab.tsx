@@ -226,7 +226,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void }) {
+export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
@@ -644,12 +644,33 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               ))}
             </div>
           </div>
-          <div className="flex items-center justify-between p-4">
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.ccSound', 'Claude Code Completion Sound')}</span>
+              <span className="text-xs text-white/40">{t('settings.ccSoundDesc', 'Play sound when Claude Code finishes a task')}</span>
+            </div>
+            <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.cursorSound', 'Cursor Completion Sound')}</span>
+              <span className="text-xs text-white/40">{t('settings.cursorSoundDesc', 'Play sound when Cursor finishes a task')}</span>
+            </div>
+            <Toggle checked={cursorSoundEnabled} onChange={onToggleCursorSoundEnabled} />
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.waitingSound')}</span>
               <span className="text-xs text-white/40">{t('settings.waitingSoundDesc')}</span>
             </div>
             <Toggle checked={waitingSound} onChange={onToggleWaitingSound} />
+          </div>
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.autoCloseCompletion', 'Auto-close Completion Popup')}</span>
+              <span className="text-xs text-white/40">{t('settings.autoCloseCompletionDesc', 'Automatically close the completion popup after 5 seconds')}</span>
+            </div>
+            <Toggle checked={autoCloseCompletion} onChange={onToggleAutoCloseCompletion} />
           </div>
         </div>
       </section>

@@ -6240,6 +6240,7 @@ fn process_claude_event(
         let was_processing;
         let was_compacting;
         let pending_agents;
+        let session_source: String;
 
         {
             let mut sessions = state.lock().unwrap();
@@ -6248,6 +6249,7 @@ fn process_claude_event(
             was_compacting = prev_status == "compacting";
 
             if hook_event == "SessionEnd" {
+                session_source = sessions.get(&session_id).map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string());
                 sessions.remove(&session_id);
                 pending_agents = 0;
             } else {
@@ -6390,6 +6392,7 @@ fn process_claude_event(
                 }
 
                 pending_agents = session.pending_agents;
+                session_source = session.source.clone();
             }
         }
 
@@ -6404,7 +6407,7 @@ fn process_claude_event(
         if was_processing && !was_compacting
             && ((hook_event == "Stop" && pending_agents == 0) || hook_event == "PermissionRequest") {
             let is_waiting = hook_event == "PermissionRequest";
-            let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting}));
+            let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting, "source": session_source}));
         }
 
         let cwd_str = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
