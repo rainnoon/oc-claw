@@ -1106,6 +1106,7 @@ export default function Mini() {
     if (!enableClaudeCode) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
       if (ev.payload?.waiting && viewModeRef.current === 'efficiency') {
+        setEffListCollapsed(true)
         if (!expandedRef.current && expandFnRef.current) {
           expandFnRef.current()
         }
@@ -1244,9 +1245,11 @@ export default function Mini() {
   // State drives re-render; ref allows reads from async callbacks.
   const [completionSessionId, _setCompletionSessionId] = useState<string | null>(null)
   const completionSessionIdRef = useRef<string | null>(null)
+  const [effListCollapsed, setEffListCollapsed] = useState(false)
   const setCompletionSessionId = useCallback((id: string | null) => {
     completionSessionIdRef.current = id
     _setCompletionSessionId(id)
+    if (id) setEffListCollapsed(true)
     if (autoCloseTimerRef.current) {
       clearTimeout(autoCloseTimerRef.current)
       autoCloseTimerRef.current = null
@@ -1914,14 +1917,14 @@ export default function Mini() {
                               active: cs.status === 'processing' || cs.status === 'tool_running',
                               updatedAt: cs.updatedAt || 0,
                             }))
-                            // Sort: waiting/completed sessions to top, then by updatedAt
+                            // Sort: waiting > active > recently completed > rest, then by updatedAt
                             const getPriority = (item: (typeof unified)[0] | (typeof claudeUnified)[0]) => {
                               if (item.type === 'claude') {
                                 const cs = item.data as any
                                 if (cs.status === 'waiting') return 0
-                                if (cs.lastResponse && cs.status === 'stopped') return 1
-                                if (item.active || cs.status === 'compacting') return 2
-                              } else if (item.active) return 2
+                                if (item.active || cs.status === 'compacting') return 1
+                                if (cs.lastResponse && cs.status === 'stopped') return 2
+                              } else if (item.active) return 1
                               return 3
                             }
                             const allItems = [...unified, ...claudeUnified].sort((a, b) => {
@@ -1959,7 +1962,26 @@ export default function Mini() {
                               if (hrs < 24) return `${hrs}h`
                               return `${Math.floor(hrs / 24)}d`
                             }
-                            const visibleItems = allItems
+                            const hasImportant = allItems.some((item) => {
+                              if (item.type !== 'claude') return false
+                              const cs = item.data as any
+                              if (cs.status === 'waiting' && cs.source !== 'cursor') return true
+                              if (!cs.status || cs.status === 'stopped') {
+                                if (cs.lastResponse && completionSessionId === cs.sessionId) return true
+                              }
+                              return false
+                            })
+                            const isImportant = (item: (typeof allItems)[0]) => {
+                              if (item.type !== 'claude') return false
+                              const cs = item.data as any
+                              if (cs.status === 'waiting' && cs.source !== 'cursor') return true
+                              if (cs.lastResponse && completionSessionId === cs.sessionId) return true
+                              return false
+                            }
+                            const visibleItems = (effListCollapsed && hasImportant)
+                              ? allItems.filter((item) => isImportant(item))
+                              : allItems
+                            const hiddenCount = allItems.length - visibleItems.length
                             const elements: React.ReactNode[] = visibleItems.map((item, index) => {
                               if (item.type === 'oc') {
                                 const s = item.data
@@ -2061,9 +2083,12 @@ export default function Mini() {
                                 const isWaiting = cs.status === 'waiting'
                                 const isCompacting = cs.status === 'compacting'
                                 const isWorking = isActive || isWaiting || isCompacting
+                                const recentlyDone = !isWorking && cs.status === 'stopped' && cs.updatedAt && (Date.now() - cs.updatedAt < 5 * 60 * 1000)
+                                const showCharGif = isWorking || recentlyDone
                                 const ci = 'claudeIdx' in item ? (item as { claudeIdx: number }).claudeIdx : 0
                                 const charMeta = characters.find((c) => c.name === charQueue[ci % charQueue.length])
-                                const gif = charMeta ? getMiniGif(charMeta, isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle') : undefined
+                                const petState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : recentlyDone ? 'waiting' : 'idle'
+                                const gif = charMeta ? getMiniGif(charMeta, petState) : undefined
                                 const subtitle = cs.userPrompt || ''
                                 const timeAgo = formatTimeAgo(cs.updatedAt || 0)
                                 return (
@@ -2085,10 +2110,10 @@ export default function Mini() {
                                       }
                                     }}
                                     className={`group hover:bg-white/[0.04] transition-colors ${isWaiting ? '' : 'cursor-pointer'}`}
-                                    style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
+                                    style={{ padding: showCharGif ? '10px 16px' : '8px 16px' }}
                                   >
                                     <div className="flex items-center gap-3">
-                                      {isWorking && (
+                                      {showCharGif && (
                                         <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
                                           {gif ? (
                                             <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
@@ -2103,13 +2128,13 @@ export default function Mini() {
                                               width: 8,
                                               height: 8,
                                               borderRadius: '50%',
-                                              background: isWaiting ? '#f59e0b' : '#2ecc71',
+                                              background: isWaiting ? '#f59e0b' : recentlyDone ? '#94a3b8' : '#2ecc71',
                                               border: '1.5px solid rgba(0,0,0,0.3)',
                                             }}
                                           />
                                         </div>
                                       )}
-                                      {!isWorking && (
+                                      {!showCharGif && (
                                         <div className="shrink-0 flex items-center justify-center w-10">
                                           <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
                                         </div>
@@ -2310,6 +2335,51 @@ export default function Mini() {
                                 )
                               }
                             })
+                            if (hiddenCount > 0) {
+                              elements.push(
+                                <motion.div
+                                  key="expand-list-btn"
+                                  layout
+                                  initial={{ opacity: 0 }}
+                                  animate={{ opacity: 1 }}
+                                  exit={{ opacity: 0 }}
+                                  className="flex justify-center py-2"
+                                >
+                                  <button
+                                    data-no-drag
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setEffListCollapsed(false)
+                                    }}
+                                    className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors"
+                                  >
+                                    {t('mini.showMore', 'Show {{count}} more', { count: hiddenCount })}
+                                  </button>
+                                </motion.div>
+                              )
+                            } else if (!effListCollapsed && hasImportant && allItems.length > 1) {
+                              elements.push(
+                                <motion.div
+                                  key="collapse-list-btn"
+                                  layout
+                                  initial={{ opacity: 0 }}
+                                  animate={{ opacity: 1 }}
+                                  exit={{ opacity: 0 }}
+                                  className="flex justify-center py-2"
+                                >
+                                  <button
+                                    data-no-drag
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setEffListCollapsed(true)
+                                    }}
+                                    className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors"
+                                  >
+                                    {t('mini.collapse', 'Collapse')}
+                                  </button>
+                                </motion.div>
+                              )
+                            }
                             return elements
                           })()}
                         </AnimatePresence>
