@@ -520,7 +520,7 @@ export default function Mini() {
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [enableCursor, setEnableCursor] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
-  const [cursorSoundEnabled, setCursorSoundEnabled] = useState(true)
+  const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
@@ -1895,7 +1895,12 @@ export default function Mini() {
                               active: s.active,
                               updatedAt: s.updatedAt,
                             }))
-                            const claudeUnified = claudeSessions.map((cs, ci) => ({
+                            const filteredClaude = claudeSessions.filter((cs) => {
+                              if (cs.source === 'cursor' && !enableCursor) return false
+                              if (cs.source !== 'cursor' && !enableClaudeCode) return false
+                              return true
+                            })
+                            const claudeUnified = filteredClaude.map((cs, ci) => ({
                               type: 'claude' as const,
                               data: cs,
                               claudeIdx: ci,
@@ -2536,7 +2541,12 @@ export default function Mini() {
                               active: s.active,
                               updatedAt: s.updatedAt,
                             }))
-                            const claudeUnified = claudeSessions.map((cs, ci) => ({
+                            const filteredClaude = claudeSessions.filter((cs) => {
+                              if (cs.source === 'cursor' && !enableCursor) return false
+                              if (cs.source !== 'cursor' && !enableClaudeCode) return false
+                              return true
+                            })
+                            const claudeUnified = filteredClaude.map((cs, ci) => ({
                               type: 'claude' as const,
                               data: cs,
                               claudeIdx: ci,
