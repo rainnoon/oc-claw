@@ -1,7 +1,8 @@
 {
   "defaults": {
     "mini_character": "香企鹅",
-    "claude_char": "香企鹅"
+    "claude_char": "香企鹅",
+    "char_queue": ["香企鹅", "派蒙", "纳西妲", "胡桃", "特别周", "芙宁娜", "温迪", "东海帝王", "可莉", "doro"]
   },
   "ips": [
     {

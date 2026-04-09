@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud, PanelLeft, Rows } from 'lucide-react'
+import { ChevronDown, ChevronUp, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud, PanelLeft, Rows } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
@@ -506,8 +506,7 @@ export default function Mini() {
 
   // Claude Code & Cursor
   const [claudeSessions, setClaudeSessions] = useState<any[]>([])
-  const [claudeCharName, setClaudeCharName] = useState(DEFAULT_CHAR_NAME)
-  const [cursorCharName, setCursorCharName] = useState(DEFAULT_CHAR_NAME)
+  const [charQueue, setCharQueue] = useState<string[]>([DEFAULT_CHAR_NAME])
   const [selectedClaudeSession, setSelectedClaudeSession] = useState<string | null>(null)
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
   const [showClaudeStats, setShowClaudeStats] = useState(false)
@@ -626,6 +625,9 @@ export default function Mini() {
     try {
       const chars = await loadCharacters()
       setCharacters(chars)
+      const store0 = await load('settings.json', { defaults: {}, autoSave: true })
+      const q = (await store0.get('char_queue')) as string[] | null
+      if (q && q.length) setCharQueue(q)
     } catch (e) {
       console.warn('[fetchAgents] loadCharacters failed:', e)
     }
@@ -1025,10 +1027,8 @@ export default function Mini() {
       if (bg) setIslandBg(bg)
       const bp = (await store.get('island_bg_pos')) as { x: number; y: number }
       if (bp) setBgPos(bp)
-      const ccChar = ((await store.get('claude_char')) as string) || DEFAULT_CHAR_NAME
-      setClaudeCharName(ccChar)
-      const curChar = ((await store.get('cursor_char')) as string) || DEFAULT_CHAR_NAME
-      setCursorCharName(curChar)
+      const queue = (await store.get('char_queue')) as string[] | null
+      if (queue && queue.length) setCharQueue(queue)
       invoke('get_ui_scale')
         .then((s) => {
           if (typeof s === 'number' && s > 0) setUiScale(s)
@@ -1204,7 +1204,8 @@ export default function Mini() {
     const isWaiting = cs.status === 'waiting'
     const isCompacting = cs.status === 'compacting'
     const isActive = cs.status === 'processing' || cs.status === 'tool_running'
-    const char = characters.find((c) => c.name === claudeCharName) || DEFAULT_CHAR
+    const qName = charQueue[i % charQueue.length]
+    const char = characters.find((c) => c.name === qName) || DEFAULT_CHAR
     const petState: PetState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle'
     return {
       agentId: `claude:${cs.sessionId}`,
@@ -1560,6 +1561,14 @@ export default function Mini() {
       console.warn('delete char failed:', e)
     }
   }, [])
+  const saveCharQueue = useCallback(async (queue: string[]) => {
+    setCharQueue(queue)
+    const store = await load('settings.json', { defaults: {}, autoSave: true })
+    await store.set('char_queue', queue)
+    await store.save()
+  }, [])
+  const [queuePickerOpen, setQueuePickerOpen] = useState(false)
+
   const inAgentDetail = selectedAgentId !== null
   const selectedAgent = agents.find((a) => a.id === selectedAgentId)
 
@@ -1854,9 +1863,10 @@ export default function Mini() {
                               active: s.active,
                               updatedAt: s.updatedAt,
                             }))
-                            const claudeUnified = claudeSessions.map((cs) => ({
+                            const claudeUnified = claudeSessions.map((cs, ci) => ({
                               type: 'claude' as const,
                               data: cs,
+                              claudeIdx: ci,
                               active: cs.status === 'processing' || cs.status === 'tool_running',
                               updatedAt: cs.updatedAt || 0,
                             }))
@@ -1962,7 +1972,7 @@ export default function Mini() {
                                       </div>
                                     )}
                                     {!isWorking && (
-                                      <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                      <div className="shrink-0 flex items-center justify-center w-10">
                                         <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
                                       </div>
                                     )}
@@ -1997,7 +2007,8 @@ export default function Mini() {
                                 const isWaiting = cs.status === 'waiting'
                                 const isCompacting = cs.status === 'compacting'
                                 const isWorking = isActive || isWaiting || isCompacting
-                                const charMeta = characters.find((c) => c.name === (cs.source === 'cursor' ? cursorCharName : claudeCharName))
+                                const ci = 'claudeIdx' in item ? (item as { claudeIdx: number }).claudeIdx : 0
+                                const charMeta = characters.find((c) => c.name === charQueue[ci % charQueue.length])
                                 const gif = charMeta ? getMiniGif(charMeta, isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle') : undefined
                                 const subtitle = cs.userPrompt || ''
                                 const timeAgo = formatTimeAgo(cs.updatedAt || 0)
@@ -2045,7 +2056,7 @@ export default function Mini() {
                                         </div>
                                       )}
                                       {!isWorking && (
-                                        <div className="shrink-0 flex items-center justify-center w-4 h-4">
+                                        <div className="shrink-0 flex items-center justify-center w-10">
                                           <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
                                         </div>
                                       )}
@@ -2232,13 +2243,11 @@ export default function Mini() {
                                           </span>
                                           <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
                                         </div>
-                                        <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin">
+                                        <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin text-[12px] text-slate-400 leading-[1.6] markdown-content">
                                           {cs.source === 'cursor' && cs.lastResponse === '✓' ? (
-                                            <p className="text-[12px] text-slate-400">{t('mini.cursorDone', 'Cursor has finished working. Click to view.')}</p>
+                                            <p>{t('mini.cursorDone', 'Cursor has finished working. Click to view.')}</p>
                                           ) : (
-                                            cs.lastResponse.split('\n').map((line: string, i: number) => (
-                                              <p key={i} className="text-[12px] text-slate-400 whitespace-pre-wrap break-words leading-[1.6]">{line || '\u00A0'}</p>
-                                            ))
+                                            <ReactMarkdown>{cs.lastResponse}</ReactMarkdown>
                                           )}
                                         </div>
                                       </div>
@@ -2474,9 +2483,10 @@ export default function Mini() {
                               active: s.active,
                               updatedAt: s.updatedAt,
                             }))
-                            const claudeUnified = claudeSessions.map((cs) => ({
+                            const claudeUnified = claudeSessions.map((cs, ci) => ({
                               type: 'claude' as const,
                               data: cs,
+                              claudeIdx: ci,
                               active: cs.status === 'processing' || cs.status === 'tool_running',
                               updatedAt: cs.updatedAt || 0,
                             }))
@@ -2824,46 +2834,139 @@ export default function Mini() {
                             </div>
                           </div>
                         )}
-                        {enableClaudeCode && (
-                          <div className="mb-8">
-                            <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">Claude Code</h2>
-                            <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                              <AgentAccordionItem
-                                agent={{ id: 'claude-code', identityName: 'Claude Code' }}
-                                characters={characters}
-                                currentChar={claudeCharName}
-                                isOpen={openAccordionId === 'claude-code'}
-                                onToggle={() => setOpenAccordionId(openAccordionId === 'claude-code' ? null : 'claude-code')}
-                                onOpenCreate={() => setIsCreateModalOpen(true)}
-                                onDeleteChar={handleDeleteChar}
-                                onSelect={async (charName) => {
-                                  setClaudeCharName(charName)
-                                  const store = await load('settings.json', { defaults: {}, autoSave: true })
-                                  await store.set('claude_char', charName)
-                                  await store.save()
-                                }}
-                              />
-                            </div>
-                          </div>
-                        )}
                         <div className="mb-8">
-                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">Cursor</h2>
+                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">{t('mini.charQueue', 'Agent Character Queue')}</h2>
                           <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                            <AgentAccordionItem
-                              agent={{ id: 'cursor', identityName: 'Cursor' }}
-                              characters={characters}
-                              currentChar={cursorCharName}
-                              isOpen={openAccordionId === 'cursor'}
-                              onToggle={() => setOpenAccordionId(openAccordionId === 'cursor' ? null : 'cursor')}
-                              onOpenCreate={() => setIsCreateModalOpen(true)}
-                              onDeleteChar={handleDeleteChar}
-                              onSelect={async (charName) => {
-                                setCursorCharName(charName)
-                                const store = await load('settings.json', { defaults: {}, autoSave: true })
-                                await store.set('cursor_char', charName)
-                                await store.save()
-                              }}
-                            />
+                            <div className="p-4 space-y-2">
+                              {charQueue.map((name, qi) => {
+                                const charMeta = characters.find((c) => c.name === name)
+                                const preview = charMeta ? getMiniGif(charMeta, false) : undefined
+                                return (
+                                  <div key={`${name}-${qi}`} className="flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
+                                    <span className="text-[11px] text-white/30 w-5 text-center shrink-0">{qi + 1}</span>
+                                    <div className="w-9 h-9 shrink-0 rounded-lg overflow-hidden bg-black/50 border border-white/10">
+                                      {preview ? (
+                                        <img src={preview} alt={name} className="w-full h-full object-contain opacity-90" style={{ imageRendering: 'pixelated' }} draggable={false} />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
+                                      )}
+                                    </div>
+                                    <span className="text-sm text-white/80 truncate flex-1">{charMeta?.builtin ? t(`charNames.${name}`, name) : name}</span>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <button
+                                        onClick={() => {
+                                          if (qi === 0) return
+                                          const q = [...charQueue]
+                                          ;[q[qi - 1], q[qi]] = [q[qi], q[qi - 1]]
+                                          saveCharQueue(q)
+                                        }}
+                                        disabled={qi === 0}
+                                        className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
+                                      >
+                                        <ChevronUp className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          if (qi === charQueue.length - 1) return
+                                          const q = [...charQueue]
+                                          ;[q[qi], q[qi + 1]] = [q[qi + 1], q[qi]]
+                                          saveCharQueue(q)
+                                        }}
+                                        disabled={qi === charQueue.length - 1}
+                                        className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
+                                      >
+                                        <ChevronDown className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          if (charQueue.length <= 1) return
+                                          saveCharQueue(charQueue.filter((_, j) => j !== qi))
+                                        }}
+                                        disabled={charQueue.length <= 1}
+                                        className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed ml-1"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                              <button
+                                onClick={() => setQueuePickerOpen(!queuePickerOpen)}
+                                className="flex items-center gap-2 w-full p-2.5 rounded-xl border border-dashed border-white/10 text-white/40 hover:text-white/70 hover:border-white/20 hover:bg-white/[0.02] transition-colors"
+                              >
+                                <Plus className="w-4 h-4" />
+                                <span className="text-sm">{t('mini.addChar', 'Add Character')}</span>
+                              </button>
+                              <AnimatePresence>
+                                {queuePickerOpen && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+                                    className="overflow-hidden"
+                                  >
+                                    <div className="pt-2 border-t border-white/5">
+                                      <div className="flex items-center justify-between mb-2">
+                                        <span className="text-[11px] text-white/30">{t('mini.selectToAdd', 'Select a character to add')}</span>
+                                        <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center justify-center w-6 h-6 rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors" title={t('mini.createChar')}>
+                                          <Plus className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                      <div className="max-h-[220px] overflow-y-auto pr-1 scrollbar-white">
+                                        {(() => {
+                                          const charsWithMini = characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0)
+                                          const groups: { ip: string; chars: typeof charsWithMini }[] = []
+                                          const ipOrder: string[] = []
+                                          for (const c of charsWithMini) {
+                                            const ip = c.ip || '自定义'
+                                            if (!ipOrder.includes(ip)) ipOrder.push(ip)
+                                          }
+                                          const customIdx = ipOrder.indexOf('自定义')
+                                          if (customIdx > 0) { ipOrder.splice(customIdx, 1); ipOrder.unshift('自定义') }
+                                          const otherIdx = ipOrder.indexOf('其他')
+                                          if (otherIdx >= 0 && otherIdx < ipOrder.length - 1) { ipOrder.splice(otherIdx, 1); ipOrder.push('其他') }
+                                          for (const ip of ipOrder) { groups.push({ ip, chars: charsWithMini.filter((c) => (c.ip || '自定义') === ip) }) }
+                                          return groups.map(({ ip, chars }) => (
+                                            <div key={ip} className="mb-3 last:mb-0">
+                                              <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">
+                                                {ip === '自定义' ? t('mini.custom') : ip === '其他' ? t('mini.other') : ip === '原神' ? t('mini.ipGenshin') : ip === '赛马娘' ? t('mini.ipUmaMusume') : ip}
+                                              </div>
+                                              <div className="grid grid-cols-3 gap-2">
+                                                {chars.map((c) => {
+                                                  const cPreview = getMiniGif(c, false)
+                                                  return (
+                                                    <div
+                                                      key={c.name}
+                                                      onClick={() => {
+                                                        saveCharQueue([...charQueue, c.name])
+                                                        setQueuePickerOpen(false)
+                                                      }}
+                                                      className="flex items-center gap-2 p-2 rounded-lg bg-white/5 border border-transparent hover:bg-white/10 hover:border-white/10 cursor-pointer transition-all"
+                                                    >
+                                                      <div className="w-8 h-8 shrink-0 rounded-md overflow-hidden bg-black/50 border border-white/10">
+                                                        {cPreview ? (
+                                                          <img src={cPreview} alt={c.name} className="w-full h-full object-contain opacity-90" style={{ imageRendering: 'pixelated' }} draggable={false} />
+                                                        ) : (
+                                                          <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
+                                                        )}
+                                                      </div>
+                                                      <span className="text-xs text-white/70 truncate">{c.builtin ? t(`charNames.${c.name}`, c.name) : c.name}</span>
+                                                    </div>
+                                                  )
+                                                })}
+                                              </div>
+                                            </div>
+                                          ))
+                                        })()}
+                                      </div>
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                              <p className="text-[11px] text-white/20 px-1 pt-1">{t('mini.queueHint', 'Characters rotate across sessions in queue order.')}</p>
+                            </div>
                           </div>
                         </div>
                         {agents.length > 0 && characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0).length < agents.length && (

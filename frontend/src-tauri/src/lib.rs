@@ -9,8 +9,10 @@ static FULLSCREEN_HIDING: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 use percent_encoding::percent_decode_str;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Whether the efficiency-mode notch hover tracking thread is running.
+/// Whether the efficiency-mode notch hover tracking thread should be running.
 static EFFICIENCY_HOVER_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the hover poll thread is actually alive (set true on entry, false on exit).
+static EFFICIENCY_HOVER_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
 /// Whether the mini panel is currently expanded (used by the hover poll to
 /// decide which detection region to check — collapsed notch area vs expanded
 /// panel area).
@@ -3391,8 +3393,8 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
 /// `false` = left) so the frontend can open / close the panel.
 #[tauri::command]
 async fn set_efficiency_hover_tracking(app: tauri::AppHandle, active: bool) -> Result<(), String> {
-    let was = EFFICIENCY_HOVER_ACTIVE.swap(active, Ordering::SeqCst);
-    if active && !was {
+    EFFICIENCY_HOVER_ACTIVE.store(active, Ordering::SeqCst);
+    if active && !EFFICIENCY_HOVER_THREAD_ALIVE.load(Ordering::SeqCst) {
         let app2 = app.clone();
         std::thread::spawn(move || efficiency_hover_poll(app2));
     }
@@ -3407,13 +3409,8 @@ async fn set_efficiency_hover_tracking(app: tauri::AppHandle, active: bool) -> R
 ///  - **Expanded**: the panel area (500 × 400 px, top-center).
 fn efficiency_hover_poll(app: tauri::AppHandle) {
     use std::time::{Duration, Instant};
+    EFFICIENCY_HOVER_THREAD_ALIVE.store(true, Ordering::SeqCst);
     let mut was_inside = false;
-    // Track when we last emitted `true` so we can re-announce periodically.
-    // This is needed because the frontend may ignore the first enter event
-    // while a collapse animation is still in progress (collapsingRef is true).
-    // Without re-announcement the poll sees no state *change* and never
-    // emits again, leaving the panel stuck closed even though the cursor is
-    // in the notch area.
     let mut last_enter_emit = Instant::now();
     while EFFICIENCY_HOVER_ACTIVE.load(Ordering::SeqCst) {
         let info = NOTCH_SCREEN_INFO.lock().ok().and_then(|g| *g);
@@ -3454,6 +3451,7 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
         }
         std::thread::sleep(Duration::from_millis(30));
     }
+    EFFICIENCY_HOVER_THREAD_ALIVE.store(false, Ordering::SeqCst);
 }
 
 /// Read the current mouse cursor position via `[NSEvent mouseLocation]`.
