@@ -4509,6 +4509,10 @@ pub struct ClaudeSession {
     /// of relying on CWD/title matching which is ambiguous.
     #[serde(skip)]
     pub terminal_id: Option<String>,
+    /// Host terminal app name (e.g. "Ghostty", "Cursor", "iTerm2").
+    /// Captured once at session creation via process chain walk.
+    #[serde(skip)]
+    pub host_terminal: Option<String>,
 }
 
 type PendingPermissions = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>;
@@ -4775,14 +4779,21 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
         .filter(|s| !s.cwd.is_empty())
         .cloned()
         .collect();
-    // Only mark CC sessions' active tab via Ghostty terminal ID.
-    // Cursor sessions set is_active_tab at Stop time (in process_claude_event)
-    // to avoid running AppleScript on every 2s poll.
+    // Mark CC sessions' active tab:
+    // - Ghostty: match by terminal ID
+    // - CC running inside Cursor's integrated terminal: check if Cursor is frontmost
+    // - Cursor IDE sessions: set at Stop time in process_claude_event
+    let cursor_is_active = is_cursor_active();
     if let Some(ref tid) = active_tid {
         for s in &mut list {
             if s.source != "cursor" {
                 s.is_active_tab = s.terminal_id.as_deref() == Some(tid.as_str());
             }
+        }
+    }
+    for s in &mut list {
+        if s.source != "cursor" && s.host_terminal.as_deref() == Some("Cursor") {
+            s.is_active_tab = cursor_is_active;
         }
     }
     list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -5291,6 +5302,12 @@ end tell"#,
                 }
                 Ok("Jumped to Terminal.app".to_string())
             }
+            Some("Cursor") => {
+                let _ = std::process::Command::new("open")
+                    .args(["-a", "Cursor"])
+                    .output();
+                Ok("Jumped to Cursor".to_string())
+            }
             Some(app_name) => {
                 let script = format!(
                     r#"tell application "{}" to activate"#,
@@ -5333,6 +5350,7 @@ fn find_terminal_app_for_pid(pid: u32) -> Option<String> {
         "kitty",
         "Alacritty", "alacritty",
         "kaku",
+        "Cursor",
     ];
 
     let mut current_pid = pid;
@@ -6275,6 +6293,7 @@ fn process_claude_event(
                     source: source.clone(),
                     permission_suggestions: None,
                     terminal_id: None,
+                    host_terminal: None,
                 });
 
                 // Track pending sub-agents:
@@ -6315,7 +6334,14 @@ fn process_claude_event(
                 }
                 // Store CC process PID from hook event for stale-session detection
                 if let Some(p) = event.get("pid").and_then(|v| v.as_u64()) {
-                    session.pid = Some(p as u32);
+                    let pid_u32 = p as u32;
+                    session.pid = Some(pid_u32);
+                    #[cfg(target_os = "macos")]
+                    if session.host_terminal.is_none() && session.source != "cursor" {
+                        session.host_terminal = find_terminal_app_for_pid(pid_u32);
+                        log::info!("[claude_event] session={} host_terminal={:?}",
+                            &session_id[..session_id.len().min(8)], session.host_terminal);
+                    }
                 }
 
                 // Store Ghostty terminal ID from hook event for precise tab jumping.
