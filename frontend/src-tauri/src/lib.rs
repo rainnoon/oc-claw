@@ -3262,7 +3262,7 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
-async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, _efficiency: Option<bool>) -> Result<(), String> {
+async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, _efficiency: Option<bool>, max_height: Option<f64>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
 
@@ -3308,7 +3308,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                     }
                     let (final_x, final_y, final_w, final_h) = if expanded {
                         let win_w = 500.0;
-                        let win_h = 400.0;
+                        let win_h = max_height.unwrap_or(350.0).max(200.0).min(500.0);
                         let x = sx + (sw - win_w) / 2.0;
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
@@ -3479,16 +3479,17 @@ fn macos_cursor_position() -> (f64, f64) {
 /// macOS: bottom-left origin, so adjust y to keep bottom aligned.
 /// Windows: top-left origin, so just resize height.
 #[tauri::command]
-async fn resize_mini_height(app: tauri::AppHandle, height: f64) -> Result<(), String> {
+async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Option<f64>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
+    let limit = max_height.unwrap_or(350.0).max(200.0).min(500.0);
     // Scale height limits on Windows to match DPI-aware window sizes
     #[cfg(target_os = "windows")]
     let h = {
         let ui = if let Ok(Some(m)) = win.current_monitor() { win_ui_scale(&m) } else { 1.0 };
-        (height * ui).round().max(45.0 * ui).min(400.0 * ui)
+        (height * ui).round().max(45.0 * ui).min(limit * ui)
     };
     #[cfg(not(target_os = "windows"))]
-    let h = height.max(45.0).min(400.0);
+    let h = height.max(45.0).min(limit);
 
     #[cfg(target_os = "macos")]
     {

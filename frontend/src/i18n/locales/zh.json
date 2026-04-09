@@ -39,6 +39,7 @@
     "connecting": "连接中...",
     "waitingForAgents": "等待 Agent 连接...",
     "ccStartTracking": "在 Claude Code 中发送消息以开始追踪",
+    "startTracking": "在 {{targets}} 中发送消息以开始追踪",
     "goToSettings": "前往设置连接 OpenClaw",
     "remove": "移除",
     "idle": "空闲",
@@ -108,6 +109,8 @@
     "right": "居右",
     "disableSleepAnim": "关闭睡眠动画",
     "disableSleepAnimDesc": "看板娘空闲时显示静态画面",
+    "panelMaxHeight": "面板高度",
+    "panelMaxHeightDesc": "展开面板的最大高度",
     "islandBg": "岛屿背景",
     "islandBgDesc": "选择或上传背景图片，拖动选择裁剪区域",
 

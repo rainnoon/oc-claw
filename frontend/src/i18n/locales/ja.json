@@ -39,6 +39,7 @@
     "connecting": "接続中...",
     "waitingForAgents": "エージェント接続待ち...",
     "ccStartTracking": "Claude Codeでメッセージを送信してトラッキングを開始",
+    "startTracking": "{{targets}} でメッセージを送信してトラッキングを開始",
     "goToSettings": "設定でOpenClawに接続",
     "remove": "削除",
     "idle": "アイドル",
@@ -108,6 +109,8 @@
     "right": "右",
     "disableSleepAnim": "スリープアニメを無効化",
     "disableSleepAnimDesc": "アイドル時に静止画を表示",
+    "panelMaxHeight": "パネルの高さ",
+    "panelMaxHeightDesc": "展開パネルの最大高さ",
     "islandBg": "アイランド背景",
     "islandBgDesc": "背景画像を選択またはアップロードし、ドラッグで切り抜き範囲を選択",
 

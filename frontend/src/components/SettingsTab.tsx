@@ -226,12 +226,12 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void }) {
+export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
-  const [enableCursor, setEnableCursor] = useState(false)
+  const [enableCursor, setEnableCursor] = useState(true)
   const [cursorHookStatus, setCursorHookStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
   const [updateChecking, setUpdateChecking] = useState(false)
@@ -506,6 +506,24 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               <span className="text-xs text-white/40">{t('settings.disableSleepAnimDesc')}</span>
             </div>
             <Toggle checked={disableSleepAnim} onChange={onToggleSleepAnim} />
+          </div>
+          <div className="p-4 border-b border-white/5">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.panelMaxHeight', 'Panel Height')}</span>
+                <span className="text-xs text-white/40">{t('settings.panelMaxHeightDesc', 'Maximum height of the expanded panel')}</span>
+              </div>
+              <span className="text-sm text-white/60 tabular-nums">{panelMaxHeight}px</span>
+            </div>
+            <input
+              type="range"
+              min={200}
+              max={500}
+              step={10}
+              value={panelMaxHeight}
+              onChange={(e) => onChangePanelMaxHeight(Number(e.target.value))}
+              className="w-full accent-white/60 h-1"
+            />
           </div>
           {/* Background picker with crop preview */}
           <div className="p-4">

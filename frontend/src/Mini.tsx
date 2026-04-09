@@ -518,10 +518,14 @@ export default function Mini() {
 
   // Feature toggles
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
+  const [enableCursor, setEnableCursor] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
+  const [panelMaxHeight, setPanelMaxHeight] = useState(350)
+  const panelMaxHeightRef = useRef(350)
+  panelMaxHeightRef.current = panelMaxHeight
   const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
   const mascotPositionRef = useRef<'left' | 'right'>('right')
   const [islandBg, setIslandBg] = useState('__anime__')
@@ -1009,7 +1013,8 @@ export default function Mini() {
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
       if (cc !== false) invoke('install_claude_hooks').catch(() => {})
       const cur = await store.get('enable_cursor')
-      if (cur === true) invoke('install_cursor_hooks').catch(() => {})
+      setEnableCursor(cur !== false)
+      if (cur !== false) invoke('install_cursor_hooks').catch(() => {})
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
       const ns = (await store.get('notify_sound')) as string
@@ -1018,6 +1023,8 @@ export default function Mini() {
       if (typeof ws === 'boolean') setWaitingSound(ws)
       const dsa = await store.get('disable_sleep_anim')
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
+      const pmh = await store.get('panel_max_height')
+      if (typeof pmh === 'number' && pmh >= 200 && pmh <= 500) setPanelMaxHeight(pmh)
       const mp = (await store.get('mascot_position')) as string
       if (mp === 'left' || mp === 'right') {
         setMascotPosition(mp)
@@ -1236,7 +1243,7 @@ export default function Mini() {
     expandingRef.current = true
     setHiding(true)
     await new Promise<void>((r) => setTimeout(r, 50))
-    await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current })
+    await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current, maxHeight: panelMaxHeightRef.current })
     setHiding(false)
     setExpanded(true)
     expandedRef.current = true
@@ -1478,7 +1485,7 @@ export default function Mini() {
     setSettingsNav('pairing')
     fetchAgents()
     try {
-      await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current })
+      await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current, maxHeight: panelMaxHeightRef.current })
     } catch {}
     setSettingsTransitioning(false)
     settingsTransitioningRef.current = false
@@ -1584,11 +1591,11 @@ export default function Mini() {
     if (!el) return
     const ro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect.height
-      if (h && h > 0) invoke('resize_mini_height', { height: Math.min(h * uiScale, 400 * uiScale) }).catch(() => {})
+      if (h && h > 0) invoke('resize_mini_height', { height: Math.min(h * uiScale, panelMaxHeight * uiScale), maxHeight: panelMaxHeight }).catch(() => {})
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale])
+  }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale, panelMaxHeight])
 
   return (
     <div
@@ -1888,9 +1895,18 @@ export default function Mini() {
                             })
 
                             if (allItems.length === 0) {
+                              const trackingTargets = [
+                                ...(agents.length > 0 ? ['OpenClaw'] : []),
+                                ...(enableClaudeCode ? ['Claude Code'] : []),
+                                ...(enableCursor ? ['Cursor'] : []),
+                              ]
                               return (
                                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
-                                  {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
+                                  {trackingTargets.length > 0 && (
+                                    <p className="text-slate-500 text-sm font-medium">
+                                      {t('mini.startTracking', { targets: trackingTargets.join(' / ') })}
+                                    </p>
+                                  )}
                                 </motion.div>
                               )
                             }
@@ -2460,7 +2476,18 @@ export default function Mini() {
                     <div className="p-2 bg-[#0f0f13] flex flex-col gap-0.5" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                       {allSessions.length === 0 && claudeSessions.length === 0 && !refreshingAgents && (
                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
-                          {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
+                          {(() => {
+                            const targets = [
+                              ...(agents.length > 0 ? ['OpenClaw'] : []),
+                              ...(enableClaudeCode ? ['Claude Code'] : []),
+                              ...(enableCursor ? ['Cursor'] : []),
+                            ]
+                            return targets.length > 0 ? (
+                              <p className="text-slate-500 text-sm font-medium">
+                                {t('mini.startTracking', { targets: targets.join(' / ') })}
+                              </p>
+                            ) : null
+                          })()}
                           <button
                             data-no-drag
                             onClick={(e) => {
@@ -3019,6 +3046,13 @@ export default function Mini() {
                           setBgPos(v)
                           const store = await getStore()
                           await store.set('island_bg_pos', v)
+                          await store.save()
+                        }}
+                        panelMaxHeight={panelMaxHeight}
+                        onChangePanelMaxHeight={async (v) => {
+                          setPanelMaxHeight(v)
+                          const store = await getStore()
+                          await store.set('panel_max_height', v)
                           await store.save()
                         }}
                       />

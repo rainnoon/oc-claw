@@ -39,6 +39,7 @@
     "connecting": "Conectando...",
     "waitingForAgents": "Esperando agentes...",
     "ccStartTracking": "Envía un mensaje en Claude Code para empezar el seguimiento",
+    "startTracking": "Envía un mensaje en {{targets}} para empezar el seguimiento",
     "goToSettings": "Ve a Ajustes para conectar OpenClaw",
     "remove": "Eliminar",
     "idle": "inactivo",
@@ -108,6 +109,8 @@
     "right": "Derecha",
     "disableSleepAnim": "Desactivar animación de reposo",
     "disableSleepAnimDesc": "Mostrar imagen estática cuando la mascota está inactiva",
+    "panelMaxHeight": "Altura del panel",
+    "panelMaxHeightDesc": "Altura máxima del panel expandido",
     "islandBg": "Fondo de isla",
     "islandBgDesc": "Selecciona o sube una imagen de fondo, arrastra para seleccionar el área de recorte",
 

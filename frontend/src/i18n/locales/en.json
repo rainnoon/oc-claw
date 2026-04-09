@@ -39,6 +39,7 @@
     "connecting": "Connecting...",
     "waitingForAgents": "Waiting for agents...",
     "ccStartTracking": "Send a message in Claude Code to start tracking",
+    "startTracking": "Send a message in {{targets}} to start tracking",
     "goToSettings": "Go to Settings to connect OpenClaw",
     "remove": "Remove",
     "idle": "idle",
@@ -108,6 +109,8 @@
     "right": "Right",
     "disableSleepAnim": "Disable Sleep Animation",
     "disableSleepAnimDesc": "Show a static image when the mascot is idle",
+    "panelMaxHeight": "Panel Height",
+    "panelMaxHeightDesc": "Maximum height of the expanded panel",
     "islandBg": "Island Background",
     "islandBgDesc": "Select or upload a background image, drag to select the crop area",
 
