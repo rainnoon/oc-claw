@@ -552,8 +552,8 @@ export default function Mini() {
   const [hiding, setHiding] = useState(false)
   const [pinned, setPinned] = useState(false)
   const pinnedRef = useRef(false)
-  const [viewMode, _setViewMode] = useState<'island' | 'efficiency'>('island')
-  const viewModeRef = useRef<'island' | 'efficiency'>('island')
+  const [viewMode, _setViewMode] = useState<'island' | 'efficiency'>('efficiency')
+  const viewModeRef = useRef<'island' | 'efficiency'>('efficiency')
   const expandedRef = useRef(false)
   const setViewMode = useCallback(async (v: 'island' | 'efficiency' | ((prev: 'island' | 'efficiency') => 'island' | 'efficiency')) => {
     _setViewMode((prev) => {
@@ -607,12 +607,10 @@ export default function Mini() {
 
   useEffect(() => {
     load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
-      const saved = (await store.get('view_mode')) as string | null
-      if (saved === 'efficiency') {
-        _setViewMode('efficiency')
-        viewModeRef.current = 'efficiency'
-        invoke('set_mini_expanded', { expanded: false, position: 'right', efficiency: true }).catch(() => {})
-      }
+      _setViewMode('efficiency')
+      viewModeRef.current = 'efficiency'
+      invoke('set_mini_expanded', { expanded: false, position: 'right', efficiency: true }).catch(() => {})
+      await store.set('view_mode', 'efficiency')
       // Restore saved mascot position from a previous drag.
       const pos = (await store.get('mini_custom_pos')) as { x: number; y: number } | null
       if (pos) {
@@ -2021,7 +2019,8 @@ export default function Mini() {
                                     )}
                                     <div className="flex min-w-0 flex-1 items-center gap-1.5">
                                       <span className={`text-[13px] font-bold shrink-0 ${isWorking ? 'text-white' : 'text-slate-300'}`}>{title}</span>
-                                      {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
+                                      {subtitle && <span className="text-[13px] font-normal text-slate-500 shrink-0">· {subtitle}</span>}
+                                      {s.lastAssistantMsg && <span className="text-[11px] text-white/40 truncate">· {s.lastAssistantMsg}</span>}
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0">
                                       {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300">{s.channel}</span>}
