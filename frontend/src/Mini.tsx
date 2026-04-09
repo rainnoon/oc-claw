@@ -1925,15 +1925,13 @@ export default function Mini() {
                               active: cs.status === 'processing' || cs.status === 'tool_running',
                               updatedAt: cs.updatedAt || 0,
                             }))
-                            // Sort: waiting > active > recently completed > rest, then by updatedAt
+                            // Sort: waiting first, then everything else by recency.
                             const getPriority = (item: (typeof unified)[0] | (typeof claudeUnified)[0]) => {
                               if (item.type === 'claude') {
                                 const cs = item.data as any
                                 if (cs.status === 'waiting') return 0
-                                if (item.active || cs.status === 'compacting') return 1
-                                if (cs.lastResponse && cs.status === 'stopped') return 2
-                              } else if (item.active) return 1
-                              return 3
+                              }
+                              return 1
                             }
                             const allItems = [...unified, ...claudeUnified].sort((a, b) => {
                               const pa = getPriority(a),
@@ -2095,7 +2093,7 @@ export default function Mini() {
                                 const showCharGif = isWorking || recentlyDone
                                 const ci = 'claudeIdx' in item ? (item as { claudeIdx: number }).claudeIdx : 0
                                 const charMeta = characters.find((c) => c.name === charQueue[ci % charQueue.length])
-                                const petState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : recentlyDone ? 'waiting' : 'idle'
+                                const petState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle'
                                 const gif = charMeta ? getMiniGif(charMeta, petState) : undefined
                                 const subtitle = cs.userPrompt || ''
                                 const timeAgo = formatTimeAgo(cs.updatedAt || 0)
