@@ -5990,7 +5990,7 @@ if tool_input:
 if hook_event == 'Stop':
     msg = input_data.get('last_assistant_message', '')
     if msg:
-        output['lastResponse'] = msg[:300]
+        output['lastResponse'] = msg[:2000]
 
 if hook_event == 'PermissionRequest':
     output['permission_suggestions'] = input_data.get('permission_suggestions', [])
@@ -6330,6 +6330,18 @@ fn process_claude_event(
 
                 // Store AI's last response for the completion reminder popup.
                 // Clear on new prompt so stale responses don't linger.
+                //
+                // For Cursor: afterAgentResponse fires before stop and carries
+                // the actual response text. We stash it here so the Stop handler
+                // can use it instead of a placeholder.
+                if raw_hook_event == "afterAgentResponse" {
+                    if let Some(resp) = event.get("lastResponse").and_then(|v| v.as_str()) {
+                        if !resp.is_empty() {
+                            session.last_response = Some(resp.to_string());
+                        }
+                    }
+                }
+
                 // Check at Stop time (real-time, not polling) whether the user
                 // is already looking at this terminal tab. If so, skip setting
                 // last_response so the completion popup never triggers.
@@ -6346,19 +6358,18 @@ fn process_claude_event(
                     if is_tab_active {
                         session.last_response = None;
                     } else {
-                        let resp = event.get("lastResponse")
+                        // Prefer lastResponse from the event itself (CC's Stop has it),
+                        // then fall back to any value pre-stored by afterAgentResponse,
+                        // then use a placeholder for Cursor so the popup still triggers.
+                        let resp_from_event = event.get("lastResponse")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
-                        // Cursor's stop event doesn't include last_assistant_message,
-                        // but we still want to trigger the completion popup.
-                        // Use a placeholder so the frontend's lastResponse check passes.
-                        session.last_response = resp.or_else(|| {
-                            if session.source == "cursor" {
-                                Some("✓".to_string())
-                            } else {
-                                None
-                            }
-                        });
+                        if resp_from_event.is_some() {
+                            session.last_response = resp_from_event;
+                        } else if session.last_response.is_none() && session.source == "cursor" {
+                            session.last_response = Some("✓".to_string());
+                        }
+                        // else: keep existing last_response from afterAgentResponse
                     }
                 } else if hook_event == "UserPromptSubmit" {
                     session.last_response = None;
@@ -6510,7 +6521,14 @@ if hook_event == 'stop':
         output['claudeStatus'] = status
     msg = input_data.get('last_assistant_message', '')
     if msg:
-        output['lastResponse'] = msg[:300]
+        output['lastResponse'] = msg[:2000]
+
+# afterAgentResponse: Cursor sends the AI's response text here
+# (stop event doesn't include it). Forward it so Rust can store it.
+if hook_event == 'afterAgentResponse':
+    text = input_data.get('text', '')
+    if text:
+        output['lastResponse'] = text[:2000]
 
 # UserPromptSubmit: extract prompt text
 if hook_event == 'beforeSubmitPrompt':

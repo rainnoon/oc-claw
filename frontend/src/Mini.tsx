@@ -2209,28 +2209,37 @@ export default function Mini() {
                                     {!isWaiting && !isWorking && cs.lastResponse && completionSessionId === cs.sessionId && (
                                       <div
                                         data-no-drag
-                                        className="mt-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] cursor-pointer hover:bg-[#222226] transition-colors overflow-hidden"
-                                        onClick={(e) => {
-                                          e.stopPropagation()
-                                          setCompletionSessionId(null)
-                                          if (cs.source === 'cursor') {
-                                            invoke('activate_app', { appName: 'Cursor' }).catch(() => {})
-                                          } else {
-                                            invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
-                                          }
-                                        }}
+                                        className="mt-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-hidden"
                                       >
-                                        {cs.userPrompt && (
-                                          <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a2a2e]">
-                                            <span className="text-[12px] text-slate-300 truncate">
-                                              <span className="text-slate-500">{t('mini.you', '你')}：</span>
-                                              {cs.userPrompt}
-                                            </span>
-                                            <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
-                                          </div>
-                                        )}
-                                        <div className="px-3 py-2">
-                                          <p className="text-[12px] text-slate-400 line-clamp-3 whitespace-pre-wrap">{cs.source === 'cursor' && cs.lastResponse === '✓' ? t('mini.cursorDone', 'Cursor has finished working. Click to view.') : cs.lastResponse}</p>
+                                        <div
+                                          className="flex items-center justify-between px-3 py-2 border-b border-[#2a2a2e] cursor-pointer hover:bg-[#222226] transition-colors"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setCompletionSessionId(null)
+                                            if (cs.source === 'cursor') {
+                                              invoke('activate_app', { appName: 'Cursor' }).catch(() => {})
+                                            } else {
+                                              invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                            }
+                                          }}
+                                        >
+                                          <span className="text-[12px] text-slate-300 truncate">
+                                            {cs.userPrompt ? (
+                                              <><span className="text-slate-500">{t('mini.you', '你')}：</span>{cs.userPrompt}</>
+                                            ) : (
+                                              <span className="text-slate-500">{t('mini.taskCompleted', 'Task completed')}</span>
+                                            )}
+                                          </span>
+                                          <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
+                                        </div>
+                                        <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin">
+                                          {cs.source === 'cursor' && cs.lastResponse === '✓' ? (
+                                            <p className="text-[12px] text-slate-400">{t('mini.cursorDone', 'Cursor has finished working. Click to view.')}</p>
+                                          ) : (
+                                            cs.lastResponse.split('\n').map((line: string, i: number) => (
+                                              <p key={i} className="text-[12px] text-slate-400 whitespace-pre-wrap break-words leading-[1.6]">{line || '\u00A0'}</p>
+                                            ))
+                                          )}
                                         </div>
                                       </div>
                                     )}
