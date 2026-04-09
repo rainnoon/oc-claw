@@ -525,8 +525,8 @@ export default function Mini() {
   const [waitingSound, setWaitingSound] = useState(false)
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
-  const [panelMaxHeight, setPanelMaxHeight] = useState(350)
-  const panelMaxHeightRef = useRef(350)
+  const [panelMaxHeight, setPanelMaxHeight] = useState(300)
+  const panelMaxHeightRef = useRef(300)
   panelMaxHeightRef.current = panelMaxHeight
   const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
   const mascotPositionRef = useRef<'left' | 'right'>('right')
@@ -1739,7 +1739,7 @@ export default function Mini() {
             zoom: uiScale !== 1 ? uiScale : undefined,
             width: panelW,
             height: 'auto',
-            maxHeight: 400,
+            maxHeight: panelMaxHeight,
             overflowY: 'hidden',
             overflowX: 'hidden',
             display: 'flex',
@@ -1893,7 +1893,7 @@ export default function Mini() {
                     style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
                   >
                     <div className="flex flex-col bg-black" style={{ flex: 1, minHeight: 0 }}>
-                      <div className="flex-1 overflow-y-auto scrollbar-hidden">
+                      <div className="overflow-y-auto scrollbar-hidden" style={{ maxHeight: panelMaxHeight - 60 }}>
                         <AnimatePresence mode="popLayout">
                           {(() => {
                             const unified: { type: 'oc'; data: MiniSessionInfo; active: boolean; updatedAt: number }[] = allSessions.map((s) => ({
