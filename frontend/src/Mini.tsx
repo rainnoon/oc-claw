@@ -504,9 +504,10 @@ export default function Mini() {
   const [selectedSessionKey, setSelectedSessionKey] = useState<{ agentId: string; key: string } | null>(null)
   const [sessionMessages, setSessionMessages] = useState<any[]>([])
 
-  // Claude Code
+  // Claude Code & Cursor
   const [claudeSessions, setClaudeSessions] = useState<any[]>([])
   const [claudeCharName, setClaudeCharName] = useState(DEFAULT_CHAR_NAME)
+  const [cursorCharName, setCursorCharName] = useState(DEFAULT_CHAR_NAME)
   const [selectedClaudeSession, setSelectedClaudeSession] = useState<string | null>(null)
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
   const [showClaudeStats, setShowClaudeStats] = useState(false)
@@ -565,7 +566,10 @@ export default function Mini() {
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
   const [moveMode, _setMoveMode] = useState(false)
   const moveModeRef = useRef(false)
-  const setMoveMode = (v: boolean) => { moveModeRef.current = v; _setMoveMode(v) }
+  const setMoveMode = (v: boolean) => {
+    moveModeRef.current = v
+    _setMoveMode(v)
+  }
 
   const { t } = useTranslation()
 
@@ -1002,6 +1006,8 @@ export default function Mini() {
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
       if (cc !== false) invoke('install_claude_hooks').catch(() => {})
+      const cur = await store.get('enable_cursor')
+      if (cur === true) invoke('install_cursor_hooks').catch(() => {})
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
       const ns = (await store.get('notify_sound')) as string
@@ -1021,6 +1027,8 @@ export default function Mini() {
       if (bp) setBgPos(bp)
       const ccChar = ((await store.get('claude_char')) as string) || DEFAULT_CHAR_NAME
       setClaudeCharName(ccChar)
+      const curChar = ((await store.get('cursor_char')) as string) || DEFAULT_CHAR_NAME
+      setCursorCharName(curChar)
       invoke('get_ui_scale')
         .then((s) => {
           if (typeof s === 'number' && s > 0) setUiScale(s)
@@ -1430,7 +1438,9 @@ export default function Mini() {
         }
       }
     })
-    return () => { unlisten.then((fn) => fn()) }
+    return () => {
+      unlisten.then((fn) => fn())
+    }
   }, [viewMode, collapse])
 
   const enterSettings = useCallback(async () => {
@@ -1861,7 +1871,8 @@ export default function Mini() {
                               return 3
                             }
                             const allItems = [...unified, ...claudeUnified].sort((a, b) => {
-                              const pa = getPriority(a), pb = getPriority(b)
+                              const pa = getPriority(a),
+                                pb = getPriority(b)
                               if (pa !== pb) return pa - pb
                               return b.updatedAt - a.updatedAt
                             })
@@ -1986,7 +1997,7 @@ export default function Mini() {
                                 const isWaiting = cs.status === 'waiting'
                                 const isCompacting = cs.status === 'compacting'
                                 const isWorking = isActive || isWaiting || isCompacting
-                                const charMeta = characters.find((c) => c.name === claudeCharName)
+                                const charMeta = characters.find((c) => c.name === (cs.source === 'cursor' ? cursorCharName : claudeCharName))
                                 const gif = charMeta ? getMiniGif(charMeta, isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle') : undefined
                                 const subtitle = cs.userPrompt || ''
                                 const timeAgo = formatTimeAgo(cs.updatedAt || 0)
@@ -2001,7 +2012,11 @@ export default function Mini() {
                                     data-no-drag
                                     onClick={() => {
                                       if (!isWaiting) {
-                                        invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
+                                        if (cs.source === 'cursor') {
+                                          invoke('activate_app', { appName: 'Cursor' }).catch((err: unknown) => console.warn('activate failed:', err))
+                                        } else {
+                                          invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
+                                        }
                                       }
                                     }}
                                     className={`group hover:bg-white/[0.04] transition-colors ${isWaiting ? '' : 'cursor-pointer'}`}
@@ -2039,7 +2054,9 @@ export default function Mini() {
                                         {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
                                       </div>
                                       <div className="flex items-center gap-2 shrink-0">
-                                        <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#3f211d] text-[#e87a65]">Claude</span>
+                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal ${cs.source === 'cursor' ? 'bg-[#1a2f3f] text-[#5eb5f7]' : 'bg-[#3f211d] text-[#e87a65]'}`}>
+                                          {cs.source === 'cursor' ? 'Cursor' : 'Claude'}
+                                        </span>
                                         <div className="w-8 flex items-center justify-center">
                                           <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
                                           <button
@@ -2064,7 +2081,7 @@ export default function Mini() {
                                        此面板。包含四个操作按钮：拒绝、允许一次、
                                        全部允许、自动批准。
                                        用途：让用户无需切换到终端即可快速处理权限请求。 */}
-                                    {isWaiting && (
+                                    {isWaiting && cs.source !== 'cursor' && (
                                       <div className="mt-2">
                                         {cs.tool && (
                                           <div className="flex items-center gap-1.5 mb-2">
@@ -2132,43 +2149,55 @@ export default function Mini() {
                                             const resolvePermission = (decision: string) => {
                                               invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision }).catch(() => {})
                                               // Clear waiting state locally so popup disappears instantly
-                                              setClaudeSessions((prev) => prev.map((s) =>
-                                                s.sessionId === cs.sessionId ? { ...s, status: 'processing', tool: undefined, toolInput: undefined } : s
-                                              ))
+                                              setClaudeSessions((prev) => prev.map((s) => (s.sessionId === cs.sessionId ? { ...s, status: 'processing', tool: undefined, toolInput: undefined } : s)))
                                               // Collapse the panel
                                               hoverExpandedRef.current = false
                                               collapse()
                                             }
-                                            return (<>
-                                          <button
-                                            data-no-drag
-                                            onClick={(e) => { e.stopPropagation(); resolvePermission('deny') }}
-                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
-                                          >
-                                            {t('mini.deny', '拒绝')}
-                                          </button>
-                                          <button
-                                            data-no-drag
-                                            onClick={(e) => { e.stopPropagation(); resolvePermission('allow_once') }}
-                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
-                                          >
-                                            {t('mini.allowOnce', '允许一次')}
-                                          </button>
-                                          <button
-                                            data-no-drag
-                                            onClick={(e) => { e.stopPropagation(); resolvePermission('allow_all') }}
-                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-emerald-900/50 text-emerald-300 hover:bg-emerald-800/50 transition-colors"
-                                          >
-                                            {t('mini.allowAll', '全部允许')}
-                                          </button>
-                                          <button
-                                            data-no-drag
-                                            onClick={(e) => { e.stopPropagation(); resolvePermission('auto_approve') }}
-                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-rose-900/50 text-rose-300 hover:bg-rose-800/50 transition-colors"
-                                          >
-                                            {t('mini.autoApprove', '自动批准')}
-                                          </button>
-                                            </>)
+                                            return (
+                                              <>
+                                                <button
+                                                  data-no-drag
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    resolvePermission('deny')
+                                                  }}
+                                                  className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                                >
+                                                  {t('mini.deny', '拒绝')}
+                                                </button>
+                                                <button
+                                                  data-no-drag
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    resolvePermission('allow_once')
+                                                  }}
+                                                  className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                                >
+                                                  {t('mini.allowOnce', '允许一次')}
+                                                </button>
+                                                <button
+                                                  data-no-drag
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    resolvePermission('allow_all')
+                                                  }}
+                                                  className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-emerald-900/50 text-emerald-300 hover:bg-emerald-800/50 transition-colors"
+                                                >
+                                                  {t('mini.allowAll', '全部允许')}
+                                                </button>
+                                                <button
+                                                  data-no-drag
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    resolvePermission('auto_approve')
+                                                  }}
+                                                  className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-rose-900/50 text-rose-300 hover:bg-rose-800/50 transition-colors"
+                                                >
+                                                  {t('mini.autoApprove', '自动批准')}
+                                                </button>
+                                              </>
+                                            )
                                           })()}
                                         </div>
                                       </div>
@@ -2184,13 +2213,18 @@ export default function Mini() {
                                         onClick={(e) => {
                                           e.stopPropagation()
                                           setCompletionSessionId(null)
-                                          invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                          if (cs.source === 'cursor') {
+                                            invoke('activate_app', { appName: 'Cursor' }).catch(() => {})
+                                          } else {
+                                            invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                          }
                                         }}
                                       >
                                         {cs.userPrompt && (
                                           <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a2a2e]">
                                             <span className="text-[12px] text-slate-300 truncate">
-                                              <span className="text-slate-500">{t('mini.you', '你')}：</span>{cs.userPrompt}
+                                              <span className="text-slate-500">{t('mini.you', '你')}：</span>
+                                              {cs.userPrompt}
                                             </span>
                                             <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
                                           </div>
@@ -2803,6 +2837,26 @@ export default function Mini() {
                             </div>
                           </div>
                         )}
+                        <div className="mb-8">
+                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">Cursor</h2>
+                          <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
+                            <AgentAccordionItem
+                              agent={{ id: 'cursor', identityName: 'Cursor' }}
+                              characters={characters}
+                              currentChar={cursorCharName}
+                              isOpen={openAccordionId === 'cursor'}
+                              onToggle={() => setOpenAccordionId(openAccordionId === 'cursor' ? null : 'cursor')}
+                              onOpenCreate={() => setIsCreateModalOpen(true)}
+                              onDeleteChar={handleDeleteChar}
+                              onSelect={async (charName) => {
+                                setCursorCharName(charName)
+                                const store = await load('settings.json', { defaults: {}, autoSave: true })
+                                await store.set('cursor_char', charName)
+                                await store.save()
+                              }}
+                            />
+                          </div>
+                        </div>
                         {agents.length > 0 && characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0).length < agents.length && (
                           <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">{t('mini.notEnoughChars')}</div>
                         )}

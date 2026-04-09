@@ -29,9 +29,73 @@ When the user references a UI element or component by name (e.g. "the little cha
 - List the candidate files/components that match the description.
 - Ask the user to confirm the correct target before making any changes.
 
-## Efficiency Mode — Reminder Popup (提醒弹窗)
+## Efficiency Mode — Session List & Popups
 
-In efficiency mode, when a Claude Code session requires user approval (`PermissionRequest` → `isWaiting`) **and** the session's corresponding terminal tab is not currently active/focused, the panel automatically expands to show a **reminder popup**. The popup displays the tool name, tool input preview, and four action buttons: Deny (拒绝), Allow Once (允许一次), Allow All (全部允许), Auto Approve (自动批准). This lets the user handle permission requests without switching to the terminal. The popup is rendered inline within the efficiency mode session list in `Mini.tsx` (search for "提醒弹窗").
+The efficiency mode session list in `Mini.tsx` shows both Claude Code and Cursor sessions sorted by priority: waiting > completed > working > idle, then by `updatedAt`.
+
+### Permission Popup (提醒弹窗)
+
+When a CC session requires user approval (`PermissionRequest` → `isWaiting`), the panel shows an inline permission popup with tool name, code preview (scrollable, 160px max-height for Write/Edit), and four action buttons. Clicking any button immediately collapses the panel and clears the waiting state locally. **Cursor sessions never show permission popups** — Cursor handles permissions internally via its own UI.
+
+### Completion Popup (完成弹窗)
+
+When a session completes (`Stop` with `lastResponse`), it auto-expands the panel **only if**:
+- The session's terminal tab was NOT active at Stop time (checked real-time in Rust `process_claude_event`, not during polling)
+- The panel was collapsed
+- The session hasn't been "seen" (`seenCompletions` set)
+
+The popup shows the user's prompt and AI response preview. **"Seen" conditions** that dismiss it:
+1. Tab was active when session completed (Rust sets `last_response = None`)
+2. Panel was open when session completed (`seenCompletions` tracks it)
+3. Panel collapsed after popup was displayed (clears `completionSessionId`)
+4. User clicked the popup to jump to terminal/app
+
+### Hook Script Tool Input Preview
+
+The hook script sends **structured slim JSON** for Write/Edit/Bash tools (not truncated raw dump) so the frontend can render file name + numbered code lines. Content limit: 5000 chars for Write/Edit, 500 for Bash commands. The code preview area is scrollable (max-h 160px) with a sticky file name header.
+
+### Pin & Hover Behavior
+
+- **Notch (刘海) hover** → expands panel (via Rust `efficiency-hover` events)
+- **Mascot (看板娘) hover** → does NOT expand (disabled `onMouseEnter`)
+- **Pin button** → prevents auto-close on mouse leave (`pinnedRef` checked in both hover-leave paths)
+- Manual click always expands; `hoverExpandedRef` distinguishes hover-opens from intentional opens
+
+### Active Tab Detection
+
+`get_active_ghostty_terminal_id()` checks if Ghostty is frontmost and returns the focused tab's terminal ID. Used in:
+- `get_claude_sessions()` — marks `isActiveTab` on matching sessions (for auto-expand suppression)
+- `process_claude_event()` at Stop time — skips `last_response` if user was looking at the terminal
+
+## Cursor Integration
+
+Cursor is a VS Code-based IDE (not a terminal). Its hook system differs from Claude Code:
+
+1. **Hook config**: `~/.cursor/hooks.json` with format `{version: 1, hooks: {eventName: [{command: "..."}]}}`
+2. **Hook stdin**: JSON with `hook_event_name` field (not argv like CC)
+3. **Hook stdout**: Must return `{"continue": true}` for `beforeSubmitPrompt` (gating hook), `{}` for others
+4. **11 events**: `sessionStart`, `sessionEnd`, `beforeSubmitPrompt`, `preToolUse`, `postToolUse`, `postToolUseFailure`, `subagentStart`, `subagentStop`, `preCompact`, `afterAgentThought`, `stop`
+5. **No terminal ID** — no Ghostty integration; clicking a Cursor session activates the Cursor app window
+6. **No permission popup** — Cursor handles permissions internally; `cs.source !== 'cursor'` guards the popup
+
+### Architecture
+
+- Hook script: `~/.cursor/hooks/occlaw-cursor-hook.sh` (bash+python3, written by `install_cursor_hooks()`)
+- Socket: `/tmp/occlaw-cursor.sock` (Unix) / TCP `127.0.0.1:19284` (Windows)
+- `process_claude_event()` accepts `source_override: Option<&str>` — Cursor socket server passes `Some("cursor")`, CC server passes `None` (defaults to `"cc"`)
+- `ClaudeSession.source` field: `"cc"` or `"cursor"` — controls badge color, click action, and permission popup visibility
+- Character pairing: separate `cursor_char` setting in store, `cursorCharName` state in Mini.tsx
+- `install_cursor_hooks()` regenerates the hook script on every app startup, same as CC hooks
+
+### Event Name Mapping
+
+Cursor uses camelCase event names, normalized to CC's PascalCase in `process_claude_event()`:
+- `beforeSubmitPrompt` → `UserPromptSubmit`
+- `sessionStart/End` → `SessionStart/End`
+- `preToolUse/postToolUse` → `PreToolUse/PostToolUse`
+- `subagentStart` → increments `pending_agents` (like `PreToolUse` with `tool=Agent`)
+- `subagentStop` → `SubagentStop`
+- `stop` → `Stop`
 
 # OpenClaw Data Format
 

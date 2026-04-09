@@ -231,6 +231,8 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
+  const [enableCursor, setEnableCursor] = useState(false)
+  const [cursorHookStatus, setCursorHookStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
   const [updateChecking, setUpdateChecking] = useState(false)
   const [updateCheckResult, setUpdateCheckResult] = useState<'success' | 'error' | null>(null)
@@ -276,6 +278,8 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
       const store = await getStore()
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
+      const cur = await store.get('enable_cursor')
+      if (typeof cur === 'boolean') setEnableCursor(cur)
     })()
     void checkForUpdate()
     invoke('list_backgrounds').then((list: any) => setBackgrounds(list as string[])).catch(() => {})
@@ -398,6 +402,21 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
     }
   }
 
+  const toggleCursor = async (val: boolean) => {
+    setEnableCursor(val)
+    const store = await getStore()
+    await store.set('enable_cursor', val)
+    await store.save()
+    if (val) {
+      try {
+        await invoke('install_cursor_hooks')
+        setCursorHookStatus(t('settings.hookInstalled'))
+      } catch (e: any) {
+        setCursorHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
+      }
+    }
+  }
+
   return (
     <div className="max-w-2xl mx-auto pt-10 pb-20 px-6 flex flex-col gap-10">
       {/* OpenClaw 连接 */}
@@ -441,6 +460,21 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               {hookStatus && <span className="text-xs text-white/30 mt-1">{hookStatus}</span>}
             </div>
             <Toggle checked={enableClaudeCode} onChange={toggleClaudeCode} />
+          </div>
+        </div>
+      </section>
+
+      {/* Cursor */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-white">Cursor</h2>
+        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.enableCursor', 'Enable Cursor')}</span>
+              <span className="text-xs text-white/40">{t('settings.enableCursorDesc', 'Monitor local Cursor agent sessions via Hooks')}</span>
+              {cursorHookStatus && <span className="text-xs text-white/30 mt-1">{cursorHookStatus}</span>}
+            </div>
+            <Toggle checked={enableCursor} onChange={toggleCursor} />
           </div>
         </div>
       </section>

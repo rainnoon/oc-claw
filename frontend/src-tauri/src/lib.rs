@@ -4496,6 +4496,8 @@ pub struct ClaudeSession {
     /// Set dynamically in `get_claude_sessions` — not persisted.
     #[serde(rename = "isActiveTab")]
     pub is_active_tab: bool,
+    /// Source of this session: "cc" (Claude Code) or "cursor" (Cursor IDE).
+    pub source: String,
     /// Ghostty terminal `id` captured when the session is first seen.
     /// Used by `jump_to_claude_terminal` to select the exact tab instead
     /// of relying on CWD/title matching which is ambiguous.
@@ -6100,6 +6102,7 @@ fn process_claude_event(
     buf: &str,
     state: &Arc<Mutex<HashMap<String, ClaudeSession>>>,
     app: &tauri::AppHandle,
+    source_override: Option<&str>,
 ) -> Option<(String, String)> {
     log::info!("[claude_event] raw buf len={} content={}", buf.len(), &buf[..buf.len().min(500)]);
     if let Ok(event) = serde_json::from_str::<serde_json::Value>(buf) {
@@ -6111,8 +6114,23 @@ fn process_claude_event(
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
         if session_id.is_empty() { log::warn!("[claude_event] empty sessionId, ignoring"); return None; }
 
-        let hook_event = event.get("event").or_else(|| event.get("hook_event_name"))
+        let raw_hook_event = event.get("event").or_else(|| event.get("hook_event_name"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // Normalize Cursor's camelCase event names to CC's PascalCase
+        let hook_event = match raw_hook_event.as_str() {
+            "beforeSubmitPrompt" => "UserPromptSubmit".to_string(),
+            "sessionStart" => "SessionStart".to_string(),
+            "sessionEnd" => "SessionEnd".to_string(),
+            "preToolUse" => "PreToolUse".to_string(),
+            "postToolUse" => "PostToolUse".to_string(),
+            "postToolUseFailure" => "PostToolUse".to_string(),
+            "subagentStart" => "PreToolUse".to_string(), // treat as Agent tool start
+            "subagentStop" => "SubagentStop".to_string(),
+            "preCompact" => "PreCompact".to_string(),
+            "afterAgentThought" => "PostToolUse".to_string(), // treat as processing
+            "stop" => "Stop".to_string(),
+            other => other.to_string(),
+        };
         let claude_status = event.get("claudeStatus").or_else(|| event.get("status"))
             .and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
 
@@ -6176,6 +6194,11 @@ fn process_claude_event(
                 sessions.remove(&session_id);
                 pending_agents = 0;
             } else {
+                // Determine source: explicit override from socket server, or from JSON, or default "cc"
+                let source = source_override
+                    .map(|s| s.to_string())
+                    .or_else(|| event.get("source").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_else(|| "cc".to_string());
                 let session = sessions.entry(session_id.clone()).or_insert_with(|| ClaudeSession {
                     session_id: session_id.clone(),
                     cwd: String::new(),
@@ -6190,6 +6213,7 @@ fn process_claude_event(
                     pending_agents: 0,
                     last_response: None,
                     is_active_tab: false,
+                    source: source.clone(),
                     permission_suggestions: None,
                     terminal_id: None,
                 });
@@ -6204,7 +6228,7 @@ fn process_claude_event(
                     // New user prompt = fresh start. Reset counter in case previous
                     // agents were killed or SubagentStop was never delivered.
                     session.pending_agents = 0;
-                } else if hook_event == "PreToolUse" && tool_name == "Agent" {
+                } else if (hook_event == "PreToolUse" && tool_name == "Agent") || raw_hook_event == "subagentStart" {
                     session.pending_agents += 1;
                     log::info!("[claude_event] session={} Agent launched, pending_agents={}",
                         &session_id[..session_id.len().min(8)], session.pending_agents);
@@ -6324,6 +6348,290 @@ fn process_claude_event(
     None
 }
 
+// ─── Cursor Integration ───────────────────────────────────────────────
+
+/// Install hooks for Cursor IDE.
+/// Creates ~/.cursor/hooks/occlaw-cursor-hook.sh and registers it in
+/// ~/.cursor/hooks.json for all Cursor hook events.
+#[tauri::command]
+async fn install_cursor_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let cursor_dir = home.join(".cursor");
+    let hooks_dir = cursor_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
+
+    // ── Write hook script (Unix) ──
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/occlaw-cursor.sock";
+        let hook_script = format!(r##"#!/bin/bash
+# occlaw Cursor hook — forwards events to {socket}
+SOCKET_PATH="{socket}"
+[ -S "$SOCKET_PATH" ] || {{ echo '{{}}'; exit 0; }}
+export CC_PID=$PPID
+
+/usr/bin/python3 -c "
+import json, os, socket, sys
+
+try:
+    input_data = json.load(sys.stdin)
+except:
+    print('{{}}')
+    sys.exit(0)
+
+hook_event = input_data.get('hook_event_name', '')
+if not hook_event:
+    print('{{}}')
+    sys.exit(0)
+
+session_id = input_data.get('session_id', '') or input_data.get('conversation_id', '') or 'default'
+cwd = input_data.get('cwd', '')
+if not cwd:
+    roots = input_data.get('workspace_roots', [])
+    if roots:
+        cwd = roots[0]
+
+output = {{}}
+output['sessionId'] = session_id
+output['event'] = hook_event
+output['source'] = 'cursor'
+if cwd:
+    output['cwd'] = cwd
+
+# Map tool info
+tool_name = input_data.get('tool_name', '')
+if tool_name:
+    output['tool'] = tool_name
+
+tool_input = input_data.get('tool_input', {{}})
+if tool_input:
+    tn = tool_name
+    if tn in ('Write', 'Edit'):
+        slim = {{}}
+        if tool_input.get('file_path'):
+            slim['file_path'] = tool_input['file_path']
+        c = tool_input.get('content') or tool_input.get('new_string') or tool_input.get('old_string') or ''
+        if c:
+            slim['content'] = c[:5000]
+        output['toolInput'] = json.dumps(slim)
+    elif tn == 'Bash' or tn == 'Shell':
+        slim = {{}}
+        if tool_input.get('command'):
+            slim['command'] = tool_input['command'][:500]
+        output['toolInput'] = json.dumps(slim)
+    else:
+        output['toolInput'] = json.dumps(tool_input)[:300]
+
+# Stop event: extract status and last response
+if hook_event == 'stop':
+    status = input_data.get('status', '')
+    if status:
+        output['claudeStatus'] = status
+    msg = input_data.get('last_assistant_message', '')
+    if msg:
+        output['lastResponse'] = msg[:300]
+
+# UserPromptSubmit: extract prompt text
+if hook_event == 'beforeSubmitPrompt':
+    prompt = input_data.get('prompt', '')
+    if prompt:
+        output['userPrompt'] = prompt[:200]
+
+# PID for stale-session detection
+cc_pid = os.environ.get('CC_PID', '')
+if cc_pid:
+    try:
+        output['pid'] = int(cc_pid)
+    except:
+        pass
+
+# Send to socket
+try:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect('$SOCKET_PATH')
+    sock.sendall(json.dumps(output).encode())
+    sock.shutdown(socket.SHUT_WR)
+    sock.close()
+except:
+    pass
+
+# Required stdout for Cursor: beforeSubmitPrompt is a gating hook
+if hook_event == 'beforeSubmitPrompt':
+    print(json.dumps({{'continue': True}}))
+else:
+    print('{{}}')
+"
+"##, socket = socket_path);
+
+        let hook_path = hooks_dir.join("occlaw-cursor-hook.sh");
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // ── Write hook script (Windows) ──
+    #[cfg(windows)]
+    {
+        let hook_script = r#"$ErrorActionPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$raw = [Console]::In.ReadToEnd()
+if (-not $raw) { Write-Output '{}'; exit 0 }
+$ccPid = (Get-Process -Id $PID).Parent.Parent.Id
+if ($ccPid -and $raw.StartsWith('{')) {
+    $raw = '{"pid":' + $ccPid + ',"source":"cursor",' + $raw.Substring(1)
+} else {
+    $raw = '{"source":"cursor",' + $raw.Substring(1)
+}
+try {
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19284)
+    $stream = $client.GetStream()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+    $hookName = ($raw | ConvertFrom-Json).hook_event_name
+    if ($hookName -eq 'beforeSubmitPrompt') {
+        Write-Output '{"continue":true}'
+    } else {
+        Write-Output '{}'
+    }
+    $client.Close()
+} catch {
+    Write-Output '{}'
+}
+"#;
+        let hook_path = hooks_dir.join("occlaw-cursor-hook.ps1");
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
+    }
+
+    // ── Register hooks in ~/.cursor/hooks.json ──
+    let hooks_json_path = cursor_dir.join("hooks.json");
+    let mut config: serde_json::Value = if hooks_json_path.exists() {
+        let content = std::fs::read_to_string(&hooks_json_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    config["version"] = serde_json::json!(1);
+    if config.get("hooks").is_none() {
+        config["hooks"] = serde_json::json!({});
+    }
+
+    #[cfg(unix)]
+    let hook_command = hooks_dir.join("occlaw-cursor-hook.sh").to_string_lossy().to_string();
+    #[cfg(windows)]
+    let hook_command = format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+        hooks_dir.join("occlaw-cursor-hook.ps1").to_string_lossy());
+
+    let cursor_events = [
+        "sessionStart", "sessionEnd", "beforeSubmitPrompt",
+        "preToolUse", "postToolUse", "postToolUseFailure",
+        "subagentStart", "subagentStop", "preCompact",
+        "afterAgentThought", "stop",
+    ];
+    let marker = "occlaw-cursor-hook";
+
+    let hooks = config["hooks"].as_object_mut().ok_or("hooks is not an object")?;
+    for event_name in &cursor_events {
+        let arr = hooks.entry(event_name.to_string())
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or("hook event is not an array")?;
+
+        // Check if our hook already exists
+        let existing_idx = arr.iter().position(|entry| {
+            entry.get("command").and_then(|c| c.as_str())
+                .map(|c| c.contains(marker))
+                .unwrap_or(false)
+        });
+
+        let entry = serde_json::json!({"command": hook_command});
+        if let Some(idx) = existing_idx {
+            arr[idx] = entry; // update in-place
+        } else {
+            arr.push(entry);
+        }
+    }
+
+    let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&hooks_json_path, json_str).map_err(|e| e.to_string())?;
+
+    log::info!("[cursor_hooks] installed hooks to {:?}", hooks_json_path);
+    Ok(())
+}
+
+/// Start the Cursor IPC server.
+/// On macOS/Linux: Unix domain socket at /tmp/occlaw-cursor.sock
+/// On Windows: TCP server on localhost:19284
+fn start_cursor_socket_server(
+    claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    app: tauri::AppHandle,
+) {
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/occlaw-cursor.sock";
+        let _ = std::fs::remove_file(socket_path);
+        let listener = match std::os::unix::net::UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[cursor_socket] bind failed: {}", e); return; }
+        };
+        log::info!("[cursor_socket] listening on {}", socket_path);
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            // Cursor events never block (no PermissionRequest)
+                            process_claude_event(&buf, &state, &app, Some("cursor"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:19284") {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[cursor_socket] TCP bind failed: {}", e); return; }
+        };
+        log::info!("[cursor_socket] listening on 127.0.0.1:19284");
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            process_claude_event(&buf, &state, &app, Some("cursor"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
 /// Start the Claude IPC server.
 /// On macOS/Linux: Unix domain socket at /tmp/ooclaw-claude.sock
 /// On Windows: TCP server on localhost:19283
@@ -6358,7 +6666,7 @@ fn start_claude_socket_server(
                             let mut s = s;
                             let mut buf = String::new();
                             let _ = s.read_to_string(&mut buf);
-                            if let Some((session_id, hook_event)) = process_claude_event(&buf, &state, &app) {
+                            if let Some((session_id, hook_event)) = process_claude_event(&buf, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
                                     {
@@ -6424,7 +6732,7 @@ fn start_claude_socket_server(
                                 }
                             }
                             let text = String::from_utf8_lossy(&buf);
-                            if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app) {
+                            if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
                                     {
@@ -6695,6 +7003,13 @@ pub fn run() {
                 start_claude_socket_server(sessions_arc, pending_arc, app.handle().clone());
             }
 
+            // Start Cursor socket server (shares ClaudeState for unified session tracking)
+            {
+                let claude_state = app.state::<ClaudeState>();
+                let sessions_arc = Arc::clone(&claude_state.sessions);
+                start_cursor_socket_server(sessions_arc, app.handle().clone());
+            }
+
             // System tray — use saved language, fallback to system language
             let initial_lang = {
                 let store_path = app.path().app_data_dir().ok().map(|p| p.join("settings.json"));
@@ -6763,7 +7078,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
