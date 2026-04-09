@@ -3312,6 +3312,13 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                            // Activate the app + make window key so clicks register
+                            // immediately (no "first click to focus" issue).
+                            let ns_app_cls = AnyClass::get(c"NSApplication").unwrap();
+                            let ns_app: *mut AnyObject = msg_send![ns_app_cls, sharedApplication];
+                            let _: () = msg_send![&*ns_app, activateIgnoringOtherApps: true];
+                            let null: *mut AnyObject = std::ptr::null_mut();
+                            let _: () = msg_send![obj, makeKeyAndOrderFront: null];
                         }
                         (x, y, win_w, win_h)
                     } else {
