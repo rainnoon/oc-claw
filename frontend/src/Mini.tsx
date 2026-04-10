@@ -512,6 +512,32 @@ export default function Mini() {
   const [selectedClaudeSession, setSelectedClaudeSession] = useState<string | null>(null)
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
   const [showClaudeStats, setShowClaudeStats] = useState(false)
+  const [sessionNicknames, setSessionNicknames] = useState<Record<string, string>>({})
+  const [editingSessionTitle, setEditingSessionTitle] = useState<string | null>(null)
+  const editingTitleValueRef = useRef('')
+  const editingTitleDefaultRef = useRef('')
+  const saveSessionNickname = useCallback(async (sessionId: string, val: string, defaultName: string) => {
+    const trimmed = val.trim()
+    setSessionNicknames((prev) => {
+      const next = { ...prev }
+      if (trimmed && trimmed !== defaultName) {
+        next[sessionId] = trimmed
+      } else {
+        delete next[sessionId]
+      }
+      load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+        await store.set('session_nicknames', next)
+        await store.save()
+      })
+      return next
+    })
+  }, [])
+  useEffect(() => {
+    if (!showPanel && editingSessionTitle) {
+      saveSessionNickname(editingSessionTitle, editingTitleValueRef.current, editingTitleDefaultRef.current)
+      setEditingSessionTitle(null)
+    }
+  }, [showPanel, editingSessionTitle, saveSessionNickname])
 
   // OC multi-connection: qualifiedId → connection params, qualifiedId → real agent ID, qualifiedId → source label
   const agentConnMapRef = useRef<Map<string, OcParams>>(new Map())
@@ -601,6 +627,10 @@ export default function Mini() {
 
   useEffect(() => {
     loadMiniChar()
+    load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+      const nicks = (await store.get('session_nicknames')) as Record<string, string> | null
+      if (nicks) setSessionNicknames(nicks)
+    })
     const unlisten = listen('character-changed', () => loadMiniChar())
     return () => {
       unlisten.then((fn) => fn())
@@ -2086,7 +2116,8 @@ export default function Mini() {
                                 )
                               } else {
                                 const cs = item.data
-                                const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                const defaultProjectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                const projectName = sessionNicknames[cs.sessionId] || defaultProjectName
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
                                 const isCompacting = cs.status === 'compacting'
@@ -2147,8 +2178,45 @@ export default function Mini() {
                                           <span className="w-1 h-1 rounded-full bg-slate-600" />
                                         </div>
                                       )}
-                                      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                                        <span className={`text-[13px] font-bold shrink-0 ${isWorking ? 'text-white' : 'text-slate-300'}`}>{projectName}</span>
+                                      <div
+                                        className="flex min-w-0 flex-1 items-center gap-1.5"
+                                        data-no-drag
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        {editingSessionTitle === cs.sessionId ? (
+                                          <input
+                                            autoFocus
+                                            data-no-drag
+                                            className="text-[13px] font-bold bg-transparent border-b border-slate-500 outline-none text-white w-24"
+                                            defaultValue={projectName}
+                                            ref={(el) => {
+                                              if (el) {
+                                                editingTitleValueRef.current = el.value
+                                                editingTitleDefaultRef.current = defaultProjectName
+                                              }
+                                            }}
+                                            onChange={(e) => { editingTitleValueRef.current = e.target.value }}
+                                            onBlur={() => {
+                                              saveSessionNickname(cs.sessionId, editingTitleValueRef.current, defaultProjectName)
+                                              setEditingSessionTitle(null)
+                                            }}
+                                            onKeyDown={(e) => {
+                                              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                                              if (e.key === 'Escape') setEditingSessionTitle(null)
+                                            }}
+                                            onClick={(e) => e.stopPropagation()}
+                                          />
+                                        ) : (
+                                          <span
+                                            className={`text-[13px] font-bold shrink-0 cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                            onDoubleClick={(e) => {
+                                              e.stopPropagation()
+                                              setEditingSessionTitle(cs.sessionId)
+                                            }}
+                                          >
+                                            {projectName}
+                                          </span>
+                                        )}
                                         {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
                                       </div>
                                       <div className="flex items-center gap-2 shrink-0">
