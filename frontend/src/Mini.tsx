@@ -1601,7 +1601,6 @@ export default function Mini() {
   const hasWorking = anySessionActive || Object.values(healthMap).some(Boolean) || claudeWorking || claudeCompacting || claudeWaiting
   // Priority: waiting > compacting > working > idle
   const mainPetState: PetState = claudeWaiting ? 'waiting' : claudeCompacting ? 'compacting' : hasWorking ? 'working' : 'idle'
-  const shouldBob = !(disableSleepAnim && mainPetState === 'idle')
   const miniGif = getMiniGif(miniChar ?? undefined, mainPetState, true)
   const handleDeleteChar = useCallback(async (name: string) => {
     try {
@@ -1672,7 +1671,7 @@ export default function Mini() {
             style={{
               position: 'relative',
               cursor: moveMode ? 'grab' : 'pointer',
-              animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : shouldBob ? 'bob 1.2s ease-in-out infinite' : 'none',
+              animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : 'none',
               ...(moveMode
                 ? {
                     borderRadius: 12,
