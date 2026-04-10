@@ -4904,6 +4904,25 @@ fn is_codex_host_terminal(name: &str) -> bool {
     name == "Code" || name == "Visual Studio Code" || name.eq_ignore_ascii_case("codex")
 }
 
+/// Check if the frontmost app matches the host terminal name.
+/// `host_terminal` comes from process-chain detection (e.g. "Terminal",
+/// "iTerm2", "Warp") while `frontmost` is the short app name from
+/// NSWorkspace (e.g. "Terminal", "iTerm2", "Warp").
+/// Also handles "oc-claw" (our own panel can steal focus).
+fn frontmost_matches_host_terminal(frontmost: &str, host_terminal: &str) -> bool {
+    if frontmost == "oc-claw" {
+        return true;
+    }
+    if frontmost.eq_ignore_ascii_case(host_terminal) {
+        return true;
+    }
+    // macOS Terminal.app reports as "Terminal" in both NSWorkspace and ps
+    if host_terminal == "Apple_Terminal" && frontmost == "Terminal" {
+        return true;
+    }
+    false
+}
+
 
 #[tauri::command]
 async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec<ClaudeSession>, String> {
@@ -4971,37 +4990,33 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     let frontmost = get_frontmost_app_name();
     let cursor_is_active = is_cursor_frontmost_app(&frontmost);
     let codex_is_active = is_codex_frontmost_app(&frontmost);
+    let is_ghostty = |s: &ClaudeSession| -> bool {
+        matches!(s.host_terminal.as_deref(), Some("Ghostty" | "ghostty"))
+    };
     if let Some(ref tid) = active_tid {
         for s in &mut list {
-            if s.source != "cursor" {
+            if s.source != "cursor" && is_ghostty(s) {
                 s.is_active_tab = s.terminal_id.as_deref() == Some(tid.as_str());
             }
         }
     }
     for s in &mut list {
-        if s.source != "cursor" && s.host_terminal.as_deref() == Some("Cursor") {
-            s.is_active_tab = cursor_is_active;
+        if s.source == "cursor" {
+            continue;
         }
-    }
-    // Some Codex events may arrive without source=codex and stay as "cc".
-    // If process-chain detection says this session belongs to Codex, treat it
-    // like Codex for active-tab suppression.
-    for s in &mut list {
-        if s.source == "cc"
-            && s.host_terminal
-                .as_deref()
-                .map(is_codex_host_terminal)
-                .unwrap_or(false)
-            && !s.is_active_tab
-        {
-            s.is_active_tab = codex_is_active;
+        if s.is_active_tab {
+            continue;
         }
-    }
-    // Codex sessions: if not already matched by Ghostty terminal ID above,
-    // check if the standalone Codex app is frontmost.
-    for s in &mut list {
-        if s.source == "codex" && !s.is_active_tab {
+        if s.source == "codex" {
             s.is_active_tab = codex_is_active;
+        } else if let Some(ht) = s.host_terminal.as_deref() {
+            if ht == "Cursor" {
+                s.is_active_tab = cursor_is_active;
+            } else if is_codex_host_terminal(ht) {
+                s.is_active_tab = codex_is_active;
+            } else if !is_ghostty(s) {
+                s.is_active_tab = frontmost_matches_host_terminal(&frontmost, ht);
+            }
         }
     }
     list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -7753,18 +7768,24 @@ fn process_claude_event(
                     // If a terminal ID is missing (older hooks / non-Ghostty),
                     // fall back to host-terminal checks where available.
                     let frontmost = get_frontmost_app_name();
+                    let is_ghostty_session = matches!(
+                        session.host_terminal.as_deref(),
+                        Some("Ghostty" | "ghostty")
+                    );
                     let is_tab_active = if session.source == "cursor" {
                         is_cursor_frontmost_app(&frontmost)
                     } else if session.source == "codex" {
-                        // Codex: check Ghostty tab match first, fall back to Codex app frontmost
-                        let ghostty_match = session.terminal_id.as_ref()
-                            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
-                            .unwrap_or(false);
+                        let ghostty_match = is_ghostty_session
+                            && session.terminal_id.as_ref()
+                                .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+                                .unwrap_or(false);
                         ghostty_match || is_codex_frontmost_app(&frontmost)
-                    } else if let Some(tid) = session.terminal_id.as_ref() {
-                        get_active_ghostty_terminal_id().map(|a| a == *tid).unwrap_or(false)
-                    } else if session.host_terminal.as_deref() == Some("Cursor") {
-                        is_cursor_frontmost_app(&frontmost)
+                    } else if is_ghostty_session {
+                        session.terminal_id.as_ref()
+                            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+                            .unwrap_or(false)
+                    } else if let Some(ht) = session.host_terminal.as_deref() {
+                        frontmost_matches_host_terminal(&frontmost, ht)
                     } else {
                         false
                     };
