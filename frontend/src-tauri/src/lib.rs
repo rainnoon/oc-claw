@@ -3541,11 +3541,17 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Opti
 }
 
 /// Resize the mini window to 3/4 of screen, centered, with normal window level.
-/// Used for settings panel mode. Pass `restore: true` to go back to mini mode.
+/// Used for settings/update modal mode. Pass `restore: true` to go back to mini mode.
 #[tauri::command]
-async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<String>) -> Result<(), String> {
+async fn set_mini_size(
+    app: tauri::AppHandle,
+    restore: bool,
+    position: Option<String>,
+    keep_on_top: Option<bool>,
+) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
+    let want_top = keep_on_top.unwrap_or(restore);
 
     #[cfg(target_os = "macos")]
     {
@@ -3585,9 +3591,11 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
-                            let _: () = msg_send![obj, setLevel: 27isize];
+                            let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
-                            let _: () = msg_send![obj, orderFrontRegardless];
+                            if want_top {
+                                let _: () = msg_send![obj, orderFrontRegardless];
+                            }
                         }
                     } else {
                         let win_w = (sw * 0.85).round();
@@ -3596,8 +3604,11 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
-                            let _: () = msg_send![obj, setLevel: 0isize];
+                            let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                            if want_top {
+                                let _: () = msg_send![obj, orderFrontRegardless];
+                            }
                         }
                     }
                 }
@@ -3621,15 +3632,13 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                 let notch_off = (80.0 * ui).round();
                 let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
-                    let _ = win.set_always_on_top(true);
-                }
+                let _ = win.set_always_on_top(want_top && !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst));
                 let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             } else {
                 let win_w = (sw * 0.85).round();
                 let win_h = (sh * 0.85).round();
                 let x = mx + (sw - win_w) / 2.0;
-                let _ = win.set_always_on_top(false);
+                let _ = win.set_always_on_top(want_top && !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst));
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
                 let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             }
@@ -6195,8 +6204,47 @@ fn get_tty_for_pid(pid: u32) -> Option<String> {
 ///   }
 ///
 /// Legacy format (single "url" field) is still supported for backward compatibility.
+fn normalize_lang_tag(lang: &str) -> String {
+    lang.trim().to_lowercase().replace('_', "-")
+}
+
+fn pick_localized_notes(notes_i18n: &serde_json::Value, lang: Option<&str>) -> Option<String> {
+    let obj = notes_i18n.as_object()?;
+    let mut keys: Vec<String> = Vec::new();
+    if let Some(raw) = lang {
+        let normalized = normalize_lang_tag(raw);
+        if !normalized.is_empty() {
+            keys.push(normalized.clone());
+            if let Some((prefix, _)) = normalized.split_once('-') {
+                if !prefix.is_empty() {
+                    keys.push(prefix.to_string());
+                }
+            }
+        }
+    }
+    keys.push("en".to_string());
+    keys.push("zh".to_string());
+    for key in keys {
+        if let Some(value) = obj.get(&key).and_then(|v| v.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    for value in obj.values() {
+        if let Some(text) = value.as_str() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[tauri::command]
-async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+async fn check_for_update(app: tauri::AppHandle, lang: Option<String>) -> Result<serde_json::Value, String> {
     let current = app.config().version.clone().unwrap_or_default();
 
     let update_url = if cfg!(debug_assertions) {
@@ -6243,6 +6291,11 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
     let url = platform["url"].as_str()
         .or_else(|| json["url"].as_str())
         .unwrap_or("");
+    let notes = pick_localized_notes(&platform["notes_i18n"], lang.as_deref())
+        .or_else(|| pick_localized_notes(&json["notes_i18n"], lang.as_deref()))
+        .or_else(|| platform["notes"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .or_else(|| json["notes"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .unwrap_or_default();
     let has_update = version_cmp(latest, &current);
     log::info!("[update] platform={} latest={} current={} hasUpdate={}", platform_key, latest, current, has_update);
 
@@ -6251,6 +6304,7 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
         "latest": latest,
         "hasUpdate": has_update,
         "url": url,
+        "notes": notes,
     }))
 }
 

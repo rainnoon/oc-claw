@@ -159,6 +159,26 @@
     "langFr": "Français"
   },
 
+  "updateModal": {
+    "title": "发现更新",
+    "availableSubtitle": "OC-CLAW 新版本已可安装。",
+    "whatsNew": "更新内容：",
+    "noNotes": "暂无更新说明",
+    "later": "稍后",
+    "skipVersion": "跳过此版本",
+    "updateNow": "立即更新",
+    "pleaseDontClose": "请不要关闭应用",
+    "completeTitle": "更新完成！",
+    "completeDesc": "重启应用以应用更新。",
+    "restartNow": "立即重启",
+    "progress": {
+      "preparing": "准备更新...",
+      "downloading": "下载更新中...",
+      "downloaded": "下载完成，准备安装...",
+      "ready_to_restart": "更新已准备完成"
+    }
+  },
+
   "character": {
     "trackAgent": "追踪 Agent",
     "trackAgentDesc": "桌宠状态和聊天将绑定此 Agent",

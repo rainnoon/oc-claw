@@ -249,6 +249,14 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
   const [bgNaturalSize, setBgNaturalSize] = useState<{ w: number; h: number } | null>(null)
   const cropContainerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+  const resolveUpdateProgressText = useCallback((stage?: string, fallbackMessage?: string) => {
+    if (stage) {
+      const key = `updateModal.progress.${stage}`
+      const localized = t(key)
+      if (localized !== key) return localized
+    }
+    return fallbackMessage || ''
+  }, [t])
 
   const checkForUpdate = useCallback(async (showFeedback = false) => {
     setUpdateChecking(true)
@@ -257,7 +265,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
       setUpdateCheckMsg('')
     }
     try {
-      const info = await invoke('check_for_update') as { current: string; latest: string; hasUpdate: boolean; url: string }
+      const info = await invoke('check_for_update', { lang: i18n.language }) as { current: string; latest: string; hasUpdate: boolean; url: string; notes?: string }
       setUpdateInfo(info)
       if (showFeedback) {
         setUpdateCheckResult('success')
@@ -271,7 +279,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
     } finally {
       setUpdateChecking(false)
     }
-  }, [])
+  }, [i18n.language, t])
 
   useEffect(() => {
     ;(async () => {
@@ -293,10 +301,10 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
     const unlisten = listen<UpdateProgressPayload>('update-progress', (event) => {
       const payload = event.payload
       setUpdateProgress(typeof payload.progress === 'number' ? payload.progress : null)
-      setUpdateProgressMsg(payload.message || '')
+      setUpdateProgressMsg(resolveUpdateProgressText(payload.stage, payload.message))
     })
     return () => { unlisten.then((fn) => fn()) }
-  }, [])
+  }, [resolveUpdateProgressText])
 
   // Load preview image for current background
   useEffect(() => {
@@ -758,7 +766,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                   onClick={async () => {
                     setUpdating(true)
                     setUpdateProgress(0)
-                    setUpdateProgressMsg(t('settings.preparingDownload'))
+                    setUpdateProgressMsg(resolveUpdateProgressText('preparing', t('settings.preparingDownload')))
                     setUpdateRunResult(null)
                     setUpdateRunMsg('')
                     try {

@@ -159,6 +159,26 @@
     "langFr": "Français"
   },
 
+  "updateModal": {
+    "title": "Update Available",
+    "availableSubtitle": "A new version of OC-CLAW is ready to install.",
+    "whatsNew": "Here's what's new:",
+    "noNotes": "No release notes available.",
+    "later": "Later",
+    "skipVersion": "Skip This Version",
+    "updateNow": "Update Now",
+    "pleaseDontClose": "Please do not close the application",
+    "completeTitle": "Update Complete!",
+    "completeDesc": "Restart the application to apply changes.",
+    "restartNow": "Restart Now",
+    "progress": {
+      "preparing": "Preparing update...",
+      "downloading": "Downloading update...",
+      "downloaded": "Download complete, preparing install...",
+      "ready_to_restart": "Update ready to restart"
+    }
+  },
+
   "character": {
     "trackAgent": "Track Agent",
     "trackAgentDesc": "Desktop pet status and chat will be bound to this agent",

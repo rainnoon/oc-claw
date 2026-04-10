@@ -7,6 +7,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
 import { SettingsTab } from './components/SettingsTab'
+import { UpdateModal, type UpdateModalInfo, type UpdateModalPhase } from './components/UpdateModal'
 import { AgentDetailView } from './components/AgentDetailView'
 import { CreateCharacterModal } from './components/CreateCharacterModal'
 import { ClaudeStatsView } from './components/ClaudeStatsView'
@@ -66,6 +67,14 @@ interface SessionSlot {
   char?: CharacterMeta
   isWorking: boolean
   petState?: PetState
+}
+
+interface UpdateProgressPayload {
+  stage: string
+  progress?: number | null
+  downloadedBytes?: number
+  totalBytes?: number | null
+  message?: string
 }
 
 const MAX_SLOTS = 10
@@ -605,7 +614,15 @@ export default function Mini() {
     _setMoveMode(v)
   }
 
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
+  const updateModalOpenRef = useRef(false)
+  const pendingUpdateInfoRef = useRef<UpdateModalInfo | null>(null)
+  const updateModalRunOwnedRef = useRef(false)
+  const [updateModalPhase, setUpdateModalPhase] = useState<UpdateModalPhase>('available')
+  const [updateModalInfo, setUpdateModalInfo] = useState<UpdateModalInfo | null>(null)
+  const [updateModalProgress, setUpdateModalProgress] = useState<number | null>(null)
+  const [updateModalProgressStage, setUpdateModalProgressStage] = useState('preparing')
 
   // Load mini character from store
   const loadMiniChar = useCallback(async () => {
@@ -1102,7 +1119,14 @@ export default function Mini() {
           if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId)) {
             seenCompletions.add(s.sessionId)
             // Only auto-expand if tab not active and panel is collapsed
-            if (!s.isActiveTab && viewModeRef.current === 'efficiency' && !expandedRef.current && !expandingRef.current && !collapsingRef.current) {
+            if (
+              !updateModalOpenRef.current &&
+              !s.isActiveTab &&
+              viewModeRef.current === 'efficiency' &&
+              !expandedRef.current &&
+              !expandingRef.current &&
+              !collapsingRef.current
+            ) {
               hoverExpandedRef.current = true
               setCompletionSessionId(s.sessionId)
               expandFnRef.current?.()
@@ -1319,6 +1343,194 @@ export default function Mini() {
     expandingRef.current = false
   }, [])
   expandFnRef.current = expand
+  const updateModalWindowAdjustedRef = useRef(false)
+  const updateModalPrevExpandedRef = useRef(false)
+
+  const ensureUpdateModalWindow = useCallback(async () => {
+    if (settingsModeRef.current) return
+    if (updateModalWindowAdjustedRef.current) return
+    updateModalWindowAdjustedRef.current = true
+    updateModalPrevExpandedRef.current = expandedRef.current
+    try {
+      await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, keepOnTop: true })
+      await new Promise<void>((r) => setTimeout(r, 80))
+    } catch {
+      updateModalWindowAdjustedRef.current = false
+    }
+  }, [])
+
+  const restoreWindowAfterUpdateModal = useCallback(async () => {
+    if (!updateModalWindowAdjustedRef.current) return
+    const wasExpanded = updateModalPrevExpandedRef.current
+    updateModalWindowAdjustedRef.current = false
+    if (settingsModeRef.current) return
+    try {
+      if (wasExpanded) {
+        await invoke('set_mini_expanded', {
+          expanded: true,
+          position: mascotPositionRef.current,
+          efficiency: viewModeRef.current === 'efficiency',
+          maxHeight: panelMaxHeightRef.current,
+        })
+        setExpanded(true)
+        expandedRef.current = true
+        setShowPanel(true)
+      } else {
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
+        setExpanded(false)
+        expandedRef.current = false
+        setShowPanel(false)
+      }
+    } catch {}
+  }, [])
+
+  const openAvailableUpdateModal = useCallback(async (info: UpdateModalInfo) => {
+    if (settingsModeRef.current || settingsTransitioningRef.current || isCreateModalOpenRef.current) {
+      pendingUpdateInfoRef.current = info
+      return
+    }
+    setUpdateModalInfo(info)
+    setUpdateModalPhase('available')
+    setUpdateModalProgress(null)
+    setUpdateModalProgressStage('preparing')
+    hoverExpandedRef.current = false
+    if (hoverCloseTimerRef.current) {
+      clearTimeout(hoverCloseTimerRef.current)
+      hoverCloseTimerRef.current = null
+    }
+    setEffListCollapsed(true)
+    await ensureUpdateModalWindow()
+    updateModalOpenRef.current = true
+    setUpdateModalOpen(true)
+  }, [ensureUpdateModalWindow])
+
+  const closeUpdateModal = useCallback(() => {
+    updateModalRunOwnedRef.current = false
+    updateModalOpenRef.current = false
+    setUpdateModalOpen(false)
+    void restoreWindowAfterUpdateModal()
+  }, [restoreWindowAfterUpdateModal])
+
+  const skipCurrentUpdateVersion = useCallback(async () => {
+    if (!updateModalInfo?.latest) return
+    const store = await load('settings.json', { defaults: {}, autoSave: true })
+    await store.set('skipped_update_version', updateModalInfo.latest)
+    await store.save()
+    updateModalRunOwnedRef.current = false
+    updateModalOpenRef.current = false
+    setUpdateModalOpen(false)
+    void restoreWindowAfterUpdateModal()
+  }, [restoreWindowAfterUpdateModal, updateModalInfo?.latest])
+
+  const runUpdateFromModal = useCallback(async () => {
+    if (!updateModalInfo?.url) return
+    setUpdateModalPhase('downloading')
+    setUpdateModalProgress(0)
+    setUpdateModalProgressStage('preparing')
+    updateModalRunOwnedRef.current = true
+    hoverExpandedRef.current = false
+    if (hoverCloseTimerRef.current) {
+      clearTimeout(hoverCloseTimerRef.current)
+      hoverCloseTimerRef.current = null
+    }
+    setEffListCollapsed(true)
+    await ensureUpdateModalWindow()
+    updateModalOpenRef.current = true
+    setUpdateModalOpen(true)
+    try {
+      await invoke('run_update', { dmgUrl: updateModalInfo.url })
+    } catch (e) {
+      console.warn('[update modal] run_update failed:', e)
+      setUpdateModalPhase('available')
+    }
+  }, [ensureUpdateModalWindow, updateModalInfo?.url])
+
+  const restartFromModal = useCallback(() => {
+    invoke('exit_app').catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const checkForUpdates = async () => {
+      try {
+        const store = await load('settings.json', { defaults: {}, autoSave: true })
+        const now = Date.now()
+        const lastCheckedAt = Number((await store.get('update_last_check_at')) ?? 0)
+        if (lastCheckedAt > 0 && now - lastCheckedAt < 10_000) return
+        await store.set('update_last_check_at', now)
+        await store.save()
+        const info = (await invoke('check_for_update', { lang: i18n.language })) as UpdateModalInfo
+        if (!info?.hasUpdate) return
+        const skippedVersion = ((await store.get('skipped_update_version')) as string) || ''
+        if (skippedVersion && skippedVersion === info.latest) return
+        if (cancelled) return
+        openAvailableUpdateModal(info)
+      } catch {
+        /* ignore */
+      }
+    }
+    void checkForUpdates()
+    const timer = setInterval(() => {
+      void checkForUpdates()
+    }, 10_000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [i18n.language, openAvailableUpdateModal])
+
+  useEffect(() => {
+    const unlisten = listen<UpdateProgressPayload>('update-progress', (event) => {
+      if (!updateModalOpenRef.current && !updateModalRunOwnedRef.current) return
+      const payload = event.payload
+      const stage = payload.stage || 'downloading'
+      setUpdateModalProgress(typeof payload.progress === 'number' ? payload.progress : null)
+      setUpdateModalProgressStage(stage)
+      if (stage === 'ready_to_restart') {
+        setUpdateModalPhase('ready_to_restart')
+      } else if (stage === 'preparing' || stage === 'downloading' || stage === 'downloaded') {
+        setUpdateModalPhase('downloading')
+      }
+      if (!updateModalOpenRef.current) {
+        void (async () => {
+          await ensureUpdateModalWindow()
+          updateModalOpenRef.current = true
+          setUpdateModalOpen(true)
+        })()
+      }
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [ensureUpdateModalWindow])
+
+  useEffect(() => {
+    if (updateModalOpenRef.current) return
+    if (settingsMode || settingsTransitioning || isCreateModalOpen) return
+    const pending = pendingUpdateInfoRef.current
+    if (!pending) return
+    pendingUpdateInfoRef.current = null
+    void openAvailableUpdateModal(pending)
+  }, [isCreateModalOpen, openAvailableUpdateModal, settingsMode, settingsTransitioning])
+
+  useEffect(() => {
+    if (!updateModalOpen || updateModalPhase !== 'available' || !updateModalInfo?.hasUpdate) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const latest = (await invoke('check_for_update', { lang: i18n.language })) as UpdateModalInfo
+        if (cancelled) return
+        if (latest?.hasUpdate && latest.latest === updateModalInfo.latest) {
+          setUpdateModalInfo(latest)
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [i18n.language, updateModalInfo?.hasUpdate, updateModalInfo?.latest, updateModalOpen, updateModalPhase])
 
   const handleMascotPointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -1488,7 +1700,7 @@ export default function Mini() {
   // A Rust-side 50ms poll of NSEvent.mouseLocation emits "efficiency-hover"
   // events which we handle here to open / close the panel on hover.
   useEffect(() => {
-    if (viewMode === 'efficiency' && !moveMode) {
+    if (viewMode === 'efficiency' && !moveMode && !updateModalOpen) {
       invoke('set_efficiency_hover_tracking', { active: true }).catch(() => {})
     } else {
       invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
@@ -1496,11 +1708,18 @@ export default function Mini() {
     return () => {
       invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
     }
-  }, [viewMode, moveMode])
+  }, [viewMode, moveMode, updateModalOpen])
 
   useEffect(() => {
     if (viewMode !== 'efficiency') return
     const unlisten = listen<boolean>('efficiency-hover', (event) => {
+      if (updateModalOpenRef.current) {
+        if (hoverCloseTimerRef.current) {
+          clearTimeout(hoverCloseTimerRef.current)
+          hoverCloseTimerRef.current = null
+        }
+        return
+      }
       if (event.payload) {
         // Cursor entered the notch / panel region.
         // Cancel any pending auto-close timer first.
@@ -1585,18 +1804,19 @@ export default function Mini() {
 
   // Click outside to collapse (only when not pinned)
   useEffect(() => {
-    if (!expanded || pinned || settingsMode || settingsTransitioning) return
+    if (!expanded || pinned || settingsMode || settingsTransitioning || updateModalOpen) return
     const onClick = (e: MouseEvent) => {
       if (isCreateModalOpenRef.current) return
       if (!(e.target as HTMLElement).closest('#mini-panel')) collapse()
     }
     window.addEventListener('mousedown', onClick)
     return () => window.removeEventListener('mousedown', onClick)
-  }, [expanded, pinned, settingsMode, settingsTransitioning, collapse])
+  }, [expanded, pinned, settingsMode, settingsTransitioning, updateModalOpen, collapse])
 
   // Window blur: collapse when user clicks outside the app (when not pinned, or in settings mode)
   // Skip blur when a file picker dialog is open
   useEffect(() => {
+    if (updateModalOpen) return
     if (!expanded) return
     if (pinned && !settingsMode) return
     const onClickCapture = (e: MouseEvent) => {
@@ -1623,17 +1843,17 @@ export default function Mini() {
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
     }
-  }, [expanded, pinned, settingsMode, collapse])
+  }, [expanded, pinned, settingsMode, updateModalOpen, collapse])
 
   useEffect(() => {
-    if (expanded || moveMode) return
+    if (expanded || moveMode || updateModalOpen) return
     const onFocus = () => {
       if (collapsingRef.current) return
       expand()
     }
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
-  }, [expanded, expand, moveMode])
+  }, [expanded, expand, moveMode, updateModalOpen])
 
   // Exit move mode when clicking outside mascot or when window loses focus
   useEffect(() => {
@@ -1698,7 +1918,7 @@ export default function Mini() {
       }}
     >
       {/* Collapsed */}
-      {!expanded && !hiding && (
+      {!expanded && !hiding && !updateModalOpen && (
         <div
           id="mini-panel"
           onMouseEnter={() => {
@@ -1771,7 +1991,7 @@ export default function Mini() {
       )}
 
       {/* Expanded panel */}
-      {expanded && !settingsMode && !settingsTransitioning && (
+      {expanded && !settingsMode && !settingsTransitioning && !updateModalOpen && (
         <div
           id="mini-panel"
           ref={panelRef}
@@ -3384,6 +3604,18 @@ export default function Mini() {
           </>
         )}
       </AnimatePresence>
+
+      <UpdateModal
+        open={updateModalOpen}
+        phase={updateModalPhase}
+        info={updateModalInfo}
+        progress={updateModalProgress}
+        progressStage={updateModalProgressStage}
+        onLater={closeUpdateModal}
+        onSkipVersion={skipCurrentUpdateVersion}
+        onUpdateNow={runUpdateFromModal}
+        onRestartNow={restartFromModal}
+      />
 
       <CreateCharacterModal
         isOpen={isCreateModalOpen}
