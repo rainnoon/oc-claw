@@ -4514,6 +4514,24 @@ pub struct ClaudeSession {
     /// Captured once at session creation via process chain walk.
     #[serde(skip)]
     pub host_terminal: Option<String>,
+    /// Bound Cursor extension port for this session.
+    /// Unlike `pid`, this is stable for the lifetime of a Cursor window.
+    /// We resolve it from the session cwd/workspace and reuse it on click.
+    #[serde(skip)]
+    pub cursor_port: Option<u16>,
+    /// Workspace root matched to the bound Cursor window.
+    /// Stored so we can revalidate the binding when the session cwd changes.
+    #[serde(skip)]
+    pub cursor_workspace_root: Option<String>,
+    /// Human-readable workspace name reported by the Cursor extension.
+    /// Used to raise the correct Cursor window on macOS before focusing content.
+    #[serde(skip)]
+    pub cursor_workspace_name: Option<String>,
+    /// Native window handle (hex string) from the Cursor extension.
+    /// Uniquely identifies a Cursor window even when multiple windows
+    /// share the same workspace root.
+    #[serde(skip)]
+    pub cursor_native_handle: Option<String>,
 }
 
 type PendingPermissions = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>;
@@ -4521,6 +4539,27 @@ type PendingPermissions = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Stri
 struct ClaudeState {
     sessions: Arc<Mutex<HashMap<String, ClaudeSession>>>,
     pending_permissions: PendingPermissions,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CursorWindowMeta {
+    port: u16,
+    #[serde(default)]
+    focused: bool,
+    #[serde(default, rename = "workspaceName")]
+    workspace_name: String,
+    #[serde(default, rename = "workspaceRoots")]
+    workspace_roots: Vec<String>,
+    #[serde(default, rename = "nativeHandle")]
+    native_handle: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CursorWindowBinding {
+    port: u16,
+    workspace_root: String,
+    workspace_name: String,
+    native_handle: Option<String>,
 }
 
 /// Compute the JSONL session file path (matching notchi's ConversationParser.sessionFilePath)
@@ -5119,6 +5158,378 @@ async fn activate_app(app_name: String) -> Result<String, String> {
     {
         Err(format!("activate_app not supported on this platform"))
     }
+}
+
+fn cwd_matches_workspace_root(cwd: &str, workspace_root: &str) -> bool {
+    if cwd.is_empty() || workspace_root.is_empty() {
+        return false;
+    }
+    if cwd == workspace_root {
+        return true;
+    }
+    cwd.strip_prefix(workspace_root)
+        .map(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+        .unwrap_or(false)
+}
+
+fn cursor_workspace_name_from_path(path_str: &str) -> String {
+    std::path::Path::new(path_str)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn read_local_http_response(port: u16, request: String) -> Option<(u16, String)> {
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, SocketAddr, TcpStream};
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(120))
+        .ok()?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(200)));
+    stream.write_all(request.as_bytes()).ok()?;
+    let _ = stream.shutdown(Shutdown::Write);
+
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).ok()?;
+    if buf.is_empty() {
+        return None;
+    }
+
+    let response = String::from_utf8_lossy(&buf);
+    let (headers, body) = response.split_once("\r\n\r\n")?;
+    let status = headers.lines().next()?.split_whitespace().nth(1)?.parse::<u16>().ok()?;
+
+    let is_chunked = headers.to_ascii_lowercase().contains("transfer-encoding: chunked");
+    let decoded_body = if is_chunked {
+        decode_chunked_body(body)
+    } else {
+        body.to_string()
+    };
+
+    Some((status, decoded_body))
+}
+
+fn decode_chunked_body(raw: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = raw;
+    loop {
+        let remaining_trimmed = remaining.trim_start_matches("\r\n");
+        let (size_str, rest) = match remaining_trimmed.split_once("\r\n") {
+            Some(pair) => pair,
+            None => break,
+        };
+        let chunk_size = match usize::from_str_radix(size_str.trim(), 16) {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+        if chunk_size == 0 {
+            break;
+        }
+        let chunk_data: String = rest.chars().take(chunk_size).collect();
+        result.push_str(&chunk_data);
+        remaining = &rest[chunk_data.len().min(rest.len())..];
+    }
+    result
+}
+
+fn get_cursor_window_meta(port: u16) -> Option<CursorWindowMeta> {
+    let request = format!(
+        "GET /window-meta HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    let (status, body) = read_local_http_response(port, request)?;
+    if status != 200 {
+        return None;
+    }
+    serde_json::from_str::<CursorWindowMeta>(&body).ok()
+}
+
+fn post_cursor_window_action(port: u16, path: &str, body: &str) -> bool {
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body,
+    );
+    read_local_http_response(port, request)
+        .map(|(status, _)| (200..300).contains(&status))
+        .unwrap_or(false)
+}
+
+fn resolve_cursor_window_binding(
+    cwd: &str,
+    existing_port: Option<u16>,
+    existing_native_handle: Option<&str>,
+) -> Option<CursorWindowBinding> {
+    #[derive(Debug)]
+    struct Candidate {
+        port: u16,
+        workspace_root: String,
+        workspace_name: String,
+        native_handle: Option<String>,
+        score: usize,
+        focused: bool,
+        keep_existing: bool,
+        handle_match: bool,
+    }
+
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for port in 23456..=23460u16 {
+        let meta = match get_cursor_window_meta(port) {
+            Some(meta) => meta,
+            None => continue,
+        };
+
+        let mut best_root: Option<String> = None;
+        let mut best_score: usize = 0;
+        for root in &meta.workspace_roots {
+            if cwd_matches_workspace_root(cwd, root) {
+                let score = root.len();
+                if score >= best_score {
+                    best_score = score;
+                    best_root = Some(root.clone());
+                }
+            }
+        }
+
+        if let Some(workspace_root) = best_root {
+            let handle_match = match (existing_native_handle, &meta.native_handle) {
+                (Some(existing), Some(current)) => existing == current,
+                _ => false,
+            };
+            candidates.push(Candidate {
+                port: meta.port,
+                workspace_root,
+                workspace_name: if meta.workspace_name.is_empty() {
+                    cursor_workspace_name_from_path(cwd)
+                } else {
+                    meta.workspace_name
+                },
+                native_handle: meta.native_handle,
+                score: best_score,
+                focused: meta.focused,
+                keep_existing: existing_port == Some(meta.port),
+                handle_match,
+            });
+        }
+    }
+
+    // If we have a native handle match, that wins unconditionally —
+    // it means we previously bound to this exact window.
+    if let Some(idx) = candidates.iter().position(|c| c.handle_match) {
+        let c = &candidates[idx];
+        return Some(CursorWindowBinding {
+            port: c.port,
+            workspace_root: c.workspace_root.clone(),
+            workspace_name: c.workspace_name.clone(),
+            native_handle: c.native_handle.clone(),
+        });
+    }
+
+    candidates.sort_by(|a, b| {
+        b.score.cmp(&a.score)
+            .then_with(|| b.keep_existing.cmp(&a.keep_existing))
+            .then_with(|| b.focused.cmp(&a.focused))
+            .then_with(|| a.port.cmp(&b.port))
+    });
+
+    let best = candidates.first()?;
+    if let Some(second) = candidates.get(1) {
+        let ambiguous = best.score == second.score
+            && best.keep_existing == second.keep_existing
+            && best.focused == second.focused;
+        if ambiguous {
+            return None;
+        }
+    }
+
+    Some(CursorWindowBinding {
+        port: best.port,
+        workspace_root: best.workspace_root.clone(),
+        workspace_name: best.workspace_name.clone(),
+        native_handle: best.native_handle.clone(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn check_accessibility_permission() -> bool {
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    unsafe { AXIsProcessTrusted() }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_accessibility_permission() -> bool {
+    true
+}
+
+#[tauri::command]
+async fn check_ax_permission() -> Result<bool, String> {
+    Ok(check_accessibility_permission())
+}
+
+#[tauri::command]
+async fn request_ax_permission() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::c_void;
+
+        #[link(name = "CoreFoundation", kind = "framework")]
+        extern "C" {
+            fn CFStringCreateWithCString(alloc: *const c_void, c_str: *const u8, encoding: u32) -> *const c_void;
+            fn CFDictionaryCreate(
+                alloc: *const c_void, keys: *const *const c_void, values: *const *const c_void,
+                count: isize, key_cbs: *const c_void, val_cbs: *const c_void,
+            ) -> *const c_void;
+            fn CFRelease(cf: *const c_void);
+            static kCFTypeDictionaryKeyCallBacks: c_void;
+            static kCFTypeDictionaryValueCallBacks: c_void;
+            static kCFBooleanTrue: *const c_void;
+        }
+
+        #[link(name = "ApplicationServices", kind = "framework")]
+        extern "C" {
+            fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        }
+
+        unsafe {
+            let key = CFStringCreateWithCString(
+                std::ptr::null(),
+                b"AXTrustedCheckOptionPrompt\0".as_ptr(),
+                0x08000100, // kCFStringEncodingUTF8
+            );
+            let keys = [key];
+            let values = [kCFBooleanTrue];
+            let dict = CFDictionaryCreate(
+                std::ptr::null(), keys.as_ptr(), values.as_ptr(), 1,
+                &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks,
+            );
+            AXIsProcessTrustedWithOptions(dict);
+            CFRelease(dict);
+            CFRelease(key);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn activate_cursor_workspace_window(workspace_name: &str) {
+    let ax_ok = check_accessibility_permission();
+    let escaped_workspace = workspace_name.replace('\\', "\\\\").replace('"', "\\\"");
+
+    let script = if !ax_ok || escaped_workspace.is_empty() {
+        // No AX permission or no workspace name — just activate Cursor.
+        // This brings *some* Cursor window to front but can't target a
+        // specific one. Still useful as a fallback.
+        r#"tell application "Cursor" to activate"#.to_string()
+    } else {
+        format!(
+            r#"tell application "System Events"
+    set cursorProcs to every process whose name is "Cursor"
+    if (count of cursorProcs) is 0 then
+        tell application "Cursor" to activate
+        return
+    end if
+    set cursorProc to item 1 of cursorProcs
+    set matched to false
+    repeat with w in windows of cursorProc
+        try
+            if name of w contains "{workspace}" then
+                perform action "AXRaise" of w
+                set frontmost of cursorProc to true
+                set matched to true
+                exit repeat
+            end if
+        end try
+    end repeat
+    if not matched then
+        set frontmost of cursorProc to true
+    end if
+end tell"#,
+            workspace = escaped_workspace,
+        )
+    };
+
+    let _ = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output();
+}
+
+/// Focus the Cursor terminal tab for a given session.
+/// Cursor hook payloads do not contain a stable terminal pid. The pid we see in
+/// events changes from one hook invocation to the next, so it is not reliable
+/// for jump-back. Instead we bind each session to a specific Cursor window by:
+/// 1. Matching the session cwd against window metadata exposed by the extension
+///    (`/window-meta` on ports 23456-23460).
+/// 2. Reusing that bound port on click so we target one Cursor window instead
+///    of broadcasting to all windows and hoping the right one wins.
+/// 3. Raising the matching Cursor window on macOS by workspace name.
+#[tauri::command]
+async fn focus_cursor_terminal(session_id: String, state: tauri::State<'_, ClaudeState>) -> Result<String, String> {
+    log::info!("[focus_cursor] called for session={}", &session_id[..session_id.len().min(8)]);
+
+    let ax_ok = check_accessibility_permission();
+    log::info!("[focus_cursor] accessibility_permission={}", ax_ok);
+
+    let (cwd, existing_port, existing_workspace_root, existing_workspace_name, existing_native_handle) = {
+        let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        match sessions.get(&session_id) {
+            Some(s) => (
+                s.cwd.clone(),
+                s.cursor_port,
+                s.cursor_workspace_root.clone(),
+                s.cursor_workspace_name.clone(),
+                s.cursor_native_handle.clone(),
+            ),
+            None => (String::new(), None, None, None, None),
+        }
+    };
+
+    let resolved_binding = if !cwd.is_empty() {
+        resolve_cursor_window_binding(&cwd, existing_port, existing_native_handle.as_deref())
+    } else {
+        None
+    };
+
+    if let Some(binding) = &resolved_binding {
+        if let Ok(mut sessions) = state.sessions.lock() {
+            if let Some(session) = sessions.get_mut(&session_id) {
+                session.cursor_port = Some(binding.port);
+                session.cursor_workspace_root = Some(binding.workspace_root.clone());
+                session.cursor_workspace_name = Some(binding.workspace_name.clone());
+                session.cursor_native_handle = binding.native_handle.clone();
+            }
+        }
+    }
+
+    let port = resolved_binding.as_ref().map(|b| b.port).or(existing_port);
+    let workspace_name = resolved_binding.as_ref().map(|b| b.workspace_name.clone())
+        .or(existing_workspace_name)
+        .or_else(|| existing_workspace_root.as_deref().map(cursor_workspace_name_from_path))
+        .or_else(|| (!cwd.is_empty()).then(|| cursor_workspace_name_from_path(&cwd)))
+        .unwrap_or_default();
+
+    log::info!("[focus_cursor] session={} cwd={} port={:?} workspace_name={}",
+        &session_id[..session_id.len().min(8)], cwd, port, workspace_name);
+
+    #[cfg(target_os = "macos")]
+    activate_cursor_workspace_window(&workspace_name);
+
+    if let Some(port) = port {
+        let focused = post_cursor_window_action(port, "/focus-window", "{}");
+        log::info!("[focus_cursor] POST /focus-window to port {} → {}", port, focused);
+        if focused {
+            return Ok(format!("Focused Cursor window on port {}", port));
+        }
+        return Ok(format!("Activated Cursor window but /focus-window failed on port {}", port));
+    }
+
+    #[cfg(target_os = "macos")]
+    activate_cursor_workspace_window(&workspace_name);
+
+    Ok("Activated Cursor without a bound window".to_string())
 }
 
 /// Jump to the terminal running a Claude Code session.
@@ -6295,8 +6706,19 @@ fn process_claude_event(
                     permission_suggestions: None,
                     terminal_id: None,
                     host_terminal: None,
+                    cursor_port: None,
+                    cursor_workspace_root: None,
+                    cursor_workspace_name: None,
+                    cursor_native_handle: None,
                 });
-                session.source = source.clone();
+                // Only upgrade source, never downgrade: once a session is
+                // identified as "cursor" (via the Cursor socket), a later CC
+                // hook event for the same sessionId must not overwrite it back
+                // to "cc" — otherwise the PID-alive check in get_claude_sessions
+                // will kill the session because CC hook PIDs are ephemeral.
+                if source == "cursor" || session.source != "cursor" {
+                    session.source = source.clone();
+                }
 
                 // Track pending sub-agents:
                 // - PreToolUse with tool=Agent → a sub-agent is being launched
@@ -6320,10 +6742,55 @@ fn process_claude_event(
 
                 session.status = status.clone();
                 session.is_processing = is_processing;
-                session.cwd = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let incoming_cwd = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+                if !incoming_cwd.is_empty() || session.cwd.is_empty() {
+                    session.cwd = incoming_cwd.to_string();
+                }
                 session.interactive = event.get("interactive").and_then(|v| v.as_bool()).unwrap_or(true);
                 session.updated_at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+                if session.source == "cursor" && !session.cwd.is_empty() {
+                    // Cursor hook payloads do not expose a stable window ID or terminal PID.
+                    // Instead we bind the session to the extension port whose workspace roots
+                    // best match the session cwd. We do this on first sighting and whenever a
+                    // new prompt starts so a re-opened / re-focused window can rebind cleanly.
+                    let needs_rebind = hook_event == "UserPromptSubmit"
+                        || session.cursor_port.is_none()
+                        || session.cursor_workspace_root.as_ref()
+                            .map(|root| !cwd_matches_workspace_root(&session.cwd, root))
+                            .unwrap_or(false);
+
+                    if needs_rebind {
+                        if let Some(binding) = resolve_cursor_window_binding(
+                            &session.cwd,
+                            session.cursor_port,
+                            session.cursor_native_handle.as_deref(),
+                        ) {
+                            if session.cursor_port != Some(binding.port)
+                                || session.cursor_workspace_root.as_deref() != Some(binding.workspace_root.as_str()) {
+                                log::info!(
+                                    "[cursor_bind] session={} port={} workspace_root={} workspace_name={} native_handle={:?}",
+                                    &session_id[..session_id.len().min(8)],
+                                    binding.port,
+                                    binding.workspace_root,
+                                    binding.workspace_name,
+                                    binding.native_handle,
+                                );
+                            }
+                            session.cursor_port = Some(binding.port);
+                            session.cursor_workspace_root = Some(binding.workspace_root);
+                            session.cursor_workspace_name = Some(binding.workspace_name);
+                            session.cursor_native_handle = binding.native_handle;
+                        } else {
+                            log::info!(
+                                "[cursor_bind] session={} unresolved cwd={}",
+                                &session_id[..session_id.len().min(8)],
+                                session.cwd,
+                            );
+                        }
+                    }
+                }
 
                 if let Some(t) = event.get("tool").or_else(|| event.get("tool_name")).and_then(|v| v.as_str()) {
                     if !t.is_empty() { session.tool = Some(t.to_string()); }
@@ -6729,6 +7196,80 @@ try {
     std::fs::write(&hooks_json_path, json_str).map_err(|e| e.to_string())?;
 
     log::info!("[cursor_hooks] installed hooks to {:?}", hooks_json_path);
+
+    // ── Sync oc-claw terminal-focus extension for Cursor ──
+    // The extension exposes a tiny localhost API per Cursor window:
+    // - GET  /window-meta  → workspace roots + focus state + bound port
+    // - POST /focus-window → surface that specific Cursor window
+    // We intentionally overwrite the installed files on every startup so
+    // extension changes take effect after the user reloads Cursor windows.
+    let ext_id = "oc-claw.terminal-focus";
+    let ext_dir = home.join(".cursor").join("extensions").join(format!("{}-1.0.0", ext_id));
+    log::info!("[cursor_hooks] syncing terminal-focus extension...");
+
+    // Locate extension source: bundled in app resources or next to the binary
+    let ext_source = {
+        let mut candidates = Vec::new();
+
+        // In dev: extensions/cursor/ relative to project root
+        #[cfg(debug_assertions)]
+        {
+            // exe is typically at frontend/src-tauri/target/debug/ooclaw
+            if let Ok(exe) = std::env::current_exe() {
+                let mut dir = exe.parent();
+                for _ in 0..6 {
+                    if let Some(d) = dir {
+                        let candidate = d.join("extensions").join("cursor").join("extension.js");
+                        if candidate.exists() {
+                            candidates.push(d.join("extensions").join("cursor"));
+                            break;
+                        }
+                        dir = d.parent();
+                    }
+                }
+            }
+        }
+
+        // In production: bundled as a Tauri resource
+        #[cfg(not(debug_assertions))]
+        {
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(macos_dir) = exe.parent() {
+                    let res = macos_dir.parent().map(|p| p.join("Resources").join("extensions").join("cursor"));
+                    if let Some(ref r) = res {
+                        if r.join("extension.js").exists() {
+                            candidates.push(r.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        candidates.into_iter().next()
+    };
+
+    if let Some(src) = ext_source {
+        if let Err(e) = std::fs::create_dir_all(&ext_dir) {
+            log::warn!("[cursor_hooks] failed to create extension dir: {}", e);
+        } else {
+            let files = ["package.json", "extension.js"];
+            let mut ok = true;
+            for fname in &files {
+                let from = src.join(fname);
+                let to = ext_dir.join(fname);
+                if let Err(e) = std::fs::copy(&from, &to) {
+                    log::warn!("[cursor_hooks] failed to copy {}: {}", fname, e);
+                    ok = false;
+                }
+            }
+            if ok {
+                log::info!("[cursor_hooks] terminal-focus extension synced at {:?}", ext_dir);
+            }
+        }
+    } else {
+        log::warn!("[cursor_hooks] extension source not found, skipping sync");
+    }
+
     Ok(())
 }
 
@@ -7001,6 +7542,14 @@ pub fn run() {
                     .build(),
             )?;
 
+            // Request Accessibility permission on first launch (macOS).
+            // Prompts the user once; subsequent launches are silent.
+            #[cfg(target_os = "macos")]
+            if !check_accessibility_permission() {
+                log::info!("[setup] requesting accessibility permission");
+                let _ = tauri::async_runtime::block_on(request_ax_permission());
+            }
+
             // Hide from Dock, show only in menu bar (macOS only)
             #[cfg(target_os = "macos")]
             {
@@ -7246,7 +7795,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

@@ -2112,7 +2112,7 @@ export default function Mini() {
                                     onClick={() => {
                                       if (!isWaiting) {
                                         if (cs.source === 'cursor') {
-                                          invoke('activate_app', { appName: 'Cursor' }).catch((err: unknown) => console.warn('activate failed:', err))
+                                          invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
                                         } else {
                                           invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
                                         }
@@ -2316,7 +2316,7 @@ export default function Mini() {
                                             e.stopPropagation()
                                             setCompletionSessionId(null)
                                             if (cs.source === 'cursor') {
-                                              invoke('activate_app', { appName: 'Cursor' }).catch(() => {})
+                                              invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
                                             } else {
                                               invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
                                             }

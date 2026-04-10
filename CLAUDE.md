@@ -78,8 +78,23 @@ Cursor is a VS Code-based IDE (not a terminal). Its hook system differs from Cla
    - `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile` → `{"permission": "allow"}` (permission hooks)
    - All others → `{}`
 4. **Supported events**: `beforeSubmitPrompt`, `stop`, `beforeShellExecution`, `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution`, `afterFileEdit`, `beforeReadFile`, `afterAgentThought`, `afterAgentResponse`. NOTE: CC-specific events like `preToolUse`, `postToolUse`, `sessionStart`, `sessionEnd`, `subagentStart`, `subagentStop` are NOT supported by Cursor.
-5. **No terminal ID** — no Ghostty integration; clicking a Cursor session activates the Cursor app window
+5. **Terminal focus extension** — `extensions/cursor/` contains a VS Code/Cursor extension (`oc-claw.terminal-focus`) that exposes per-window HTTP metadata and focus endpoints. Auto-synced to `~/.cursor/extensions/` by `install_cursor_hooks()` on app startup.
 6. **No permission popup** — Cursor handles permissions internally; `cs.source !== 'cursor'` guards the popup
+
+### Terminal Focus Extension
+
+- Source: `extensions/cursor/` (package.json + extension.js)
+- Identifier: `oc-claw.terminal-focus`
+- Mechanism: HTTP server on `127.0.0.1:23456-23460` (each Cursor window binds a different port).
+- `GET /window-meta` returns the current window's bound port, `workspaceRoots`, `workspaceName`, `focused`, and optional `nativeHandle`.
+- `POST /focus-window` focuses the current Cursor window's active terminal/editor.
+- `POST /focus-tab` remains available for future pid-based terminal-tab selection, but Cursor hook `pid` values are not stable enough to use as the primary jump key.
+- Install path: `~/.cursor/extensions/oc-claw.terminal-focus-1.0.0/`
+- Auto-sync: `install_cursor_hooks()` overwrites the installed extension files on every app startup so extension fixes are picked up after the user reloads Cursor windows
+- Bundling: `tauri.conf.json` `resources` maps `../../extensions/cursor` → `extensions/cursor/` so files are included in the app bundle
+- Why HTTP over URI scheme: `cursor://` URI triggers a permission confirmation dialog; HTTP is silent and lets oc-claw distinguish multiple Cursor windows by port.
+- Session binding: Cursor sessions are bound to a specific extension port by matching the session `cwd` against `workspaceRoots` from `/window-meta`. The best match uses longest-prefix wins and prefers the previously bound port / currently focused window to reduce ambiguity. Once bound, the extension's `nativeHandle` (unique window identifier) is stored in `ClaudeSession.cursor_native_handle` — subsequent rebinds match by native handle first, so even if two Cursor windows share the same workspace root, the session stays pinned to the original window.
+- Multi-window support: `focus_cursor_terminal()` reuses the bound port instead of broadcasting. On macOS it raises the matching Cursor window via AppleScript + System Events using the bound `workspaceName`, then calls `POST /focus-window` on that exact port.
 
 ### Architecture
 
