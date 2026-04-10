@@ -1456,7 +1456,7 @@ export default function Mini() {
         const store = await load('settings.json', { defaults: {}, autoSave: true })
         const now = Date.now()
         const lastCheckedAt = Number((await store.get('update_last_check_at')) ?? 0)
-        if (lastCheckedAt > 0 && now - lastCheckedAt < 10_000) return
+        if (lastCheckedAt > 0 && now - lastCheckedAt < 86_400_000) return
         await store.set('update_last_check_at', now)
         await store.save()
         const info = (await invoke('check_for_update', { lang: i18n.language })) as UpdateModalInfo
@@ -1472,7 +1472,7 @@ export default function Mini() {
     void checkForUpdates()
     const timer = setInterval(() => {
       void checkForUpdates()
-    }, 10_000)
+    }, 86_400_000)
     return () => {
       cancelled = true
       clearInterval(timer)

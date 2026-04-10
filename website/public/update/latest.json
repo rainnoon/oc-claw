@@ -1,8 +1,8 @@
 {
   "platforms": {
     "macos": {
-      "version": "1.7.2",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.7.2/oc-claw_1.7.2_aarch64.dmg",
+      "version": "1.6.2",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.6.2/oc-claw_1.6.2_aarch64.dmg",
       "notes_i18n": {
         "zh": "- 全新横向布局模式\n- 修复后台同步内存泄漏\n- 更新像素角色头像与标签",
         "en": "- Brand new horizontal layout mode\n- Fixed memory leak in background sync\n- Updated pixel character avatars and tags",
@@ -13,8 +13,8 @@
       }
     },
     "windows": {
-      "version": "1.7.2",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.7.2/oc-claw_1.7.2_x64-setup.exe",
+      "version": "1.6.2",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.6.2/oc-claw_1.6.2_x64-setup.exe",
       "notes_i18n": {
         "zh": "- 全新横向布局模式\n- 修复后台同步内存泄漏\n- 更新像素角色头像与标签",
         "en": "- Brand new horizontal layout mode\n- Fixed memory leak in background sync\n- Updated pixel character avatars and tags",
