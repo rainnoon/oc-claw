@@ -4676,18 +4676,31 @@ fn resolve_session_jsonl_path(session_id: &str, cwd: Option<&str>) -> Option<Pat
 /// Check if a JSONL file indicates an interrupted session
 fn check_interrupted(path: &std::path::Path) -> bool {
     if let Ok(content) = std::fs::read_to_string(path) {
-        // Find the LAST user-type line and check only that one for the
-        // interruption marker. Previous versions checked any of the last 20
-        // lines, which meant an old ESC interruption marker would persist
-        // even after the user submitted a new prompt — the file watcher
-        // would keep resetting "processing"/"tool_running" → "stopped",
-        // fighting with the hook events that correctly set the status.
-        for line in content.lines().rev().take(50) {
+        // Determine interruption from the latest meaningful event.
+        // This supports both Claude and Codex transcript formats.
+        for line in content.lines().rev().take(120) {
+            // Codex: explicit turn abort marker.
+            if line.contains("\"type\":\"event_msg\"") && line.contains("\"type\":\"turn_aborted\"") {
+                return true;
+            }
+            // Codex: tool call rejected by user (skip/deny).
+            if line.contains("\"type\":\"function_call_output\"") {
+                if line.contains("rejected by user")
+                    || line.contains("Rejected(\\\"rejected by user\\\")")
+                {
+                    return true;
+                }
+                // A non-rejection function output means older interruption markers
+                // no longer represent current state.
+                return false;
+            }
+            // Any newer user message supersedes older interruption markers.
+            if line.contains("\"type\":\"event_msg\"") && line.contains("\"type\":\"user_message\"") {
+                return false;
+            }
             if line.contains("\"type\":\"user\"") {
-                // This is the most recent user message in the file.
-                // Only consider the session interrupted if THIS message
-                // is the interruption marker, not an earlier one.
-                return line.contains("[Request interrupted by user");
+                return line.contains("[Request interrupted by user")
+                    || line.contains("<turn_aborted>");
             }
         }
     }
@@ -4747,12 +4760,15 @@ fn start_session_file_watcher(
 
                 let mut changed = false;
 
-                // Interruption detection: working but file shows interrupted
-                if session.status == "processing" || session.status == "tool_running" {
+                // Interruption detection: active/waiting but file shows interrupted
+                if matches!(session.status.as_str(), "processing" | "tool_running" | "waiting") {
                     if check_interrupted(&path2) {
                         log::info!("File watcher: interrupted session {}", sid2);
                         session.status = "stopped".to_string();
                         session.is_processing = false;
+                        session.tool = None;
+                        session.tool_input = None;
+                        session.permission_suggestions = None;
                         changed = true;
                     }
                 }
@@ -4921,6 +4937,7 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     let active_tid = get_active_ghostty_terminal_id();
     let mut list: Vec<ClaudeSession> = sessions.values()
         .filter(|s| !s.cwd.is_empty())
+        .filter(|s| !is_codex_internal_utility_session(s))
         .cloned()
         .collect();
     // Mark CC sessions' active tab:
@@ -7161,6 +7178,144 @@ try {
     Ok(())
 }
 
+fn codex_requires_escalation(event: &serde_json::Value) -> bool {
+    fn read_bool(v: &serde_json::Value, keys: &[&str]) -> bool {
+        keys.iter()
+            .filter_map(|k| v.get(k))
+            .any(|x| x.as_bool().unwrap_or(false))
+    }
+
+    fn read_string<'a>(v: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+        keys.iter().find_map(|k| v.get(k).and_then(|x| x.as_str()))
+    }
+
+    fn has_explicit_escalation_markers(v: &serde_json::Value) -> bool {
+        let sandbox_mode = read_string(v, &["sandbox_permissions", "sandboxPermissions"])
+            .unwrap_or("");
+        if sandbox_mode.eq_ignore_ascii_case("require_escalated")
+            || sandbox_mode.eq_ignore_ascii_case("escalated")
+        {
+            return true;
+        }
+        if read_bool(
+            v,
+            &[
+                "with_escalated_permissions",
+                "withEscalatedPermissions",
+                "requires_approval",
+                "requiresApproval",
+                "approval_required",
+                "approvalRequired",
+            ],
+        ) {
+            return true;
+        }
+        let justification = read_string(v, &["justification"]).unwrap_or("").trim();
+        !justification.is_empty()
+    }
+
+    fn parse_tool_input(event: &serde_json::Value) -> Option<serde_json::Value> {
+        let tool_input = event.get("tool_input").or_else(|| event.get("toolInput"))?;
+        if tool_input.is_object() {
+            return Some(tool_input.clone());
+        }
+        if let Some(raw) = tool_input.as_str() {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) {
+                return Some(parsed);
+            }
+        }
+        None
+    }
+
+    // Preferred path: explicit approval/escalation fields.
+    if has_explicit_escalation_markers(event) {
+        return true;
+    }
+    let parsed_tool_input = parse_tool_input(event);
+    if let Some(tool_input) = parsed_tool_input.as_ref() {
+        if has_explicit_escalation_markers(tool_input) {
+            return true;
+        }
+    }
+
+    // Fallback for Codex payloads that omit explicit flags:
+    // PreToolUse(Bash) in default permission mode with an obvious
+    // out-of-workspace write command almost always means approval UI.
+    let tool_name = read_string(event, &["tool", "tool_name"]).unwrap_or("");
+    let permission_mode = read_string(event, &["permission_mode", "permissionMode"]).unwrap_or("");
+    let is_codex_like = event.get("turn_id").is_some()
+        || event.get("hook_event_name").is_some()
+        || read_string(event, &["source"]).unwrap_or("").eq_ignore_ascii_case("codex");
+    if !(is_codex_like && tool_name == "Bash" && permission_mode == "default") {
+        return false;
+    }
+
+    let command = parsed_tool_input
+        .as_ref()
+        .and_then(|ti| read_string(ti, &["command"]))
+        .unwrap_or("");
+    if command.is_empty() {
+        return false;
+    }
+    command.contains("$HOME/")
+        || command.contains("/Users/")
+        || command.contains("Desktop/")
+        || command.contains(" cat > ")
+        || command.contains(" > ")
+        || command.contains("<<'EOF'")
+        || command.contains("<<EOF")
+}
+
+fn is_codex_internal_utility_event(event: &serde_json::Value) -> bool {
+    let permission_mode = event.get("permission_mode")
+        .or_else(|| event.get("permissionMode"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if permission_mode != "bypassPermissions" {
+        return false;
+    }
+
+    let prompt = event.get("prompt")
+        .or_else(|| event.get("userPrompt"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if prompt.starts_with("You are a helpful assistant. You will be presented with a user prompt") {
+        return true;
+    }
+
+    let transcript_is_null = event.get("transcript_path").map(|v| v.is_null()).unwrap_or(false);
+    let source = event.get("source").and_then(|v| v.as_str()).unwrap_or("");
+    let model = event.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    if transcript_is_null && (source == "startup" || model == "gpt-5.4-mini") {
+        return true;
+    }
+
+    let last_message = event.get("last_assistant_message")
+        .or_else(|| event.get("codex_last_assistant_message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim_start();
+    if last_message.starts_with("{\"title\":") {
+        return true;
+    }
+
+    false
+}
+
+fn is_codex_internal_utility_session(session: &ClaudeSession) -> bool {
+    if session.source != "codex" {
+        return false;
+    }
+
+    let prompt = session.user_prompt.as_deref().unwrap_or("");
+    if prompt.starts_with("You are a helpful assistant. You will be presented with a user prompt") {
+        return true;
+    }
+
+    let last = session.last_response.as_deref().unwrap_or("").trim_start();
+    last.starts_with("{\"title\":")
+}
+
 /// Process a Claude hook event (shared logic between Unix socket and TCP server).
 /// Returns Some((session_id, hook_event)) if the event needs further handling
 /// (e.g. PermissionRequest requires blocking the connection for a response).
@@ -7211,6 +7366,23 @@ fn process_claude_event(
             "stop" => "Stop".to_string(),
             other => other.to_string(),
         };
+
+        // Codex desktop may emit internal utility sessions (for example title
+        // generation). These should not appear in the session list or trigger
+        // completion notifications.
+        if is_codex_internal_utility_event(&event) {
+            if let Ok(mut sessions) = state.lock() {
+                sessions.remove(&session_id);
+            }
+            stop_session_file_watcher(&session_id);
+            log::info!(
+                "[claude_event] ignore internal codex utility session={} event={}",
+                session_id,
+                hook_event
+            );
+            return None;
+        }
+
         let claude_status = event.get("claudeStatus").or_else(|| event.get("status"))
             .and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
 
@@ -7223,6 +7395,7 @@ fn process_claude_event(
             matches!(cmd, "/clear" | "/compact" | "/help" | "/cost" | "/status" | "/vim" | "/fast" | "/model" | "/login" | "/logout")
         } else { false };
 
+        let pretool_needs_waiting = hook_event == "PreToolUse" && codex_requires_escalation(&event);
         let mut status = match hook_event.as_str() {
             "UserPromptSubmit" => {
                 if is_local_slash { "stopped".to_string() } else { "processing".to_string() }
@@ -7236,7 +7409,7 @@ fn process_claude_event(
                 // Different clients may report interactive choice tools with
                 // slightly different names. Treat both as waiting states so
                 // the selection popup can be shown consistently.
-                if tool == "AskUserQuestion" || tool == "AskQuestion" {
+                if tool == "AskUserQuestion" || tool == "AskQuestion" || pretool_needs_waiting {
                     "waiting".to_string()
                 } else {
                     "tool_running".to_string()
@@ -7524,9 +7697,11 @@ fn process_claude_event(
         // Also suppress sound while sub-agents are still running (pending_agents > 0).
         // Each PreToolUse(Agent) increments the counter, each SubagentStop decrements it.
         // Sound only plays when all sub-agents have completed.
+        let is_wait_event = hook_event == "PermissionRequest"
+            || (hook_event == "PreToolUse" && status == "waiting");
         if was_processing && !was_compacting
-            && ((hook_event == "Stop" && pending_agents == 0) || hook_event == "PermissionRequest") {
-            let is_waiting = hook_event == "PermissionRequest";
+            && ((hook_event == "Stop" && pending_agents == 0) || is_wait_event) {
+            let is_waiting = is_wait_event;
             let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting, "source": session_source}));
         }
 

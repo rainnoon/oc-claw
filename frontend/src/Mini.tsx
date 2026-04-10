@@ -2292,7 +2292,7 @@ export default function Mini() {
                                                         {isNew && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400">{t('mini.newFile', '新文件')}</span>}
                                                       </div>
                                                     )}
-                                                    <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin">
+                                                    <div className="px-3 py-2 max-h-[120px] overflow-y-auto scrollbar-thin">
                                                       {lines.map((line: string, i: number) => (
                                                         <div key={i} className="flex gap-3 leading-[1.6]">
                                                           <span className="text-[11px] text-slate-600 font-mono select-none w-5 text-right shrink-0">{i + 1}</span>
@@ -2303,10 +2303,17 @@ export default function Mini() {
                                                   </div>
                                                 )
                                               }
+                                              if (typeof input.justification === 'string' && input.justification.trim()) {
+                                                return (
+                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
+                                                    <pre className="text-[11px] text-amber-300 font-mono whitespace-pre-wrap break-all leading-tight">{input.justification}</pre>
+                                                  </div>
+                                                )
+                                              }
                                               // Bash: show command
                                               if (cs.tool === 'Bash' && input.command) {
                                                 return (
-                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
+                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
                                                     <pre className="text-[11px] text-slate-300 font-mono whitespace-pre-wrap break-all leading-tight">{input.command}</pre>
                                                   </div>
                                                 )
@@ -2314,13 +2321,13 @@ export default function Mini() {
                                               // Fallback: show parsed fields
                                               const preview = input.command || input.file_path || input.content?.slice(0, 150) || cs.toolInput.slice(0, 150)
                                               return (
-                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
+                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
                                                   <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{preview}</pre>
                                                 </div>
                                               )
                                             } catch {
                                               return (
-                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
+                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
                                                   <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{cs.toolInput.slice(0, 150)}</pre>
                                                 </div>
                                               )
@@ -2338,6 +2345,35 @@ export default function Mini() {
                                               // Collapse the panel
                                               hoverExpandedRef.current = false
                                               collapse()
+                                            }
+                                            if (cs.source === 'codex') {
+                                              return (
+                                                <>
+                                                  <button
+                                                    data-no-drag
+                                                    onClick={(e) => {
+                                                      e.stopPropagation()
+                                                      invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                                      hoverExpandedRef.current = false
+                                                      collapse()
+                                                    }}
+                                                    className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                                  >
+                                                    {t('mini.viewInCodex', '前往 Codex')}
+                                                  </button>
+                                                  <button
+                                                    data-no-drag
+                                                    onClick={(e) => {
+                                                      e.stopPropagation()
+                                                      hoverExpandedRef.current = false
+                                                      collapse()
+                                                    }}
+                                                    className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                                  >
+                                                    {t('mini.later', '稍后处理')}
+                                                  </button>
+                                                </>
+                                              )
                                             }
                                             return (
                                               <>
