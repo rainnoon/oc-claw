@@ -1,9 +1,10 @@
 {
   "name": "terminal-focus",
   "displayName": "oc-claw Terminal Focus",
-  "description": "Allows oc-claw to jump to the correct terminal tab in Cursor",
+  "description": "Enables precise window and terminal focusing for oc-claw desktop pet",
   "version": "1.0.0",
   "publisher": "oc-claw",
+  "icon": "icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
