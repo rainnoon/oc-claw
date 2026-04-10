@@ -3600,6 +3600,11 @@ async fn set_mini_size(
                 };
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
+                    // Keep the hover poll's screen geometry cache fresh even when
+                    // the mini window is temporarily resized into settings/update mode.
+                    if let Ok(mut info) = NOTCH_SCREEN_INFO.lock() {
+                        *info = Some((sx, sy, sw, sh, notch_off));
+                    }
                     if restore {
                         let win_w = 60.0;
                         let win_h = 45.0;
@@ -3613,6 +3618,13 @@ async fn set_mini_size(
                                 let _: () = msg_send![obj, orderFrontRegardless];
                             }
                         }
+                        // Restoring from settings/update mode returns the widget to
+                        // the collapsed notch state, so the hover poll must switch
+                        // back to collapsed-region detection immediately.
+                        EFFICIENCY_EXPANDED.store(false, Ordering::SeqCst);
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((x, y, win_w, win_h));
+                        }
                     } else {
                         let win_w = (sw * 0.85).round();
                         let win_h = (sh * 0.85).round();
@@ -3625,6 +3637,13 @@ async fn set_mini_size(
                             if want_top {
                                 let _: () = msg_send![obj, orderFrontRegardless];
                             }
+                        }
+                        // Settings/update mode is not the normal expanded panel.
+                        // Clear the expanded hover state so a stale panel frame does
+                        // not survive after the window is later restored.
+                        EFFICIENCY_EXPANDED.store(false, Ordering::SeqCst);
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((x, y, win_w, win_h));
                         }
                     }
                 }
@@ -4730,6 +4749,40 @@ fn check_interrupted(path: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+/// Determine whether a Stop event represents a user-aborted turn rather than a
+/// normal completion. Cursor stop hooks expose a completion status, while some
+/// clients only reveal the interruption via transcript markers.
+fn stop_event_was_interrupted(event: &serde_json::Value, session_source: &str, claude_status: &str) -> bool {
+    let status = claude_status.trim().to_ascii_lowercase();
+    if session_source == "cursor" {
+        if status == "completed" {
+            return false;
+        }
+        if matches!(status.as_str(), "interrupted" | "cancelled" | "canceled" | "aborted" | "stopped") {
+            return true;
+        }
+    }
+
+    let stop_message = event.get("lastResponse")
+        .or_else(|| event.get("last_assistant_message"))
+        .or_else(|| event.get("codex_last_assistant_message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if stop_message.contains("[Request interrupted by user")
+        || stop_message.contains("<turn_aborted>")
+        || stop_message.contains("turn_aborted")
+        || stop_message.contains("rejected by user")
+    {
+        return true;
+    }
+
+    event.get("transcript_path")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty())
+        .map(|p| check_interrupted(std::path::Path::new(p)))
+        .unwrap_or(false)
 }
 
 // --- Session File Watcher (matching notchi's NotchiStateMachine) ---
@@ -7571,6 +7624,7 @@ fn process_claude_event(
         let was_compacting;
         let pending_agents;
         let session_source: String;
+        let stop_was_interrupted;
 
         {
             let mut sessions = state.lock().unwrap();
@@ -7582,6 +7636,7 @@ fn process_claude_event(
                 session_source = sessions.get(&session_id).map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string());
                 sessions.remove(&session_id);
                 pending_agents = 0;
+                stop_was_interrupted = false;
             } else {
                 // Determine source: explicit override from socket server, or from JSON, or default "cc"
                 let source = source_override
@@ -7779,6 +7834,7 @@ fn process_claude_event(
                 // is already looking at this terminal tab. If so, skip setting
                 // last_response so the completion popup never triggers.
                 if hook_event == "Stop" {
+                    let interrupted = stop_event_was_interrupted(&event, &session.source, &claude_status);
                     // CC: check if the user is looking at this session's Ghostty tab
                     // Cursor: check if Cursor (or oc-claw) is the frontmost app.
                     // If a terminal ID is missing (older hooks / non-Ghostty),
@@ -7805,7 +7861,7 @@ fn process_claude_event(
                     } else {
                         false
                     };
-                    if is_tab_active {
+                    if is_tab_active || interrupted {
                         session.last_response = None;
                     } else {
                         // Prefer lastResponse from the event itself (CC's Stop has it),
@@ -7826,8 +7882,12 @@ fn process_claude_event(
                         }
                         // else: keep existing last_response from afterAgentResponse
                     }
+                    stop_was_interrupted = interrupted;
                 } else if hook_event == "UserPromptSubmit" {
                     session.last_response = None;
+                    stop_was_interrupted = false;
+                } else {
+                    stop_was_interrupted = false;
                 }
 
                 if hook_event == "PermissionRequest" {
@@ -7853,8 +7913,9 @@ fn process_claude_event(
         // Sound only plays when all sub-agents have completed.
         let is_wait_event = hook_event == "PermissionRequest"
             || (hook_event == "PreToolUse" && status == "waiting");
+        let is_completion_stop = hook_event == "Stop" && pending_agents == 0 && !stop_was_interrupted;
         if was_processing && !was_compacting
-            && ((hook_event == "Stop" && pending_agents == 0) || is_wait_event) {
+            && (is_completion_stop || is_wait_event) {
             let is_waiting = is_wait_event;
             let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting, "source": session_source}));
         }
@@ -7986,6 +8047,9 @@ if hook_event == 'stop':
     status = input_data.get('status', '')
     if status:
         output['claudeStatus'] = status
+    transcript_path = input_data.get('transcript_path', '')
+    if transcript_path:
+        output['transcript_path'] = transcript_path
     msg = input_data.get('last_assistant_message', '')
     if msg:
         output['lastResponse'] = msg[:2000]

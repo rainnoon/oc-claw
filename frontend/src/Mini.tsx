@@ -491,6 +491,7 @@ export default function Mini() {
   const [expanded, setExpanded] = useState(false)
   const [showPanel, setShowPanel] = useState(false)
   const [agents, setAgents] = useState<AgentInfo[]>([])
+  const [hasConfiguredOpenClaw, setHasConfiguredOpenClaw] = useState(false)
   const [healthMap, setHealthMap] = useState<Record<string, boolean>>({})
   const [characters, setCharacters] = useState<CharacterMeta[]>([])
   const [agentCharMap, setAgentCharMap] = useState<Record<string, string>>({})
@@ -593,6 +594,7 @@ export default function Mini() {
   const [viewMode, _setViewMode] = useState<'island' | 'efficiency'>('efficiency')
   const viewModeRef = useRef<'island' | 'efficiency'>('efficiency')
   const expandedRef = useRef(false)
+  const expandedWindowModeRef = useRef<'island' | 'efficiency' | null>(null)
   const setViewMode = useCallback(async (v: 'island' | 'efficiency' | ((prev: 'island' | 'efficiency') => 'island' | 'efficiency')) => {
     _setViewMode((prev) => {
       const next = typeof v === 'function' ? v(prev) : v
@@ -688,6 +690,7 @@ export default function Mini() {
     try {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const connections = await loadOcConnections()
+      setHasConfiguredOpenClaw(connections.some((conn) => connToOcParams(conn) !== null))
 
       // Detect connection config changes — show loading overlay if changed
       const snapshot = JSON.stringify(connections.map((c) => ({ id: c.id, type: c.type, host: c.host, user: c.user })))
@@ -1323,18 +1326,22 @@ export default function Mini() {
     }
   }, [])
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const syncExpandedWindowLayout = useCallback(async (mode: 'island' | 'efficiency' = viewModeRef.current) => {
+    await invoke('set_mini_expanded', {
+      expanded: true,
+      position: mascotPositionRef.current,
+      efficiency: mode === 'efficiency',
+      maxHeight: panelMaxHeightRef.current,
+    })
+    expandedWindowModeRef.current = mode
+  }, [])
   const expand = useCallback(async () => {
     if (collapsingRef.current || expandingRef.current) return
     expandingRef.current = true
     setHiding(true)
     try {
       await new Promise<void>((r) => setTimeout(r, 50))
-      await invoke('set_mini_expanded', {
-        expanded: true,
-        position: mascotPositionRef.current,
-        efficiency: viewModeRef.current === 'efficiency',
-        maxHeight: panelMaxHeightRef.current,
-      })
+      await syncExpandedWindowLayout(viewModeRef.current)
       setExpanded(true)
       expandedRef.current = true
       requestAnimationFrame(() => {
@@ -1345,11 +1352,12 @@ export default function Mini() {
       setShowPanel(false)
       setExpanded(false)
       expandedRef.current = false
+      expandedWindowModeRef.current = null
     } finally {
       setHiding(false)
       expandingRef.current = false
     }
-  }, [])
+  }, [syncExpandedWindowLayout])
   expandFnRef.current = expand
   const updateModalWindowAdjustedRef = useRef(false)
   const updateModalPrevExpandedRef = useRef(false)
@@ -1359,6 +1367,7 @@ export default function Mini() {
     if (updateModalWindowAdjustedRef.current) return
     updateModalWindowAdjustedRef.current = true
     updateModalPrevExpandedRef.current = expandedRef.current
+    expandedWindowModeRef.current = null
     try {
       await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, keepOnTop: true })
       await new Promise<void>((r) => setTimeout(r, 80))
@@ -1384,12 +1393,7 @@ export default function Mini() {
     if (settingsModeRef.current) return
     try {
       if (wasExpanded) {
-        await invoke('set_mini_expanded', {
-          expanded: true,
-          position: mascotPositionRef.current,
-          efficiency: viewModeRef.current === 'efficiency',
-          maxHeight: panelMaxHeightRef.current,
-        })
+        await syncExpandedWindowLayout(viewModeRef.current)
         setExpanded(true)
         expandedRef.current = true
         setShowPanel(true)
@@ -1398,10 +1402,11 @@ export default function Mini() {
         await restoreCollapsedMascotPosition()
         setExpanded(false)
         expandedRef.current = false
+        expandedWindowModeRef.current = null
         setShowPanel(false)
       }
     } catch {}
-  }, [restoreCollapsedMascotPosition])
+  }, [restoreCollapsedMascotPosition, syncExpandedWindowLayout])
 
   const openAvailableUpdateModal = useCallback(async (info: UpdateModalInfo) => {
     if (settingsModeRef.current || settingsTransitioningRef.current || isCreateModalOpenRef.current) {
@@ -1633,6 +1638,7 @@ export default function Mini() {
       setHiding(true)
       setExpanded(false)
       expandedRef.current = false
+      expandedWindowModeRef.current = null
       try {
         await new Promise<void>((r) => setTimeout(r, 50))
         await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
@@ -1690,6 +1696,7 @@ export default function Mini() {
       // can render inside the collapsed window geometry and look like a flicker.
       setExpanded(false)
       expandedRef.current = false
+      expandedWindowModeRef.current = null
       try {
         await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
         if (wasSettings) {
@@ -1719,7 +1726,7 @@ export default function Mini() {
   // A Rust-side 50ms poll of NSEvent.mouseLocation emits "efficiency-hover"
   // events which we handle here to open / close the panel on hover.
   useEffect(() => {
-    if (viewMode === 'efficiency' && !moveMode && !updateModalOpen) {
+    if (viewMode === 'efficiency' && !moveMode && !updateModalOpen && !settingsMode && !settingsTransitioning) {
       invoke('set_efficiency_hover_tracking', { active: true }).catch(() => {})
     } else {
       invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
@@ -1727,11 +1734,14 @@ export default function Mini() {
     return () => {
       invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
     }
-  }, [viewMode, moveMode, updateModalOpen])
+  }, [viewMode, moveMode, updateModalOpen, settingsMode, settingsTransitioning])
 
   useEffect(() => {
     if (viewMode !== 'efficiency') return
     const unlisten = listen<boolean>('efficiency-hover', (event) => {
+      if (settingsModeRef.current || settingsTransitioningRef.current) {
+        return
+      }
       if (updateModalOpenRef.current) {
         if (hoverCloseTimerRef.current) {
           clearTimeout(hoverCloseTimerRef.current)
@@ -1810,16 +1820,11 @@ export default function Mini() {
     setEnableCursor(cur !== false)
     fetchAgents()
     try {
-      await invoke('set_mini_expanded', {
-        expanded: true,
-        position: mascotPositionRef.current,
-        efficiency: viewModeRef.current === 'efficiency',
-        maxHeight: panelMaxHeightRef.current,
-      })
+      await syncExpandedWindowLayout(viewModeRef.current)
     } catch {}
     setSettingsTransitioning(false)
     settingsTransitioningRef.current = false
-  }, [fetchAgents])
+  }, [fetchAgents, syncExpandedWindowLayout])
 
   // Click outside to collapse (only when not pinned)
   useEffect(() => {
@@ -1937,6 +1942,14 @@ export default function Mini() {
     ro.observe(el)
     return () => ro.disconnect()
   }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale, panelMaxHeight])
+
+  useEffect(() => {
+    if (!expanded || !showPanel || settingsMode || settingsTransitioning || updateModalOpen) return
+    if (expandedWindowModeRef.current === viewMode) return
+    syncExpandedWindowLayout(viewMode).catch((e) => {
+      console.warn('[mini] sync expanded window layout failed:', e)
+    })
+  }, [expanded, showPanel, settingsMode, settingsTransitioning, updateModalOpen, viewMode, syncExpandedWindowLayout])
 
   return (
     <div
@@ -2262,7 +2275,7 @@ export default function Mini() {
 
                             if (allItems.length === 0) {
                               const trackingTargets = [
-                                ...(agents.length > 0 ? ['OpenClaw'] : []),
+                                ...(hasConfiguredOpenClaw ? ['OpenClaw'] : []),
                                 ...(enableClaudeCode ? ['Claude Code'] : []),
                                 ...(enableCodex ? ['Codex'] : []),
                                 ...(enableCursor ? ['Cursor'] : []),
@@ -3003,7 +3016,7 @@ export default function Mini() {
                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
                           {(() => {
                             const targets = [
-                              ...(agents.length > 0 ? ['OpenClaw'] : []),
+                              ...(hasConfiguredOpenClaw ? ['OpenClaw'] : []),
                               ...(enableClaudeCode ? ['Claude Code'] : []),
                               ...(enableCodex ? ['Codex'] : []),
                               ...(enableCursor ? ['Cursor'] : []),
