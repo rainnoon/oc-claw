@@ -1644,7 +1644,7 @@ export default function Mini() {
       setShowSettingsOverlay(false)
       setSettingsTransitioning(true)
     }
-    const delay = wasSettings ? 280 : 350
+    const delay = wasSettings ? 280 : 480
     setTimeout(async () => {
       settingsModeRef.current = false
       setSettingsMode(false)
@@ -1893,6 +1893,10 @@ export default function Mini() {
   // Panel dimensions — CSS uses fixed base sizes; on Windows high-DPI screens
   // the panel root applies `zoom: uiScale` so all content scales uniformly.
   const panelW = viewMode === 'efficiency' ? 575 : 475
+  const closedNotchWidth = 60
+  const closedNotchHeight = 15
+  const openClipPath = 'inset(0 0 0 0 round 0 0 24px 24px)'
+  const closedClipPath = `inset(0 calc(50% - ${closedNotchWidth / 2}px) calc(100% - ${closedNotchHeight}px) calc(50% - ${closedNotchWidth / 2}px) round 0 0 8px 8px)`
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -2025,18 +2029,43 @@ export default function Mini() {
             overflowX: 'hidden',
             display: 'flex',
             flexDirection: 'column',
-            background: '#18181c',
-            clipPath: showPanel ? 'inset(0 0 0 0 round 0 0 24px 24px)' : 'inset(0 calc(50% - 30px) calc(100% + 200px) calc(50% - 30px) round 0 0 8px 8px)',
+            background: '#010101',
+            // Keep a real closed notch rectangle at the top-center. This mirrors
+            // ping-island's "always-present header" model and makes collapse
+            // feel like shrinking inward to the notch, not vanishing upward.
+            clipPath: showPanel ? openClipPath : closedClipPath,
             boxShadow: showPanel ? '0 8px 32px rgba(0,0,0,0.8)' : '0 2px 8px rgba(0,0,0,0.3)',
-            transition: showPanel ? 'clip-path 0.45s cubic-bezier(0.22, 1.2, 0.36, 1), box-shadow 0.3s ease' : 'clip-path 0.25s cubic-bezier(0.4, 0, 0, 1), box-shadow 0.15s ease',
+            transition: showPanel
+              ? 'clip-path 0.42s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.35s ease'
+              : 'clip-path 0.45s cubic-bezier(0.32, 0.72, 0, 1), box-shadow 0.3s ease',
           }}
         >
+          {/* Closed header: geometric anchor for clip-path collapse target. */}
+          {!showPanel && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: closedNotchWidth,
+                height: closedNotchHeight,
+                borderBottomLeftRadius: 8,
+                borderBottomRightRadius: 8,
+                background: '#010101',
+                pointerEvents: 'none',
+                zIndex: 30,
+              }}
+            />
+          )}
+
           {/* Top Control Bar — outside the transform wrapper so sticky works correctly */}
           <div
             className="flex items-center justify-between px-4 py-2.5 shrink-0 sticky top-0 z-20 bg-black text-white"
             style={{
               opacity: showPanel ? 1 : 0,
-              transition: showPanel ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s' : 'opacity 0.08s ease-out',
+              // Delay fade-out a bit so users can see the inward clip-path shrink.
+              transition: showPanel ? 'opacity 0.3s cubic-bezier(0.2, 1, 0.3, 1) 0.08s' : 'opacity 0.18s ease-out 0.2s',
             }}
           >
             <div className="flex items-center gap-4 min-w-0 flex-1">
@@ -2148,12 +2177,10 @@ export default function Mini() {
               position: 'relative',
               zIndex: 1,
               opacity: showPanel ? 1 : 0,
-              transform: showPanel ? 'scale(1) translateY(0)' : 'scale(0.9) translateY(-20px)',
-              filter: showPanel ? 'blur(0px)' : 'blur(8px)',
               transformOrigin: 'top center',
               transition: showPanel
-                ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s, transform 0.4s cubic-bezier(0.2, 1, 0.3, 1), filter 0.25s ease 0.05s'
-                : 'opacity 0.08s ease-out, transform 0.08s ease-out, filter 0.08s ease-out',
+                ? 'opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1) 0.06s'
+                : 'opacity 0.18s ease-out 0.22s',
               flex: 1,
               minHeight: 0,
               display: 'flex',
