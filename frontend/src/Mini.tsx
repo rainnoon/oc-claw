@@ -609,6 +609,7 @@ export default function Mini() {
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
   const [moveMode, _setMoveMode] = useState(false)
   const moveModeRef = useRef(false)
+  const mascotDragActiveRef = useRef(false)
   const setMoveMode = (v: boolean) => {
     moveModeRef.current = v
     _setMoveMode(v)
@@ -1366,6 +1367,16 @@ export default function Mini() {
     }
   }, [])
 
+  const restoreCollapsedMascotPosition = useCallback(async () => {
+    const pos = customPosRef.current
+    if (!pos) return
+    try {
+      await invoke('set_mini_origin', { x: pos.x, y: pos.y })
+    } catch (e) {
+      console.warn('[mini] restore custom mascot position failed:', e)
+    }
+  }, [])
+
   const restoreWindowAfterUpdateModal = useCallback(async () => {
     if (!updateModalWindowAdjustedRef.current) return
     const wasExpanded = updateModalPrevExpandedRef.current
@@ -1384,12 +1395,13 @@ export default function Mini() {
         setShowPanel(true)
       } else {
         await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
+        await restoreCollapsedMascotPosition()
         setExpanded(false)
         expandedRef.current = false
         setShowPanel(false)
       }
     } catch {}
-  }, [])
+  }, [restoreCollapsedMascotPosition])
 
   const openAvailableUpdateModal = useCallback(async (info: UpdateModalInfo) => {
     if (settingsModeRef.current || settingsTransitioningRef.current || isCreateModalOpenRef.current) {
@@ -1565,6 +1577,7 @@ export default function Mini() {
         if (!dragging) {
           if (Math.abs(ev.screenX - lastX) + Math.abs(ev.screenY - lastY) > 3) {
             dragging = true
+            mascotDragActiveRef.current = true
           } else return
         }
         const dx = ev.screenX - lastX
@@ -1575,6 +1588,7 @@ export default function Mini() {
       }
 
       const cleanup = () => {
+        mascotDragActiveRef.current = false
         try {
           el.releasePointerCapture(pid)
         } catch {}
@@ -1622,12 +1636,13 @@ export default function Mini() {
       try {
         await new Promise<void>((r) => setTimeout(r, 50))
         await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
+        await restoreCollapsedMascotPosition()
         await new Promise<void>((r) => setTimeout(r, 50))
       } catch {}
       setHiding(false)
       setMoveMode(true)
     }, 350)
-  }, [])
+  }, [restoreCollapsedMascotPosition])
 
   const collapse = useCallback(async () => {
     if (collapsingRef.current) return
@@ -1670,21 +1685,24 @@ export default function Mini() {
         fetchAgents()
       }
       setHiding(true)
+      // Unmount the expanded React tree before shrinking/repositioning the
+      // native Tauri window. Otherwise the last frames of the expanded panel
+      // can render inside the collapsed window geometry and look like a flicker.
+      setExpanded(false)
+      expandedRef.current = false
       try {
-        await new Promise<void>((r) => setTimeout(r, 50))
+        await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
         if (wasSettings) {
           await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
         } else {
           await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
         }
-        await new Promise<void>((r) => setTimeout(r, 50))
+        await restoreCollapsedMascotPosition()
       } catch {
         /* ensure hiding is always cleared */
       }
-      // Even if native resize invoke fails, always return to collapsed React state
-      // so the mascot remains visible instead of getting stuck in an intermediate shell.
-      setExpanded(false)
-      expandedRef.current = false
+      // Even if the native resize invoke fails, always clear the hiding shell so
+      // the mascot becomes visible again instead of getting stuck transparent.
       setHiding(false)
       setSettingsTransitioning(false)
       // Brief cooldown to prevent focus event from immediately re-expanding
@@ -1693,7 +1711,7 @@ export default function Mini() {
         settingsTransitioningRef.current = false
       }, 300)
     }, delay)
-  }, [fetchAgents])
+  }, [fetchAgents, restoreCollapsedMascotPosition])
 
   // ── Efficiency-mode notch hover tracking (native cursor polling) ──
   // On macOS the mini window sits in the menu-bar / notch area where the
@@ -1859,7 +1877,13 @@ export default function Mini() {
   // Exit move mode when clicking outside mascot or when window loses focus
   useEffect(() => {
     if (!moveMode) return
-    const onBlur = () => setMoveMode(false)
+    const onBlur = () => {
+      // Programmatic mini-window moves can briefly blur the webview on macOS.
+      // Keep move mode alive while an actual mascot drag is in progress so the
+      // outline/hover state does not flash off for a frame.
+      if (mascotDragActiveRef.current) return
+      setMoveMode(false)
+    }
     window.addEventListener('blur', onBlur)
     return () => window.removeEventListener('blur', onBlur)
   }, [moveMode])
