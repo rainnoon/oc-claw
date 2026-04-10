@@ -4867,11 +4867,11 @@ fn get_active_ghostty_terminal_id() -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 fn get_active_ghostty_terminal_id() -> Option<String> { None }
 
-/// Check if the user is actively looking at Cursor. Returns true if the
-/// frontmost app is Cursor or oc-claw (our notch panel steals focus).
-/// Uses NSWorkspace via osascript — no Accessibility permission required.
+/// Returns the short name of the frontmost application (macOS only).
+/// Used to suppress completion popups when the user is already looking
+/// at the relevant app (Cursor, Codex, etc.).
 #[cfg(target_os = "macos")]
-fn is_cursor_active() -> bool {
+fn get_frontmost_app_name() -> String {
     let script = r#"
         set appName to short name of (info for (path to frontmost application))
         return appName
@@ -4880,16 +4880,30 @@ fn is_cursor_active() -> bool {
         .arg("-e").arg(script)
         .output();
     match output {
-        Ok(o) => {
-            let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            name == "Cursor" || name == "oc-claw"
-        }
-        Err(_) => false,
+        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        Err(_) => String::new(),
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn is_cursor_active() -> bool { false }
+fn get_frontmost_app_name() -> String { String::new() }
+
+fn is_cursor_frontmost_app(name: &str) -> bool {
+    name == "Cursor" || name == "oc-claw"
+}
+
+fn is_codex_frontmost_app(name: &str) -> bool {
+    if name == "oc-claw" || name == "Code" || name == "Visual Studio Code" {
+        return true;
+    }
+    let lowered = name.to_ascii_lowercase();
+    lowered == "codex" || lowered.contains("codex")
+}
+
+fn is_codex_host_terminal(name: &str) -> bool {
+    name == "Code" || name == "Visual Studio Code" || name.eq_ignore_ascii_case("codex")
+}
+
 
 #[tauri::command]
 async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec<ClaudeSession>, String> {
@@ -4949,11 +4963,14 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
         .filter(|s| !is_codex_internal_utility_session(s))
         .cloned()
         .collect();
-    // Mark CC sessions' active tab:
+    // Mark sessions' active tab:
     // - Ghostty: match by terminal ID
     // - CC running inside Cursor's integrated terminal: check if Cursor is frontmost
     // - Cursor IDE sessions: set at Stop time in process_claude_event
-    let cursor_is_active = is_cursor_active();
+    // - Codex standalone app: check if Codex/Code is frontmost
+    let frontmost = get_frontmost_app_name();
+    let cursor_is_active = is_cursor_frontmost_app(&frontmost);
+    let codex_is_active = is_codex_frontmost_app(&frontmost);
     if let Some(ref tid) = active_tid {
         for s in &mut list {
             if s.source != "cursor" {
@@ -4964,6 +4981,27 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     for s in &mut list {
         if s.source != "cursor" && s.host_terminal.as_deref() == Some("Cursor") {
             s.is_active_tab = cursor_is_active;
+        }
+    }
+    // Some Codex events may arrive without source=codex and stay as "cc".
+    // If process-chain detection says this session belongs to Codex, treat it
+    // like Codex for active-tab suppression.
+    for s in &mut list {
+        if s.source == "cc"
+            && s.host_terminal
+                .as_deref()
+                .map(is_codex_host_terminal)
+                .unwrap_or(false)
+            && !s.is_active_tab
+        {
+            s.is_active_tab = codex_is_active;
+        }
+    }
+    // Codex sessions: if not already matched by Ghostty terminal ID above,
+    // check if the standalone Codex app is frontmost.
+    for s in &mut list {
+        if s.source == "codex" && !s.is_active_tab {
+            s.is_active_tab = codex_is_active;
         }
     }
     list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -6142,6 +6180,7 @@ fn find_terminal_app_for_pid(pid: u32) -> Option<String> {
         "Alacritty", "alacritty",
         "kaku",
         "Cursor",
+        "Codex", "codex",
     ];
 
     let mut current_pid = pid;
@@ -7541,12 +7580,20 @@ fn process_claude_event(
                     cursor_workspace_name: None,
                     cursor_native_handle: None,
                 });
-                // Only upgrade source, never downgrade: once a session is
-                // identified as "cursor" (via the Cursor socket), a later CC
-                // hook event for the same sessionId must not overwrite it back
-                // to "cc" — otherwise the PID-alive check in get_claude_sessions
-                // will kill the session because CC hook PIDs are ephemeral.
-                if source == "cursor" || session.source != "cursor" {
+                // Only upgrade source, never downgrade:
+                // cc < codex < cursor.
+                // Once a session is identified as codex/cursor, later generic
+                // CC events (source=cc) for the same sessionId must not
+                // overwrite it, otherwise active-tab/staleness logic regresses.
+                let source_rank = |s: &str| -> u8 {
+                    match s {
+                        "cc" => 1,
+                        "codex" => 2,
+                        "cursor" => 3,
+                        _ => 0,
+                    }
+                };
+                if source_rank(&source) >= source_rank(&session.source) {
                     session.source = source.clone();
                 }
 
@@ -7653,6 +7700,15 @@ fn process_claude_event(
                         session.host_terminal = find_terminal_app_for_pid(pid_u32);
                         log::info!("[claude_event] session={} host_terminal={:?}",
                             &session_id[..session_id.len().min(8)], session.host_terminal);
+                        if session.source == "cc"
+                            && session
+                                .host_terminal
+                                .as_deref()
+                                .map(is_codex_host_terminal)
+                                .unwrap_or(false)
+                        {
+                            session.source = "codex".to_string();
+                        }
                     }
                 }
 
@@ -7696,12 +7752,19 @@ fn process_claude_event(
                     // Cursor: check if Cursor (or oc-claw) is the frontmost app.
                     // If a terminal ID is missing (older hooks / non-Ghostty),
                     // fall back to host-terminal checks where available.
+                    let frontmost = get_frontmost_app_name();
                     let is_tab_active = if session.source == "cursor" {
-                        is_cursor_active()
+                        is_cursor_frontmost_app(&frontmost)
+                    } else if session.source == "codex" {
+                        // Codex: check Ghostty tab match first, fall back to Codex app frontmost
+                        let ghostty_match = session.terminal_id.as_ref()
+                            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+                            .unwrap_or(false);
+                        ghostty_match || is_codex_frontmost_app(&frontmost)
                     } else if let Some(tid) = session.terminal_id.as_ref() {
                         get_active_ghostty_terminal_id().map(|a| a == *tid).unwrap_or(false)
                     } else if session.host_terminal.as_deref() == Some("Cursor") {
-                        is_cursor_active()
+                        is_cursor_frontmost_app(&frontmost)
                     } else {
                         false
                     };
