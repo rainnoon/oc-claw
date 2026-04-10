@@ -6296,6 +6296,7 @@ fn process_claude_event(
                     terminal_id: None,
                     host_terminal: None,
                 });
+                session.source = source.clone();
 
                 // Track pending sub-agents:
                 // - PreToolUse with tool=Agent → a sub-agent is being launched

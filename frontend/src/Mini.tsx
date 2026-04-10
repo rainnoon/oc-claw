@@ -506,6 +506,8 @@ export default function Mini() {
 
   // Claude Code & Cursor
   const [claudeSessions, setClaudeSessions] = useState<any[]>([])
+  const claudeSessionsRef = useRef<any[]>([])
+  claudeSessionsRef.current = claudeSessions
   const [charQueue, setCharQueue] = useState<string[]>([DEFAULT_CHAR_NAME])
   const [selectedClaudeSession, setSelectedClaudeSession] = useState<string | null>(null)
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
@@ -1111,7 +1113,8 @@ export default function Mini() {
           expandFnRef.current()
         }
       }
-      const isCursor = ev.payload?.source === 'cursor'
+      const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
+      const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
       const shouldSound = isCursor ? cursorSoundEnabledRef.current : soundEnabledRef.current
       if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
