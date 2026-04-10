@@ -1437,9 +1437,22 @@ export default function Mini() {
       settingsModeRef.current = false
       setSettingsMode(false)
       setShowSettingsOverlay(false)
-      // If exiting settings via collapse (click outside), trigger immediate
-      // refresh so config changes are detected right away, not after 5s poll.
-      if (wasSettings) fetchAgents()
+      if (wasSettings) {
+        setSettingsNav('pairing')
+        // Keep outside-click close behavior consistent with clicking "X":
+        // re-sync feature toggles from store immediately.
+        try {
+          const store = await load('settings.json', { defaults: {}, autoSave: true })
+          const cc = await store.get('enable_claudecode')
+          setEnableClaudeCode(cc !== false)
+          const cod = await store.get('enable_codex')
+          setEnableCodex(cod !== false)
+          const cur = await store.get('enable_cursor')
+          setEnableCursor(cur !== false)
+        } catch {}
+        // Trigger immediate refresh so config changes are reflected right away.
+        fetchAgents()
+      }
       // Hide mascot first to avoid flicker at old position
       setHiding(true)
       // Use setTimeout instead of rAF (rAF may not fire when window is blurred)
