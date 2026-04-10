@@ -661,12 +661,11 @@ export default function Mini() {
       viewModeRef.current = 'efficiency'
       invoke('set_mini_expanded', { expanded: false, position: 'right', efficiency: true }).catch(() => {})
       await store.set('view_mode', 'efficiency')
-      // Restore saved mascot position from a previous drag.
-      const pos = (await store.get('mini_custom_pos')) as { x: number; y: number } | null
-      if (pos) {
-        customPosRef.current = pos
-        invoke('set_mini_origin', pos).catch(() => {})
-      }
+      // Force-reset mascot custom position to avoid off-screen placement.
+      // Keep collapsed default placement controlled by `set_mini_expanded`.
+      customPosRef.current = null
+      await store.set('mini_custom_pos', null)
+      await store.save()
     })
   }, [])
 
@@ -1327,20 +1326,28 @@ export default function Mini() {
     if (collapsingRef.current || expandingRef.current) return
     expandingRef.current = true
     setHiding(true)
-    await new Promise<void>((r) => setTimeout(r, 50))
-    await invoke('set_mini_expanded', {
-      expanded: true,
-      position: mascotPositionRef.current,
-      efficiency: viewModeRef.current === 'efficiency',
-      maxHeight: panelMaxHeightRef.current,
-    })
-    setHiding(false)
-    setExpanded(true)
-    expandedRef.current = true
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => setShowPanel(true))
-    })
-    expandingRef.current = false
+    try {
+      await new Promise<void>((r) => setTimeout(r, 50))
+      await invoke('set_mini_expanded', {
+        expanded: true,
+        position: mascotPositionRef.current,
+        efficiency: viewModeRef.current === 'efficiency',
+        maxHeight: panelMaxHeightRef.current,
+      })
+      setExpanded(true)
+      expandedRef.current = true
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => setShowPanel(true))
+      })
+    } catch (e) {
+      console.warn('[mini] expand failed:', e)
+      setShowPanel(false)
+      setExpanded(false)
+      expandedRef.current = false
+    } finally {
+      setHiding(false)
+      expandingRef.current = false
+    }
   }, [])
   expandFnRef.current = expand
   const updateModalWindowAdjustedRef = useRef(false)
@@ -1615,9 +1622,6 @@ export default function Mini() {
       try {
         await new Promise<void>((r) => setTimeout(r, 50))
         await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
-        if (customPosRef.current) {
-          await invoke('set_mini_origin', customPosRef.current)
-        }
         await new Promise<void>((r) => setTimeout(r, 50))
       } catch {}
       setHiding(false)
@@ -1665,9 +1669,7 @@ export default function Mini() {
         // Trigger immediate refresh so config changes are reflected right away.
         fetchAgents()
       }
-      // Hide mascot first to avoid flicker at old position
       setHiding(true)
-      // Use setTimeout instead of rAF (rAF may not fire when window is blurred)
       try {
         await new Promise<void>((r) => setTimeout(r, 50))
         if (wasSettings) {
@@ -1675,15 +1677,14 @@ export default function Mini() {
         } else {
           await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
         }
-        setExpanded(false)
-        expandedRef.current = false
         await new Promise<void>((r) => setTimeout(r, 50))
-        if (customPosRef.current) {
-          await invoke('set_mini_origin', customPosRef.current)
-        }
       } catch {
         /* ensure hiding is always cleared */
       }
+      // Even if native resize invoke fails, always return to collapsed React state
+      // so the mascot remains visible instead of getting stuck in an intermediate shell.
+      setExpanded(false)
+      expandedRef.current = false
       setHiding(false)
       setSettingsTransitioning(false)
       // Brief cooldown to prevent focus event from immediately re-expanding

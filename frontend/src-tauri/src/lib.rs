@@ -3236,14 +3236,37 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
     {
         let win_clone = win.clone();
         app.run_on_main_thread(move || {
-            use objc2::runtime::AnyObject;
+            use objc2::runtime::{AnyClass, AnyObject};
             use objc2::msg_send;
             use objc2_foundation::{NSRect, NSPoint, NSSize};
             if let Ok(ns_win) = win_clone.ns_window() {
                 let obj = unsafe { &*(ns_win as *mut AnyObject) };
                 let frame: NSRect = unsafe { msg_send![obj, frame] };
+                let screen_frame: NSRect = unsafe {
+                    let screen: *mut AnyObject = msg_send![obj, screen];
+                    if screen.is_null() {
+                        let cls = match AnyClass::get(c"NSScreen") {
+                            Some(c) => c,
+                            None => return,
+                        };
+                        let main_screen: *mut AnyObject = msg_send![cls, mainScreen];
+                        if main_screen.is_null() {
+                            return;
+                        }
+                        msg_send![&*main_screen, frame]
+                    } else {
+                        msg_send![&*screen, frame]
+                    }
+                };
+
+                let min_x = screen_frame.origin.x;
+                let max_x = (screen_frame.origin.x + screen_frame.size.width - frame.size.width).max(min_x);
+                let min_y = screen_frame.origin.y;
+                let max_y = (screen_frame.origin.y + screen_frame.size.height - frame.size.height).max(min_y);
+                let clamped_x = x.max(min_x).min(max_x);
+                let clamped_y = y.max(min_y).min(max_y);
                 let new_frame = NSRect::new(
-                    NSPoint::new(x, y),
+                    NSPoint::new(clamped_x, clamped_y),
                     NSSize::new(frame.size.width, frame.size.height),
                 );
                 unsafe {
@@ -3314,8 +3337,6 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
-                            // Activate the app + make window key so clicks register
-                            // immediately (no "first click to focus" issue).
                             let ns_app_cls = AnyClass::get(c"NSApplication").unwrap();
                             let ns_app: *mut AnyObject = msg_send![ns_app_cls, sharedApplication];
                             let _: () = msg_send![&*ns_app, activateIgnoringOtherApps: true];
@@ -3324,11 +3345,6 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         }
                         (x, y, win_w, win_h)
                     } else {
-                        // Both efficiency and island mode use the same small
-                        // collapsed window (60×45).  Hover detection for
-                        // efficiency mode is handled by the Rust cursor poll
-                        // which uses its own (wider) notch region, so the
-                        // window itself doesn't need to span the notch.
                         let win_w = 60.0;
                         let win_h = 45.0;
                         let x = collapsed_x(sx, sw, win_w, &pos, notch_off);
