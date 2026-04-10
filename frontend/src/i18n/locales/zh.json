@@ -100,6 +100,9 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "启用 Claude Code",
     "enableClaudeCodeDesc": "通过 Hook 监听本地 Claude Code 会话",
+    "codex": "Codex",
+    "enableCodex": "启用 Codex",
+    "enableCodexDesc": "通过 Hook 监听本地 Codex 会话",
     "hookInstalled": "Hook 已安装",
     "hookFailed": "安装失败:",
 

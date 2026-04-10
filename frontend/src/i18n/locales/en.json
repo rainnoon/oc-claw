@@ -100,6 +100,9 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "Enable Claude Code",
     "enableClaudeCodeDesc": "Monitor local Claude Code sessions via Hooks",
+    "codex": "Codex",
+    "enableCodex": "Enable Codex",
+    "enableCodexDesc": "Monitor local Codex sessions via Hooks",
     "hookInstalled": "Hook installed",
     "hookFailed": "Install failed:",
 

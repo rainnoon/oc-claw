@@ -546,6 +546,7 @@ export default function Mini() {
 
   // Feature toggles
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
+  const [enableCodex, setEnableCodex] = useState(true)
   const [enableCursor, setEnableCursor] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
@@ -1043,7 +1044,9 @@ export default function Mini() {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
-      if (cc !== false) invoke('install_claude_hooks').catch(() => {})
+      const cod = await store.get('enable_codex')
+      setEnableCodex(cod !== false)
+      if (cc !== false || cod !== false) invoke('install_claude_hooks').catch(() => {})
       const cur = await store.get('enable_cursor')
       setEnableCursor(cur !== false)
       if (cur !== false) invoke('install_cursor_hooks').catch(() => {})
@@ -1080,9 +1083,9 @@ export default function Mini() {
     })()
   }, [])
 
-  // Poll Claude Code sessions
+  // Poll Claude/Codex/Cursor sessions
   useEffect(() => {
-    if (!enableClaudeCode) {
+    if (!(enableClaudeCode || enableCodex || enableCursor)) {
       setClaudeSessions([])
       return
     }
@@ -1120,9 +1123,9 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode])
+  }, [enableClaudeCode, enableCodex, enableCursor])
 
-  // Listen for Claude/Cursor task completion → play sound
+  // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
   soundEnabledRef.current = soundEnabled
   const cursorSoundEnabledRef = useRef(cursorSoundEnabled)
@@ -1135,7 +1138,7 @@ export default function Mini() {
   autoCloseCompletionRef.current = autoCloseCompletion
   const autoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    if (!enableClaudeCode) return
+    if (!(enableClaudeCode || enableCodex || enableCursor)) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
       if (ev.payload?.waiting && viewModeRef.current === 'efficiency') {
         setEffListCollapsed(true)
@@ -1157,7 +1160,7 @@ export default function Mini() {
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [enableClaudeCode])
+  }, [enableClaudeCode, enableCodex, enableCursor])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
@@ -1550,6 +1553,8 @@ export default function Mini() {
     const store = await load('settings.json', { defaults: {}, autoSave: true })
     const cc = await store.get('enable_claudecode')
     setEnableClaudeCode(cc !== false)
+    const cod = await store.get('enable_codex')
+    setEnableCodex(cod !== false)
     const cur = await store.get('enable_cursor')
     setEnableCursor(cur !== false)
     fetchAgents()
@@ -1947,7 +1952,8 @@ export default function Mini() {
                             }))
                             const filteredClaude = claudeSessions.filter((cs) => {
                               if (cs.source === 'cursor' && !enableCursor) return false
-                              if (cs.source !== 'cursor' && !enableClaudeCode) return false
+                              if (cs.source === 'codex' && !enableCodex) return false
+                              if (cs.source !== 'cursor' && cs.source !== 'codex' && !enableClaudeCode) return false
                               return true
                             })
                             const claudeUnified = filteredClaude.map((cs, ci) => ({
@@ -1976,6 +1982,7 @@ export default function Mini() {
                               const trackingTargets = [
                                 ...(agents.length > 0 ? ['OpenClaw'] : []),
                                 ...(enableClaudeCode ? ['Claude Code'] : []),
+                                ...(enableCodex ? ['Codex'] : []),
                                 ...(enableCursor ? ['Cursor'] : []),
                               ]
                               return (
@@ -2130,6 +2137,14 @@ export default function Mini() {
                                 const gif = charMeta ? getMiniGif(charMeta, petState) : undefined
                                 const subtitle = cs.userPrompt || ''
                                 const timeAgo = formatTimeAgo(cs.updatedAt || 0)
+                                const isCursorSource = cs.source === 'cursor'
+                                const isCodexSource = cs.source === 'codex'
+                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : 'Claude'
+                                const sourceBadgeClass = isCursorSource
+                                  ? 'bg-[#1a2f3f] text-[#5eb5f7]'
+                                  : isCodexSource
+                                    ? 'bg-[#1d2f26] text-[#6dd29c]'
+                                    : 'bg-[#3f211d] text-[#e87a65]'
                                 return (
                                   <motion.div
                                     key={`list-claude-${cs.sessionId}`}
@@ -2181,7 +2196,6 @@ export default function Mini() {
                                       <div
                                         className="flex min-w-0 flex-1 items-center gap-1.5"
                                         data-no-drag
-                                        onClick={(e) => e.stopPropagation()}
                                       >
                                         {editingSessionTitle === cs.sessionId ? (
                                           <input
@@ -2209,6 +2223,11 @@ export default function Mini() {
                                         ) : (
                                           <span
                                             className={`text-[13px] font-bold shrink-0 cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                            onClick={(e) => {
+                                              // Keep title area reserved for rename interaction.
+                                              // Clicking title should not trigger jump.
+                                              e.stopPropagation()
+                                            }}
                                             onDoubleClick={(e) => {
                                               e.stopPropagation()
                                               setEditingSessionTitle(cs.sessionId)
@@ -2220,8 +2239,8 @@ export default function Mini() {
                                         {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
                                       </div>
                                       <div className="flex items-center gap-2 shrink-0">
-                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal ${cs.source === 'cursor' ? 'bg-[#1a2f3f] text-[#5eb5f7]' : 'bg-[#3f211d] text-[#e87a65]'}`}>
-                                          {cs.source === 'cursor' ? 'Cursor' : 'Claude'}
+                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal ${sourceBadgeClass}`}>
+                                          {sourceLabel}
                                         </span>
                                         <div className="w-8 flex items-center justify-center">
                                           <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
@@ -2399,8 +2418,12 @@ export default function Mini() {
                                           <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
                                         </div>
                                         <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin text-[12px] text-slate-400 leading-[1.6] markdown-content">
-                                          {cs.source === 'cursor' && cs.lastResponse === '✓' ? (
-                                            <p>{t('mini.cursorDone', 'Cursor has finished working. Click to view.')}</p>
+                                          {(cs.source === 'cursor' || cs.source === 'codex') && cs.lastResponse === '✓' ? (
+                                            <p>
+                                              {cs.source === 'codex'
+                                                ? t('mini.codeDone', 'Code has finished working. Click to view.')
+                                                : t('mini.cursorDone', 'Cursor has finished working. Click to view.')}
+                                            </p>
                                           ) : (
                                             <ReactMarkdown>{cs.lastResponse}</ReactMarkdown>
                                           )}
@@ -2664,6 +2687,7 @@ export default function Mini() {
                             const targets = [
                               ...(agents.length > 0 ? ['OpenClaw'] : []),
                               ...(enableClaudeCode ? ['Claude Code'] : []),
+                              ...(enableCodex ? ['Codex'] : []),
                               ...(enableCursor ? ['Cursor'] : []),
                             ]
                             return targets.length > 0 ? (
@@ -2696,7 +2720,8 @@ export default function Mini() {
                             }))
                             const filteredClaude = claudeSessions.filter((cs) => {
                               if (cs.source === 'cursor' && !enableCursor) return false
-                              if (cs.source !== 'cursor' && !enableClaudeCode) return false
+                              if (cs.source === 'codex' && !enableCodex) return false
+                              if (cs.source !== 'cursor' && cs.source !== 'codex' && !enableClaudeCode) return false
                               return true
                             })
                             const claudeUnified = filteredClaude.map((cs, ci) => ({

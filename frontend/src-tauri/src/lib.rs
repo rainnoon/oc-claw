@@ -4503,7 +4503,7 @@ pub struct ClaudeSession {
     /// Set dynamically in `get_claude_sessions` — not persisted.
     #[serde(rename = "isActiveTab")]
     pub is_active_tab: bool,
-    /// Source of this session: "cc" (Claude Code) or "cursor" (Cursor IDE).
+    /// Source of this session: "cc" (Claude Code), "codex" (Codex), or "cursor" (Cursor IDE).
     pub source: String,
     /// Ghostty terminal `id` captured when the session is first seen.
     /// Used by `jump_to_claude_terminal` to select the exact tab instead
@@ -4573,6 +4573,104 @@ fn claude_session_file_path(session_id: &str, cwd: &str) -> PathBuf {
     #[cfg(not(windows))]
     let project_dir = cwd.replace('/', "-").replace('.', "-");
     home.join(".claude").join("projects").join(project_dir).join(format!("{}.jsonl", session_id))
+}
+
+fn collect_jsonl_files_recursive(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if !root.exists() {
+        return out;
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let claude_projects = home.join(".claude").join("projects");
+    if !claude_projects.exists() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if let Ok(project_dirs) = std::fs::read_dir(claude_projects) {
+        for project_entry in project_dirs.flatten() {
+            let project_dir = project_entry.path();
+            if !project_dir.is_dir() {
+                continue;
+            }
+            if let Ok(files) = std::fs::read_dir(project_dir) {
+                for file_entry in files.flatten() {
+                    let path = file_entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_codex_session_jsonl_files() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let codex_sessions = home.join(".Codex").join("sessions");
+    collect_jsonl_files_recursive(&codex_sessions)
+}
+
+fn find_claude_session_file(session_id: &str) -> Option<PathBuf> {
+    let target = format!("{}.jsonl", session_id);
+    for path in collect_claude_project_jsonl_files() {
+        if path.file_name().and_then(|n| n.to_str()) == Some(target.as_str()) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn find_codex_session_file(session_id: &str) -> Option<PathBuf> {
+    // Codex stores sessions as:
+    //   ~/.Codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl
+    // so we cannot derive the path from cwd; we must scan for a filename
+    // containing the session id.
+    for path in collect_codex_session_jsonl_files() {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".jsonl") && name.contains(session_id) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn resolve_session_jsonl_path(session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
+    // Prefer Claude's deterministic path when cwd is known, then fall back to
+    // directory scans. This keeps existing behavior fast while adding Codex
+    // compatibility.
+    if let Some(cwd_str) = cwd {
+        if !cwd_str.is_empty() {
+            let by_cwd = claude_session_file_path(session_id, cwd_str);
+            if by_cwd.exists() {
+                return Some(by_cwd);
+            }
+        }
+    }
+    find_claude_session_file(session_id).or_else(|| find_codex_session_file(session_id))
 }
 
 /// Check if a JSONL file indicates an interrupted session
@@ -4789,12 +4887,18 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
                 "waiting" | "processing" | "tool_running" | "compacting");
             if !dominated { continue; }
 
-            if session.source == "cursor" {
-                // Cursor: timeout-based staleness (120s without any event update)
+            if session.source == "cursor" || session.source == "codex" {
+                // Cursor/Codex: timeout-based staleness (120s without any event update).
+                // Hook PPIDs are not always stable enough for PID-alive checks.
                 let age_ms = now_ms.saturating_sub(session.updated_at);
                 if age_ms > 120_000 {
-                    log::info!("[get_claude_sessions] Cursor session {} stale ({}ms since last event), clearing {}",
-                        session.session_id, age_ms, session.status);
+                    log::info!(
+                        "[get_claude_sessions] {} session {} stale ({}ms since last event), clearing {}",
+                        session.source,
+                        session.session_id,
+                        age_ms,
+                        session.status
+                    );
                     session.status = "stopped".to_string();
                     session.pending_agents = 0;
                 }
@@ -4972,9 +5076,9 @@ struct ClaudeStats {
 
 #[tauri::command]
 async fn get_claude_stats() -> Result<ClaudeStats, String> {
-    let home = dirs::home_dir().ok_or("no home dir")?;
-    let claude_dir = home.join(".claude").join("projects");
-    if !claude_dir.exists() {
+    let mut jsonl_files = collect_claude_project_jsonl_files();
+    jsonl_files.extend(collect_codex_session_jsonl_files());
+    if jsonl_files.is_empty() {
         return Ok(ClaudeStats {
             total_input_tokens: 0, total_output_tokens: 0,
             total_cache_read_tokens: 0, total_cache_write_tokens: 0,
@@ -4997,109 +5101,207 @@ async fn get_claude_stats() -> Result<ClaudeStats, String> {
     let cutoff = now - chrono::Duration::days(14);
     let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
 
-    if let Ok(project_dirs) = std::fs::read_dir(&claude_dir) {
-        for project_entry in project_dirs.flatten() {
-            if !project_entry.path().is_dir() { continue; }
-            if let Ok(files) = std::fs::read_dir(project_entry.path()) {
-                for file_entry in files.flatten() {
-                    let path = file_entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+    for path in jsonl_files {
+        // Use file modification time to skip old files quickly.
+        let modified_day = path.metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .map(|t| {
+                let dt: chrono::DateTime<chrono::Utc> = t.into();
+                dt
+            });
+        if let Some(modified) = modified_day {
+            if modified < cutoff {
+                continue;
+            }
+        }
 
-                    // Use file modification time to skip old files quickly
-                    if let Ok(meta) = path.metadata() {
-                        if let Ok(modified) = meta.modified() {
-                            let mod_time: chrono::DateTime<chrono::Utc> = modified.into();
-                            if mod_time < cutoff { continue; }
-                        }
-                    }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
 
-                    let content = match std::fs::read_to_string(&path) {
-                        Ok(c) => c,
-                        Err(_) => continue,
-                    };
+        let mut session_counted = false;
+        let mut session_day: Option<String> = None;
 
-                    let mut session_counted = false;
-                    for line in content.lines() {
-                        if line.trim().is_empty() { continue; }
-                        let parsed: serde_json::Value = match serde_json::from_str(line) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
+        // Codex logs cumulative token totals on each token_count event.
+        // We convert cumulative totals into per-event deltas to avoid
+        // double-counting repeated snapshots.
+        let mut prev_codex_total_input: Option<u64> = None;
+        let mut prev_codex_total_output: Option<u64> = None;
+        let mut prev_codex_total_cached_input: Option<u64> = None;
 
-                        if parsed.get("type").and_then(|v| v.as_str()) != Some("assistant") { continue; }
-                        let msg = match parsed.get("message") {
-                            Some(m) => m,
-                            None => continue,
-                        };
-                        let usage = match msg.get("usage") {
-                            Some(u) => u,
-                            None => continue,
-                        };
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let parsed: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
 
-                        // Extract date from timestamp
-                        let date = parsed.get("timestamp")
-                            .and_then(|v| v.as_str())
-                            .and_then(|ts| ts.get(..10))
-                            .unwrap_or("")
-                            .to_string();
+            let line_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-                        if date < cutoff_str { continue; }
+            // Claude Code format: assistant entries carry usage directly.
+            if line_type == "assistant" {
+                let msg = match parsed.get("message") {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let usage = match msg.get("usage") {
+                    Some(u) => u,
+                    None => continue,
+                };
 
-                        let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let cache_write = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let date = parsed.get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(|ts| ts.get(..10))
+                    .unwrap_or("")
+                    .to_string();
+                if date < cutoff_str {
+                    continue;
+                }
 
-                        if model.is_empty() {
-                            if let Some(m) = msg.get("model").and_then(|v| v.as_str()) {
-                                model = m.to_string();
-                            }
-                        }
+                let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cache_write = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
 
-                        total_input += input;
-                        total_output += output;
-                        total_cache_read += cache_read;
-                        total_cache_write += cache_write;
-                        total_messages += 1;
-
-                        if !session_counted {
-                            session_counted = true;
-                            total_sessions += 1;
-                        }
-
-                        if !date.is_empty() {
-                            let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
-                                date: date.clone(),
-                                input_tokens: 0, output_tokens: 0,
-                                cache_read_tokens: 0, cache_write_tokens: 0,
-                                messages: 0, sessions: 0,
-                            });
-                            entry.input_tokens += input;
-                            entry.output_tokens += output;
-                            entry.cache_read_tokens += cache_read;
-                            entry.cache_write_tokens += cache_write;
-                            entry.messages += 1;
-                        }
-                    }
-
-                    // Count session per day (use first message date)
-                    if session_counted {
-                        if let Some(first_day) = daily_map.keys().next().cloned() {
-                            // Actually count in the day the session was modified
-                            if let Ok(meta) = path.metadata() {
-                                if let Ok(modified) = meta.modified() {
-                                    let mod_time: chrono::DateTime<chrono::Utc> = modified.into();
-                                    let day = mod_time.format("%Y-%m-%d").to_string();
-                                    if let Some(entry) = daily_map.get_mut(&day) {
-                                        entry.sessions += 1;
-                                    } else if let Some(entry) = daily_map.get_mut(&first_day) {
-                                        entry.sessions += 1;
-                                    }
-                                }
-                            }
-                        }
+                if model.is_empty() {
+                    if let Some(m) = msg.get("model").and_then(|v| v.as_str()) {
+                        model = m.to_string();
                     }
                 }
+
+                total_input += input;
+                total_output += output;
+                total_cache_read += cache_read;
+                total_cache_write += cache_write;
+                total_messages += 1;
+
+                if !session_counted {
+                    session_counted = true;
+                    total_sessions += 1;
+                }
+                if session_day.is_none() && !date.is_empty() {
+                    session_day = Some(date.clone());
+                }
+
+                if !date.is_empty() {
+                    let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                        date: date.clone(),
+                        input_tokens: 0, output_tokens: 0,
+                        cache_read_tokens: 0, cache_write_tokens: 0,
+                        messages: 0, sessions: 0,
+                    });
+                    entry.input_tokens += input;
+                    entry.output_tokens += output;
+                    entry.cache_read_tokens += cache_read;
+                    entry.cache_write_tokens += cache_write;
+                    entry.messages += 1;
+                }
+                continue;
+            }
+
+            // Codex format metadata.
+            if line_type == "session_meta" && model.is_empty() {
+                if let Some(m) = parsed.get("payload")
+                    .and_then(|p| p.get("model"))
+                    .and_then(|v| v.as_str()) {
+                    model = m.to_string();
+                } else if let Some(provider) = parsed.get("payload")
+                    .and_then(|p| p.get("model_provider"))
+                    .and_then(|v| v.as_str()) {
+                    model = provider.to_string();
+                }
+                continue;
+            }
+
+            // Codex format usage: event_msg -> payload.type=token_count -> info.total_token_usage.
+            if line_type == "event_msg" && parsed.get("payload")
+                .and_then(|p| p.get("type"))
+                .and_then(|v| v.as_str()) == Some("token_count") {
+                let total_usage = match parsed.get("payload")
+                    .and_then(|p| p.get("info"))
+                    .and_then(|i| i.get("total_token_usage")) {
+                    Some(v) => v,
+                    None => continue,
+                };
+
+                let total_input_now = total_usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let total_output_now = total_usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let total_cached_now = total_usage.get("cached_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                let delta_input = match prev_codex_total_input {
+                    Some(prev) => total_input_now.saturating_sub(prev),
+                    None => total_input_now,
+                };
+                let delta_output = match prev_codex_total_output {
+                    Some(prev) => total_output_now.saturating_sub(prev),
+                    None => total_output_now,
+                };
+                let delta_cached = match prev_codex_total_cached_input {
+                    Some(prev) => total_cached_now.saturating_sub(prev),
+                    None => total_cached_now,
+                };
+
+                prev_codex_total_input = Some(total_input_now);
+                prev_codex_total_output = Some(total_output_now);
+                prev_codex_total_cached_input = Some(total_cached_now);
+
+                // Same cumulative snapshot can be emitted multiple times.
+                if delta_input == 0 && delta_output == 0 && delta_cached == 0 {
+                    continue;
+                }
+
+                let date = parsed.get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(|ts| ts.get(..10))
+                    .unwrap_or("")
+                    .to_string();
+                if date < cutoff_str {
+                    continue;
+                }
+
+                total_input += delta_input;
+                total_output += delta_output;
+                total_cache_read += delta_cached;
+                total_messages += 1;
+
+                if !session_counted {
+                    session_counted = true;
+                    total_sessions += 1;
+                }
+                if session_day.is_none() && !date.is_empty() {
+                    session_day = Some(date.clone());
+                }
+
+                if !date.is_empty() {
+                    let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                        date: date.clone(),
+                        input_tokens: 0, output_tokens: 0,
+                        cache_read_tokens: 0, cache_write_tokens: 0,
+                        messages: 0, sessions: 0,
+                    });
+                    entry.input_tokens += delta_input;
+                    entry.output_tokens += delta_output;
+                    entry.cache_read_tokens += delta_cached;
+                    entry.messages += 1;
+                }
+            }
+        }
+
+        // Count one session per day.
+        if session_counted {
+            let day = session_day.or_else(|| modified_day.map(|d| d.format("%Y-%m-%d").to_string()));
+            if let Some(day_str) = day {
+                let entry = daily_map.entry(day_str.clone()).or_insert_with(|| ClaudeDailyStats {
+                    date: day_str.clone(),
+                    input_tokens: 0, output_tokens: 0,
+                    cache_read_tokens: 0, cache_write_tokens: 0,
+                    messages: 0, sessions: 0,
+                });
+                entry.sessions += 1;
             }
         }
     }
@@ -5539,13 +5741,157 @@ async fn focus_cursor_terminal(session_id: String, state: tauri::State<'_, Claud
 async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, ClaudeState>) -> Result<String, String> {
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get(&session_id).ok_or("Session not found")?;
-    let pid = session.pid.ok_or("No PID tracked for this session")?;
     let cwd = session.cwd.clone();
     let terminal_id = session.terminal_id.clone();
+    let pid = session.pid;
+    let source = session.source.clone();
     drop(sessions);
 
     #[cfg(target_os = "macos")]
     {
+        let try_activate_app = |app_name: &str| -> bool {
+            let script = format!(r#"tell application "{}" to activate"#, app_name.replace('"', "\\\""));
+            if std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            std::process::Command::new("open")
+                .args(["-a", app_name])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+
+        // Codex sessions should jump to the Codex app directly.
+        // Do not route through Ghostty first; that causes the "terminal flash"
+        // and may still require manual dock clicks to bring Codex frontmost.
+        if source == "codex" {
+            for app_name in ["Codex", "Code"] {
+                if try_activate_app(app_name) {
+                    return Ok(format!("Activated {}", app_name));
+                }
+            }
+            // If Codex app activation fails (e.g. not installed as app bundle),
+            // continue with terminal-based fallback paths below.
+        }
+
+        // Fast path: if we have a Ghostty terminal ID from hooks, jump directly
+        // to that tab without depending on PID ancestry checks.
+        if let Some(tid_raw) = terminal_id.as_deref() {
+            if !tid_raw.is_empty() {
+                let escaped_tid = tid_raw.replace('\\', "\\\\").replace('"', "\\\"");
+                let script = format!(
+                    r#"tell application "Ghostty"
+    if not (it is running) then return ""
+    set targetWindow to missing value
+    set targetTab to missing value
+    set targetTerminal to missing value
+    repeat with aWindow in windows
+        repeat with aTab in tabs of aWindow
+            repeat with aTerminal in terminals of aTab
+                try
+                    if (id of aTerminal as text) is "{tid}" then
+                        set targetWindow to aWindow
+                        set targetTab to aTab
+                        set targetTerminal to aTerminal
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if targetTerminal is not missing value then exit repeat
+        end repeat
+        if targetTerminal is not missing value then exit repeat
+    end repeat
+    if targetTerminal is missing value then return ""
+    activate
+    delay 0.05
+    if targetTab is not missing value then
+        select tab targetTab
+        delay 0.05
+    end if
+    if targetWindow is not missing value then
+        set index of targetWindow to 1
+    end if
+    focus targetTerminal
+    return "matched"
+end tell"#,
+                    tid = escaped_tid,
+                );
+                if let Ok(out) = std::process::Command::new("osascript").args(["-e", &script]).output() {
+                    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if out.status.success() && stdout == "matched" {
+                        return Ok("Jumped to Ghostty".to_string());
+                    }
+                }
+
+                // Some Ghostty builds may format terminal IDs slightly differently.
+                // Retry with a prefix contains-match to avoid false negatives.
+                let tid_prefix = &tid_raw[..tid_raw.len().min(8)];
+                if !tid_prefix.is_empty() {
+                    let escaped_prefix = tid_prefix.replace('\\', "\\\\").replace('"', "\\\"");
+                    let fallback_script = format!(
+                        r#"tell application "Ghostty"
+    if not (it is running) then return ""
+    set targetWindow to missing value
+    set targetTab to missing value
+    set targetTerminal to missing value
+    repeat with aWindow in windows
+        repeat with aTab in tabs of aWindow
+            repeat with aTerminal in terminals of aTab
+                try
+                    if (id of aTerminal as text) contains "{prefix}" then
+                        set targetWindow to aWindow
+                        set targetTab to aTab
+                        set targetTerminal to aTerminal
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if targetTerminal is not missing value then exit repeat
+        end repeat
+        if targetTerminal is not missing value then exit repeat
+    end repeat
+    if targetTerminal is missing value then return ""
+    activate
+    delay 0.05
+    if targetTab is not missing value then
+        select tab targetTab
+        delay 0.05
+    end if
+    if targetWindow is not missing value then
+        set index of targetWindow to 1
+    end if
+    focus targetTerminal
+    return "matched"
+end tell"#,
+                        prefix = escaped_prefix,
+                    );
+                    if let Ok(out) = std::process::Command::new("osascript").args(["-e", &fallback_script]).output() {
+                        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if out.status.success() && stdout == "matched" {
+                            return Ok("Jumped to Ghostty".to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let pid = if let Some(p) = pid {
+            p
+        } else if source == "codex" {
+            for app_name in ["Codex", "Ghostty", "Cursor"] {
+                if try_activate_app(app_name) {
+                    return Ok(format!("Activated {}", app_name));
+                }
+            }
+            return Err("No PID tracked for this Codex session".to_string());
+        } else {
+            return Err("No PID tracked for this session".to_string());
+        };
         // Walk parent process chain to find the terminal application
         let terminal_app = find_terminal_app_for_pid(pid);
 
@@ -5731,6 +6077,13 @@ end tell"#,
                 Ok(format!("Jumped to {}", app_name))
             }
             None => {
+                if source == "codex" {
+                    for app_name in ["Codex", "Ghostty", "Cursor"] {
+                        if try_activate_app(app_name) {
+                            return Ok(format!("Activated {}", app_name));
+                        }
+                    }
+                }
                 if !cwd.is_empty() {
                     let _ = std::process::Command::new("open").arg(&cwd).spawn();
                 }
@@ -6235,25 +6588,7 @@ if ($appPath) {{
 
 #[tauri::command]
 async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>, String> {
-    let home = dirs::home_dir().ok_or("no home dir")?;
-    let claude_dir = home.join(".claude").join("projects");
-    if !claude_dir.exists() {
-        return Ok(vec![]);
-    }
-
-    // Find the JSONL file for this session across project dirs
-    let mut jsonl_path: Option<PathBuf> = None;
-    if let Ok(entries) = std::fs::read_dir(&claude_dir) {
-        for entry in entries.flatten() {
-            let p = entry.path().join(format!("{}.jsonl", session_id));
-            if p.exists() {
-                jsonl_path = Some(p);
-                break;
-            }
-        }
-    }
-
-    let path = match jsonl_path {
+    let path = match resolve_session_jsonl_path(&session_id, None) {
         Some(p) => p,
         None => return Ok(vec![]),
     };
@@ -6272,38 +6607,68 @@ async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>,
         };
 
         let msg_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if msg_type != "assistant" && msg_type != "user" && msg_type != "human" { continue; }
-        if parsed.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) { continue; }
 
-        let role = if msg_type == "assistant" { "assistant" } else { "user" };
+        // Claude/OpenClaw-style records: type=assistant|user|human.
+        if msg_type == "assistant" || msg_type == "user" || msg_type == "human" {
+            if parsed.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) {
+                continue;
+            }
 
-        // Extract text content
-        let text = if let Some(s) = parsed.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_str()) {
-            s.to_string()
-        } else if let Some(arr) = parsed.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
-            arr.iter()
-                .filter(|b| {
-                    let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    t == "text"
-                })
-                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
+            let role = if msg_type == "assistant" { "assistant" } else { "user" };
+            let text = if let Some(s) = parsed.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_str()) {
+                s.to_string()
+            } else if let Some(arr) = parsed.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                arr.iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                continue;
+            };
+
+            if text.trim().is_empty() {
+                continue;
+            }
+            if text.starts_with("<command-name>") || text.starts_with("[Request interrupted") {
+                continue;
+            }
+            if text.starts_with("<task-notification>") || text.starts_with("<local-command") {
+                continue;
+            }
+
+            let text = if text.starts_with("This session is being continued from a previous conversation") {
+                "/compact".to_string()
+            } else {
+                text
+            };
+            let timestamp = parsed.get("timestamp").and_then(|t| t.as_str()).map(String::from);
+            messages.push(ChatMessage { role: role.to_string(), text, timestamp });
             continue;
-        };
+        }
 
-        if text.trim().is_empty() { continue; }
-        if text.starts_with("<command-name>") || text.starts_with("[Request interrupted") { continue; }
-        if text.starts_with("<task-notification>") || text.starts_with("<local-command") { continue; }
-
-        // Replace compaction summary with short indicator
-        let text = if text.starts_with("This session is being continued from a previous conversation") {
-            "/compact".to_string()
-        } else { text };
-
-        let timestamp = parsed.get("timestamp").and_then(|t| t.as_str()).map(String::from);
-        messages.push(ChatMessage { role: role.to_string(), text, timestamp });
+        // Codex records: event_msg payload user_message / agent_message.
+        if msg_type == "event_msg" {
+            let payload_type = parsed.get("payload")
+                .and_then(|p| p.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let role = match payload_type {
+                "user_message" => "user",
+                "agent_message" => "assistant",
+                _ => continue,
+            };
+            let text = parsed.get("payload")
+                .and_then(|p| p.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let timestamp = parsed.get("timestamp").and_then(|t| t.as_str()).map(String::from);
+            messages.push(ChatMessage { role: role.to_string(), text, timestamp });
+        }
     }
 
     messages.reverse();
@@ -6572,6 +6937,227 @@ try {
     std::fs::write(&settings_path, serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
 
+    // Keep Codex desktop integration in sync with Claude integration.
+    // Frontend still invokes `install_claude_hooks`, so we install both
+    // hook systems here to avoid requiring frontend API changes.
+    install_codex_hooks().await?;
+
+    Ok(())
+}
+
+async fn install_codex_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let codex_dir = home.join(".Codex");
+    let hooks_dir = codex_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
+
+    #[cfg(unix)]
+    let hook_path = hooks_dir.join("ooclaw-codex-hook.sh");
+    #[cfg(windows)]
+    let hook_path = hooks_dir.join("ooclaw-codex-hook.ps1");
+
+    #[cfg(unix)]
+    {
+        let hook_script = r#"#!/bin/bash
+# ooclaw Codex hook - forwards events to /tmp/ooclaw-claude.sock
+SOCKET_PATH="/tmp/ooclaw-claude.sock"
+[ -S "$SOCKET_PATH" ] || { echo '{}'; exit 0; }
+export CC_PID=$PPID
+
+# Capture Ghostty terminal ID once per Codex process so stop-time active-tab
+# checks and click-to-jump can target the exact tab.
+_TID_CACHE="/tmp/ooclaw-tid-$PPID"
+if [ -f "$_TID_CACHE" ]; then
+    export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
+else
+    export GHOSTTY_TID=$(osascript -e 'try
+tell application "Ghostty" to return id of first terminal of selected tab of front window as text
+end try' 2>/dev/null || echo "")
+    [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
+fi
+
+/usr/bin/python3 -c "
+import json, os, socket, sys
+
+raw = sys.stdin.read()
+if not raw.strip():
+    print('{}')
+    sys.exit(0)
+
+try:
+    data = json.loads(raw)
+except:
+    print('{}')
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    print('{}')
+    sys.exit(0)
+
+if not data.get('source'):
+    data['source'] = 'codex'
+
+if not data.get('pid'):
+    try:
+        pid = int(os.environ.get('CC_PID', '0'))
+        if pid > 0:
+            data['pid'] = pid
+    except:
+        pass
+
+tid = os.environ.get('GHOSTTY_TID', '')
+if tid and not data.get('terminalId'):
+    data['terminalId'] = tid
+
+hook_event = data.get('hook_event_name') or data.get('event') or data.get('codex_event_type') or ''
+if hook_event and not data.get('hook_event_name'):
+    data['hook_event_name'] = hook_event
+
+# Codex may omit cwd in some events. Fall back to process cwd so session
+# records still have a stable workspace path.
+if not data.get('cwd') and not data.get('workdir'):
+    try:
+        data['cwd'] = os.getcwd()
+    except:
+        pass
+
+payload = json.dumps(data)
+
+try:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect('$SOCKET_PATH')
+    sock.sendall(payload.encode('utf-8'))
+
+    if hook_event == 'PermissionRequest':
+        sock.shutdown(socket.SHUT_WR)
+        response = b''
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        sock.close()
+        if response:
+            sys.stdout.write(response.decode('utf-8', errors='replace'))
+        else:
+            sys.stdout.write('{}')
+    else:
+        sock.shutdown(socket.SHUT_WR)
+        sock.close()
+        sys.stdout.write('{}')
+except:
+    sys.stdout.write('{}')
+"
+"#;
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, keep the hook simple: forward Codex JSON to the existing
+        // oc-claw TCP hook server. `process_claude_event` handles both Codex
+        // and Claude field variants.
+        let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+try {
+    $raw = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        [Console]::Out.Write('{}')
+        exit 0
+    }
+
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json } catch {}
+    if ($obj -ne $null) {
+        $ccPid = (Get-Process -Id $PID).Parent.Parent.Id
+        if (-not $obj.source) { $obj.source = 'codex' }
+        if ($ccPid -and -not $obj.pid) { $obj | Add-Member -NotePropertyName pid -NotePropertyValue $ccPid -Force }
+        if (-not $obj.hook_event_name -and $obj.codex_event_type) { $obj.hook_event_name = $obj.codex_event_type }
+        if (-not $obj.cwd -and -not $obj.workdir) { $obj.cwd = (Get-Location).Path }
+        $raw = $obj | ConvertTo-Json -Compress -Depth 20
+    }
+
+    $hookName = ''
+    if ($obj -ne $null -and $obj.hook_event_name) { $hookName = [string]$obj.hook_event_name }
+
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
+    $stream = $client.GetStream()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush()
+    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+
+    if ($hookName -eq 'PermissionRequest') {
+        $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+        $response = $reader.ReadToEnd()
+        if ($response) { [Console]::Out.Write($response) } else { [Console]::Out.Write('{}') }
+        $reader.Close()
+    } else {
+        [Console]::Out.Write('{}')
+    }
+    [Console]::Out.Flush()
+    $client.Close()
+} catch {
+    try { [Console]::Out.Write('{}'); [Console]::Out.Flush() } catch {}
+}
+"#;
+        std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
+    }
+
+    let hooks_json_path = codex_dir.join("hooks.json");
+    let mut config: serde_json::Value = if hooks_json_path.exists() {
+        let content = std::fs::read_to_string(&hooks_json_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    if config.get("hooks").is_none() {
+        config["hooks"] = serde_json::json!({});
+    }
+    let hooks = config["hooks"].as_object_mut().ok_or("hooks is not an object")?;
+
+    #[cfg(windows)]
+    let hook_command = format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+        hook_path.to_string_lossy().replace('\\', "/"),
+    );
+    #[cfg(not(windows))]
+    let hook_command = hook_path.to_string_lossy().to_string();
+
+    let has_our_hook = |entry: &serde_json::Value| -> bool {
+        let is_ours = |cmd: &str| -> bool {
+            cmd == hook_command || cmd.contains("ooclaw-codex-hook")
+        };
+        entry.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c))
+            || entry.get("hooks").and_then(|hs| hs.as_array()).map_or(false, |hs| {
+                hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c)))
+            })
+    };
+
+    let hook_def = serde_json::json!({"type": "command", "command": hook_command});
+    let event_names = [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PermissionRequest",
+        "Stop",
+        "StopFailure",
+        "SubagentStop",
+    ];
+    for event_name in event_names {
+        let arr = hooks.entry(event_name.to_string()).or_insert(serde_json::json!([]));
+        let list = arr.as_array_mut().ok_or("hook event is not an array")?;
+        list.retain(|entry| !has_our_hook(entry));
+        list.push(serde_json::json!({"hooks": [hook_def.clone()]}));
+    }
+
+    let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&hooks_json_path, json_str).map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -6590,11 +7176,15 @@ fn process_claude_event(
         // hook format AND raw CC field names (session_id, hook_event_name, status).
         // On Windows the hook now forwards raw CC JSON directly to avoid truncation issues
         // with large payloads (Stop events contain last_assistant_message with full response text).
-        let session_id = event.get("sessionId").or_else(|| event.get("session_id"))
+        let session_id = event.get("sessionId")
+            .or_else(|| event.get("session_id"))
+            .or_else(|| event.get("conversation_id"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
         if session_id.is_empty() { log::warn!("[claude_event] empty sessionId, ignoring"); return None; }
 
-        let raw_hook_event = event.get("event").or_else(|| event.get("hook_event_name"))
+        let raw_hook_event = event.get("event")
+            .or_else(|| event.get("hook_event_name"))
+            .or_else(|| event.get("codex_event_type"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
         // Normalize Cursor's camelCase event names to CC's PascalCase.
         // Cursor and CC have different hook event sets:
@@ -6604,8 +7194,11 @@ fn process_claude_event(
         //   CC:     UserPromptSubmit, Stop, PreToolUse, PostToolUse, SessionStart, etc.
         let hook_event = match raw_hook_event.as_str() {
             "beforeSubmitPrompt" => "UserPromptSubmit".to_string(),
+            "hook-user-prompt-submit" => "UserPromptSubmit".to_string(),
             "sessionStart" => "SessionStart".to_string(),
             "sessionEnd" => "SessionEnd".to_string(),
+            "agentStop" => "Stop".to_string(),
+            "StopFailure" | "stopFailure" => "Stop".to_string(),
             "preToolUse" => "PreToolUse".to_string(),
             "postToolUse" | "postToolUseFailure" => "PostToolUse".to_string(),
             "subagentStart" => "PreToolUse".to_string(),
@@ -6636,8 +7229,18 @@ fn process_claude_event(
             }
             "PreCompact" => "compacting".to_string(),
             "PreToolUse" => {
-                let tool = event.get("tool").and_then(|v| v.as_str()).unwrap_or("");
-                if tool == "AskUserQuestion" { "waiting".to_string() } else { "tool_running".to_string() }
+                let tool = event.get("tool")
+                    .or_else(|| event.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                // Different clients may report interactive choice tools with
+                // slightly different names. Treat both as waiting states so
+                // the selection popup can be shown consistently.
+                if tool == "AskUserQuestion" || tool == "AskQuestion" {
+                    "waiting".to_string()
+                } else {
+                    "tool_running".to_string()
+                }
             }
             "PostToolUse" => "processing".to_string(),
             "Stop" => "stopped".to_string(),
@@ -6742,7 +7345,10 @@ fn process_claude_event(
 
                 session.status = status.clone();
                 session.is_processing = is_processing;
-                let incoming_cwd = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+                let incoming_cwd = event.get("cwd")
+                    .or_else(|| event.get("workdir"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if !incoming_cwd.is_empty() || session.cwd.is_empty() {
                     session.cwd = incoming_cwd.to_string();
                 }
@@ -6795,10 +7401,20 @@ fn process_claude_event(
                 if let Some(t) = event.get("tool").or_else(|| event.get("tool_name")).and_then(|v| v.as_str()) {
                     if !t.is_empty() { session.tool = Some(t.to_string()); }
                 }
-                if let Some(t) = event.get("toolInput").or_else(|| event.get("tool_input")).and_then(|v| v.as_str()) {
-                    if !t.is_empty() { session.tool_input = Some(t.to_string()); }
+                if let Some(tool_input_val) = event.get("toolInput").or_else(|| event.get("tool_input")) {
+                    let tool_input_text = tool_input_val
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| serde_json::to_string(tool_input_val).ok());
+                    if let Some(t) = tool_input_text {
+                        if !t.is_empty() {
+                            session.tool_input = Some(t);
+                        }
+                    }
                 }
-                if let Some(t) = event.get("userPrompt").and_then(|v| v.as_str()) {
+                if let Some(t) = event.get("userPrompt")
+                    .or_else(|| event.get("prompt"))
+                    .and_then(|v| v.as_str()) {
                     if !t.is_empty() { session.user_prompt = Some(t.to_string()); }
                 }
                 // Store CC process PID from hook event for stale-session detection
@@ -6850,26 +7466,35 @@ fn process_claude_event(
                 // last_response so the completion popup never triggers.
                 if hook_event == "Stop" {
                     // CC: check if the user is looking at this session's Ghostty tab
-                    // Cursor: check if Cursor (or oc-claw) is the frontmost app
+                    // Cursor: check if Cursor (or oc-claw) is the frontmost app.
+                    // If a terminal ID is missing (older hooks / non-Ghostty),
+                    // fall back to host-terminal checks where available.
                     let is_tab_active = if session.source == "cursor" {
                         is_cursor_active()
+                    } else if let Some(tid) = session.terminal_id.as_ref() {
+                        get_active_ghostty_terminal_id().map(|a| a == *tid).unwrap_or(false)
+                    } else if session.host_terminal.as_deref() == Some("Cursor") {
+                        is_cursor_active()
                     } else {
-                        session.terminal_id.as_ref()
-                            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
-                            .unwrap_or(false)
+                        false
                     };
                     if is_tab_active {
                         session.last_response = None;
                     } else {
                         // Prefer lastResponse from the event itself (CC's Stop has it),
                         // then fall back to any value pre-stored by afterAgentResponse,
-                        // then use a placeholder for Cursor so the popup still triggers.
+                        // then use a placeholder for Cursor/Codex so the popup
+                        // still triggers when stop payload omits assistant text.
                         let resp_from_event = event.get("lastResponse")
+                            .or_else(|| event.get("last_assistant_message"))
+                            .or_else(|| event.get("codex_last_assistant_message"))
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
                         if resp_from_event.is_some() {
                             session.last_response = resp_from_event;
-                        } else if session.last_response.is_none() && session.source == "cursor" {
+                        } else if session.last_response.is_none()
+                            && (session.source == "cursor" || session.source == "codex")
+                        {
                             session.last_response = Some("✓".to_string());
                         }
                         // else: keep existing last_response from afterAgentResponse
@@ -6905,18 +7530,27 @@ fn process_claude_event(
             let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting, "source": session_source}));
         }
 
-        let cwd_str = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let cwd_str = event.get("cwd")
+            .or_else(|| event.get("workdir"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         log::info!("[claude_event] session={} event={} status={} cwd={}", session_id, hook_event, status, cwd_str);
-        if hook_event == "UserPromptSubmit" && !cwd_str.is_empty() {
-            let jsonl_path = claude_session_file_path(&session_id, &cwd_str);
-            log::info!("[claude_event] session file path: {} exists={}", jsonl_path.display(), jsonl_path.exists());
-            if jsonl_path.exists() {
-                start_session_file_watcher(
-                    session_id.clone(),
-                    jsonl_path,
-                    state.clone(),
-                    app.clone(),
+        if hook_event == "UserPromptSubmit" {
+            if let Some(jsonl_path) = resolve_session_jsonl_path(&session_id, Some(&cwd_str)) {
+                log::info!(
+                    "[claude_event] session file path: {} exists={}",
+                    jsonl_path.display(),
+                    jsonl_path.exists()
                 );
+                if jsonl_path.exists() {
+                    start_session_file_watcher(
+                        session_id.clone(),
+                        jsonl_path,
+                        state.clone(),
+                        app.clone(),
+                    );
+                }
             }
         } else if hook_event == "Stop" || hook_event == "SubagentStop" || hook_event == "SessionEnd" {
             stop_session_file_watcher(&session_id);
@@ -7531,7 +8165,7 @@ pub fn run() {
             // Fix PATH so openclaw (Node.js script) and node are both reachable
             fix_path();
 
-            // Install Claude Code hooks on every startup (idempotent)
+            // Install Claude + Codex hooks on every startup (idempotent)
             if let Err(e) = tauri::async_runtime::block_on(install_claude_hooks()) {
                 log::warn!("Failed to install Claude hooks on startup: {}", e);
             }
