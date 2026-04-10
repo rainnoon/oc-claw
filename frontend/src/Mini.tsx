@@ -1918,10 +1918,12 @@ export default function Mini() {
   // Panel dimensions — CSS uses fixed base sizes; on Windows high-DPI screens
   // the panel root applies `zoom: uiScale` so all content scales uniformly.
   const panelW = viewMode === 'efficiency' ? 575 : 475
-  const closedNotchWidth = 60
-  const closedNotchHeight = 15
+  const closedNotchWidth = 44
+  const closedNotchHeight = 10
   const openClipPath = 'inset(0 0 0 0 round 0 0 24px 24px)'
   const closedClipPath = `inset(0 calc(50% - ${closedNotchWidth / 2}px) calc(100% - ${closedNotchHeight}px) calc(50% - ${closedNotchWidth / 2}px) round 0 0 8px 8px)`
+  const panelClipTransition = 'clip-path 0.42s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1)'
+  const panelChromeTransition = 'opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -2059,10 +2061,8 @@ export default function Mini() {
             // ping-island's "always-present header" model and makes collapse
             // feel like shrinking inward to the notch, not vanishing upward.
             clipPath: showPanel ? openClipPath : closedClipPath,
-            boxShadow: showPanel ? '0 8px 32px rgba(0,0,0,0.8)' : '0 2px 8px rgba(0,0,0,0.3)',
-            transition: showPanel
-              ? 'clip-path 0.42s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.35s ease'
-              : 'clip-path 0.45s cubic-bezier(0.32, 0.72, 0, 1), box-shadow 0.3s ease',
+            boxShadow: showPanel ? '0 8px 32px rgba(0,0,0,0.8)' : '0 1px 4px rgba(0,0,0,0.18)',
+            transition: panelClipTransition,
           }}
         >
           {/* Closed header: geometric anchor for clip-path collapse target. */}
@@ -2089,8 +2089,7 @@ export default function Mini() {
             className="flex items-center justify-between px-4 py-2.5 shrink-0 sticky top-0 z-20 bg-black text-white"
             style={{
               opacity: showPanel ? 1 : 0,
-              // Delay fade-out a bit so users can see the inward clip-path shrink.
-              transition: showPanel ? 'opacity 0.3s cubic-bezier(0.2, 1, 0.3, 1) 0.08s' : 'opacity 0.18s ease-out 0.2s',
+              transition: panelChromeTransition,
             }}
           >
             <div className="flex items-center gap-4 min-w-0 flex-1">
@@ -2203,9 +2202,7 @@ export default function Mini() {
               zIndex: 1,
               opacity: showPanel ? 1 : 0,
               transformOrigin: 'top center',
-              transition: showPanel
-                ? 'opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1) 0.06s'
-                : 'opacity 0.18s ease-out 0.22s',
+              transition: panelChromeTransition,
               flex: 1,
               minHeight: 0,
               display: 'flex',
