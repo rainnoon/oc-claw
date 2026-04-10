@@ -96,12 +96,23 @@ Cursor is a VS Code-based IDE (not a terminal). Its hook system differs from Cla
 - Session binding: Cursor sessions are bound to a specific extension port by matching the session `cwd` against `workspaceRoots` from `/window-meta`. The best match uses longest-prefix wins and prefers the previously bound port / currently focused window to reduce ambiguity. Once bound, the extension's `nativeHandle` (unique window identifier) is stored in `ClaudeSession.cursor_native_handle` — subsequent rebinds match by native handle first, so even if two Cursor windows share the same workspace root, the session stays pinned to the original window.
 - Multi-window support: `focus_cursor_terminal()` reuses the bound port instead of broadcasting. On macOS it raises the matching Cursor window via AppleScript + System Events using the bound `workspaceName`, then calls `POST /focus-window` on that exact port.
 
+### Pitfalls & Lessons Learned
+
+1. **Cursor hook PIDs are ephemeral.** Each hook invocation spawns a new short-lived process. The `pid` in hook events changes every time and dies within milliseconds. Do NOT use it for terminal matching, session identity, or PID-alive checks. Use workspace/port binding instead.
+2. **Same sessionId arrives from two sockets.** Cursor hook events and CC hook events fire simultaneously for the same session. The Cursor socket passes `source_override=Some("cursor")` while the CC socket defaults to `"cc"`. If `session.source` is overwritten unconditionally, the CC event resets it to `"cc"`, causing the PID-alive check to kill the session (because CC's ephemeral pid is already dead). Fix: only upgrade source, never downgrade — once a session is `"cursor"`, ignore CC's attempt to set it back to `"cc"`.
+3. **CC hook events carry empty `cwd`.** The CC socket version of the same event often has `cwd: ""`. If this overwrites the Cursor-supplied cwd, workspace binding breaks. Fix: only overwrite `session.cwd` when the incoming value is non-empty.
+4. **Node.js `http.createServer` uses chunked transfer encoding by default.** The Rust HTTP client (`read_local_http_response`) must decode `Transfer-Encoding: chunked` responses. Without this, `serde_json::from_str` fails on the raw chunked body (`"7e\r\n{...}\r\n0\r\n\r\n"`), making all `/window-meta` calls return `None` and all session bindings unresolved.
+5. **macOS Accessibility permission is required for precise window activation.** `AXRaise` via System Events needs the app to be in the Accessibility allowlist. Use `AXIsProcessTrusted()` to check and `AXIsProcessTrustedWithOptions(prompt: true)` on startup to trigger the system dialog. Gracefully degrade to `tell application "Cursor" to activate` when not granted (works but can't target a specific window among multiples).
+6. **`tauri dev` inherits the parent process identity.** In development mode, `AXIsProcessTrustedWithOptions` attributes the permission request to the parent terminal app (e.g., Cursor or Terminal.app), not to oc-claw. The app's own entry only appears in the Accessibility list after building a proper `.app` bundle with `tauri build`. For dev testing, grant Accessibility to the terminal/IDE running `tauri dev`.
+7. **Extension auto-sync must overwrite on every startup.** Early implementation only installed the extension if the directory didn't exist, meaning code updates were never propagated. `install_cursor_hooks()` now always overwrites the installed extension files. Users must Reload Window in Cursor for changes to take effect.
+8. **URI scheme (`cursor://`) requires user confirmation.** Unlike HTTP, every `cursor://` URI triggers a "do you trust this extension?" prompt. This is why the extension uses an HTTP server instead. The one-time confirmation can be bypassed if the extension ID is added to `extensions.confirmedUriHandlerExtensionIds` in Cursor's state DB, but HTTP is simpler and also enables multi-window port discrimination.
+
 ### Architecture
 
 - Hook script: `~/.cursor/hooks/occlaw-cursor-hook.sh` (bash+python3, written by `install_cursor_hooks()`)
 - Socket: `/tmp/occlaw-cursor.sock` (Unix) / TCP `127.0.0.1:19284` (Windows)
 - `process_claude_event()` accepts `source_override: Option<&str>` — Cursor socket server passes `Some("cursor")`, CC server passes `None` (defaults to `"cc"`)
-- `ClaudeSession.source` field: `"cc"` or `"cursor"` — controls badge color, click action, and permission popup visibility
+- `ClaudeSession.source` field: `"cc"` or `"cursor"` — controls badge color, click action, and permission popup visibility. Source is only upgraded, never downgraded (see pitfall #2).
 - Character pairing: separate `cursor_char` setting in store, `cursorCharName` state in Mini.tsx
 - `install_cursor_hooks()` regenerates the hook script on every app startup, same as CC hooks
 
