@@ -100,7 +100,7 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
   const { t } = useTranslation()
   if (!metrics) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 gap-3">
+      <div className="flex-1 min-h-0 flex flex-col items-center justify-center py-24 gap-3">
         <motion.div
           animate={{ rotate: 360 }}
           transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
@@ -118,7 +118,7 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
   const durationStr = metrics.sessionStart ? formatDuration(metrics.sessionStart) : ''
 
   return (
-    <div className="px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin" style={{ maxHeight: 'calc(400px - 44px)' }}>
+    <div className="flex-1 min-h-0 px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin">
 
         {/* Hero Profile */}
         <div className="flex flex-col gap-4">
@@ -137,15 +137,6 @@ export function AgentDetailView({ agent, metrics, extraInfo }: AgentDetailViewPr
             </span>
           </div>
 
-          {metrics.currentTask && (
-            <div className="bg-white/[0.03] border border-white/5 rounded-2xl p-4 flex flex-col gap-2 relative overflow-hidden group">
-              <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-              <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider relative z-10">{t('agentDetail.currentTask')}</span>
-              <div className="text-sm text-white/90 leading-relaxed relative z-10 markdown-content">
-                <ReactMarkdown>{metrics.currentTask}</ReactMarkdown>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Recent Activity */}

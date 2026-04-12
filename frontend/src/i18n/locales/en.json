@@ -39,8 +39,11 @@
     "connecting": "Connecting...",
     "waitingForAgents": "Waiting for agents...",
     "ccStartTracking": "Send a message in Claude Code to start tracking",
+    "startTracking": "Send a message in {{targets}} to start tracking",
     "goToSettings": "Go to Settings to connect OpenClaw",
     "remove": "Remove",
+    "showMore": "Show {{count}} more",
+    "collapse": "Collapse",
     "idle": "idle",
     "waiting": "waiting...",
     "thinking": "thinking...",
@@ -65,7 +68,6 @@
     "芙宁娜": "Furina",
     "那维莱特": "Neuvillette",
     "甘雨": "Ganyu",
-    "刻晴": "Keqing",
     "可莉": "Klee",
     "七七": "Qiqi",
     "特别周": "Special Week",
@@ -98,6 +100,9 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "Enable Claude Code",
     "enableClaudeCodeDesc": "Monitor local Claude Code sessions via Hooks",
+    "codex": "Codex",
+    "enableCodex": "Enable Codex",
+    "enableCodexDesc": "Monitor local Codex sessions via Hooks",
     "hookInstalled": "Hook installed",
     "hookFailed": "Install failed:",
 
@@ -108,6 +113,8 @@
     "right": "Right",
     "disableSleepAnim": "Disable Sleep Animation",
     "disableSleepAnimDesc": "Show a static image when the mascot is idle",
+    "panelMaxHeight": "Panel Height",
+    "panelMaxHeightDesc": "Maximum height of the expanded panel",
     "islandBg": "Island Background",
     "islandBgDesc": "Select or upload a background image, drag to select the crop area",
 
@@ -116,8 +123,18 @@
     "completionSoundDesc": "Sound played when a task completes",
     "defaultSound": "Default",
     "manboSound": "Mambo",
+    "ccSound": "Claude Code Completion Sound",
+    "ccSoundDesc": "Play sound when Claude Code finishes a task",
+    "codexSound": "Codex Completion Sound",
+    "codexSoundDesc": "Play sound when Codex finishes a task",
+    "enableCursor": "Enable Cursor",
+    "enableCursorDesc": "Monitor local Cursor agent sessions via Hooks",
+    "cursorSound": "Cursor Completion Sound",
+    "cursorSoundDesc": "Play sound when Cursor finishes a task",
     "waitingSound": "Waiting Sound",
     "waitingSoundDesc": "Play sound when Claude Code awaits user confirmation",
+    "autoCloseCompletion": "Auto-close Completion Popup",
+    "autoCloseCompletionDesc": "Automatically close the completion popup after 5 seconds",
 
     "about": "About",
     "currentVersion": "Current Version",
@@ -144,6 +161,26 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "updateModal": {
+    "title": "Update Available",
+    "availableSubtitle": "A new version of OC-CLAW is ready to install.",
+    "whatsNew": "Here's what's new:",
+    "noNotes": "No release notes available.",
+    "later": "Later",
+    "skipVersion": "Skip This Version",
+    "updateNow": "Update Now",
+    "pleaseDontClose": "Please do not close the application",
+    "completeTitle": "Update Complete!",
+    "completeDesc": "Restart the application to apply changes.",
+    "restartNow": "Restart Now",
+    "progress": {
+      "preparing": "Preparing update...",
+      "downloading": "Downloading update...",
+      "downloaded": "Download complete, preparing install...",
+      "ready_to_restart": "Update ready to restart"
+    }
   },
 
   "character": {
@@ -254,6 +291,8 @@
 
   "claudeStats": {
     "title": "Claude Code Stats",
+    "titleCodex": "Codex Stats",
+    "titleCursor": "Cursor Stats",
     "last14Days": "Last 14 Days",
     "totalTokens": "Total Tokens",
     "sessionsCount": "session(s)",

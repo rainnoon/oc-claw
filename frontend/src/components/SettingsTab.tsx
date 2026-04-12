@@ -226,11 +226,15 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void }) {
+export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
+  const [enableCodex, setEnableCodex] = useState(true)
+  const [codexHookStatus, setCodexHookStatus] = useState('')
+  const [enableCursor, setEnableCursor] = useState(true)
+  const [cursorHookStatus, setCursorHookStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
   const [updateChecking, setUpdateChecking] = useState(false)
   const [updateCheckResult, setUpdateCheckResult] = useState<'success' | 'error' | null>(null)
@@ -245,6 +249,15 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
   const [bgNaturalSize, setBgNaturalSize] = useState<{ w: number; h: number } | null>(null)
   const cropContainerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+  const showIslandBackgroundSettings = false
+  const resolveUpdateProgressText = useCallback((stage?: string, fallbackMessage?: string) => {
+    if (stage) {
+      const key = `updateModal.progress.${stage}`
+      const localized = t(key)
+      if (localized !== key) return localized
+    }
+    return fallbackMessage || ''
+  }, [t])
 
   const checkForUpdate = useCallback(async (showFeedback = false) => {
     setUpdateChecking(true)
@@ -253,7 +266,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
       setUpdateCheckMsg('')
     }
     try {
-      const info = await invoke('check_for_update') as { current: string; latest: string; hasUpdate: boolean; url: string }
+      const info = await invoke('check_for_update', { lang: i18n.language }) as { current: string; latest: string; hasUpdate: boolean; url: string; notes?: string }
       setUpdateInfo(info)
       if (showFeedback) {
         setUpdateCheckResult('success')
@@ -267,7 +280,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
     } finally {
       setUpdateChecking(false)
     }
-  }, [])
+  }, [i18n.language, t])
 
   useEffect(() => {
     ;(async () => {
@@ -276,23 +289,29 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
       const store = await getStore()
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
+      const cod = await store.get('enable_codex')
+      if (typeof cod === 'boolean') setEnableCodex(cod)
+      const cur = await store.get('enable_cursor')
+      if (typeof cur === 'boolean') setEnableCursor(cur)
     })()
     void checkForUpdate()
-    invoke('list_backgrounds').then((list: any) => setBackgrounds(list as string[])).catch(() => {})
+    if (showIslandBackgroundSettings) {
+      invoke('list_backgrounds').then((list: any) => setBackgrounds(list as string[])).catch(() => {})
+    }
   }, [checkForUpdate])
 
   useEffect(() => {
     const unlisten = listen<UpdateProgressPayload>('update-progress', (event) => {
       const payload = event.payload
       setUpdateProgress(typeof payload.progress === 'number' ? payload.progress : null)
-      setUpdateProgressMsg(payload.message || '')
+      setUpdateProgressMsg(resolveUpdateProgressText(payload.stage, payload.message))
     })
     return () => { unlisten.then((fn) => fn()) }
-  }, [])
+  }, [resolveUpdateProgressText])
 
   // Load preview image for current background
   useEffect(() => {
-    if (!islandBg) return
+    if (!showIslandBackgroundSettings || !islandBg) return
     // Try public path first (bundled), fallback to Rust command (custom)
     const img = new Image()
     img.onload = () => { setBgPreviewUrl(img.src); setBgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight }) }
@@ -398,6 +417,36 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
     }
   }
 
+  const toggleCursor = async (val: boolean) => {
+    setEnableCursor(val)
+    const store = await getStore()
+    await store.set('enable_cursor', val)
+    await store.save()
+    if (val) {
+      try {
+        await invoke('install_cursor_hooks')
+        setCursorHookStatus(t('settings.hookInstalled'))
+      } catch (e: any) {
+        setCursorHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
+      }
+    }
+  }
+
+  const toggleCodex = async (val: boolean) => {
+    setEnableCodex(val)
+    const store = await getStore()
+    await store.set('enable_codex', val)
+    await store.save()
+    if (val) {
+      try {
+        await invoke('install_claude_hooks')
+        setCodexHookStatus(t('settings.hookInstalled'))
+      } catch (e: any) {
+        setCodexHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
+      }
+    }
+  }
+
   return (
     <div className="max-w-2xl mx-auto pt-10 pb-20 px-6 flex flex-col gap-10">
       {/* OpenClaw 连接 */}
@@ -445,6 +494,36 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
         </div>
       </section>
 
+      {/* Cursor */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-white">{t('settings.codex', 'Codex')}</h2>
+        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.enableCodex', 'Enable Codex')}</span>
+              <span className="text-xs text-white/40">{t('settings.enableCodexDesc', 'Monitor local Codex sessions via Hooks')}</span>
+              {codexHookStatus && <span className="text-xs text-white/30 mt-1">{codexHookStatus}</span>}
+            </div>
+            <Toggle checked={enableCodex} onChange={toggleCodex} />
+          </div>
+        </div>
+      </section>
+
+      {/* Cursor */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-white">Cursor</h2>
+        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.enableCursor', 'Enable Cursor')}</span>
+              <span className="text-xs text-white/40">{t('settings.enableCursorDesc', 'Monitor local Cursor agent sessions via Hooks')}</span>
+              {cursorHookStatus && <span className="text-xs text-white/30 mt-1">{cursorHookStatus}</span>}
+            </div>
+            <Toggle checked={enableCursor} onChange={toggleCursor} />
+          </div>
+        </div>
+      </section>
+
       {/* 显示设置 */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
@@ -473,101 +552,107 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
             </div>
             <Toggle checked={disableSleepAnim} onChange={onToggleSleepAnim} />
           </div>
-          {/* Background picker with crop preview */}
-          <div className="p-4">
-            <div className="flex flex-col gap-1 mb-3">
-              <span className="text-sm font-medium text-white/90">{t('settings.islandBg')}</span>
-              <span className="text-xs text-white/40">{t('settings.islandBgDesc')}</span>
-            </div>
-
-            {/* Background thumbnails */}
-            <div className="flex gap-2 flex-wrap mb-3">
-              {/* Anime grid background */}
-              <button
-                onClick={() => onChangeIslandBg('__anime__')}
-                className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === '__anime__' ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
-              >
-                <div style={{ width: '100%', height: '100%', background: '#F0D140' }}>
-                  <div style={{ width: '100%', height: '100%', backgroundImage: 'linear-gradient(to right, #00000015 1px, transparent 1px), linear-gradient(to bottom, #00000015 1px, transparent 1px)', backgroundSize: '8px 8px' }} />
-                </div>
-              </button>
-              {backgrounds.map((bg) => (
-                <button
-                  key={bg}
-                  onClick={() => onChangeIslandBg(bg)}
-                  className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === bg ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
-                >
-                  <div style={{ width: '100%', height: '100%', backgroundImage: `url(/assets/backgrounds/${bg})`, backgroundSize: 'cover' }} />
-                </button>
-              ))}
-              {/* Upload button */}
-              <label className="relative w-14 h-9 rounded-lg overflow-hidden border-2 border-dashed border-white/20 hover:border-white/40 transition-all cursor-pointer flex items-center justify-center">
-                <Plus className="w-4 h-4 text-white/40" />
-                <input type="file" accept="image/*" onChange={handleBgUpload} className="hidden" />
-              </label>
-            </div>
-
-            {/* Crop preview — hidden for anime grid background */}
-            {islandBg !== '__anime__' && bgPreviewUrl && bgNaturalSize && (
-              <div className="flex flex-col items-center gap-2">
-                {/* Full image with crop overlay */}
-                <div
-                  ref={cropContainerRef}
-                  className="relative rounded-lg overflow-hidden cursor-crosshair select-none"
-                  style={{ width: '100%', maxWidth: 360, aspectRatio: `${bgNaturalSize.w} / ${bgNaturalSize.h}` }}
-                  onMouseDown={handleCropDrag}
-                  onTouchStart={handleCropDrag}
-                >
-                  {/* Full image dimmed */}
-                  <img src={bgPreviewUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.4 }} />
-                  {/* Crop rectangle — aspect ratio ~7:1 matching the island strip */}
-                  {(() => {
-                    // The crop rect represents what background-position + cover would show
-                    // Island area is roughly 7:1 aspect ratio
-                    const cropAspect = 7
-                    const imgAspect = bgNaturalSize.w / bgNaturalSize.h
-                    // With cover, the image fills the island. Determine crop rect size relative to full image.
-                    let cropW: number, cropH: number
-                    if (imgAspect > cropAspect) {
-                      // Image is wider than crop — full height used, crop width = subset
-                      cropH = 100
-                      cropW = (cropAspect / imgAspect) * 100
-                    } else {
-                      // Image is taller — full width used, crop height = subset
-                      cropW = 100
-                      cropH = (imgAspect / cropAspect) * 100
-                    }
-                    const maxX = 100 - cropW
-                    const maxY = 100 - cropH
-                    const left = (bgPos.x / 100) * maxX
-                    const top = (bgPos.y / 100) * maxY
-                    return (
-                      <div
-                        style={{
-                          position: 'absolute',
-                          left: `${left}%`, top: `${top}%`,
-                          width: `${cropW}%`, height: `${cropH}%`,
-                          border: '2px solid white',
-                          borderRadius: 4,
-                          boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
-                          pointerEvents: 'none',
-                        }}
-                      />
-                    )
-                  })()}
-                </div>
-                {/* Live preview strip */}
-                <div className="rounded-lg overflow-hidden border border-white/10" style={{ width: '100%', maxWidth: 360, height: 50 }}>
-                  <div style={{
-                    width: '100%', height: '100%',
-                    backgroundImage: `url(${bgPreviewUrl})`,
-                    backgroundSize: 'cover',
-                    backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
-                  }} />
-                </div>
+          <div className={`p-4 ${showIslandBackgroundSettings ? 'border-b border-white/5' : ''}`}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.panelMaxHeight', 'Panel Height')}</span>
+                <span className="text-xs text-white/40">{t('settings.panelMaxHeightDesc', 'Maximum height of the expanded panel')}</span>
               </div>
-            )}
+              <span className="text-sm text-white/60 tabular-nums">{panelMaxHeight}px</span>
+            </div>
+            <input
+              type="range"
+              min={200}
+              max={500}
+              step={10}
+              value={panelMaxHeight}
+              onChange={(e) => onChangePanelMaxHeight(Number(e.target.value))}
+              className="w-full accent-white/60 h-1"
+            />
           </div>
+          {showIslandBackgroundSettings && (
+            <div className="p-4">
+              <div className="flex flex-col gap-1 mb-3">
+                <span className="text-sm font-medium text-white/90">{t('settings.islandBg')}</span>
+                <span className="text-xs text-white/40">{t('settings.islandBgDesc')}</span>
+              </div>
+
+              <div className="flex gap-2 flex-wrap mb-3">
+                <button
+                  onClick={() => onChangeIslandBg('__anime__')}
+                  className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === '__anime__' ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
+                >
+                  <div style={{ width: '100%', height: '100%', background: '#F0D140' }}>
+                    <div style={{ width: '100%', height: '100%', backgroundImage: 'linear-gradient(to right, #00000015 1px, transparent 1px), linear-gradient(to bottom, #00000015 1px, transparent 1px)', backgroundSize: '8px 8px' }} />
+                  </div>
+                </button>
+                {backgrounds.map((bg) => (
+                  <button
+                    key={bg}
+                    onClick={() => onChangeIslandBg(bg)}
+                    className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === bg ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
+                  >
+                    <div style={{ width: '100%', height: '100%', backgroundImage: `url(/assets/backgrounds/${bg})`, backgroundSize: 'cover' }} />
+                  </button>
+                ))}
+                <label className="relative w-14 h-9 rounded-lg overflow-hidden border-2 border-dashed border-white/20 hover:border-white/40 transition-all cursor-pointer flex items-center justify-center">
+                  <Plus className="w-4 h-4 text-white/40" />
+                  <input type="file" accept="image/*" onChange={handleBgUpload} className="hidden" />
+                </label>
+              </div>
+
+              {islandBg !== '__anime__' && bgPreviewUrl && bgNaturalSize && (
+                <div className="flex flex-col items-center gap-2">
+                  <div
+                    ref={cropContainerRef}
+                    className="relative rounded-lg overflow-hidden cursor-crosshair select-none"
+                    style={{ width: '100%', maxWidth: 360, aspectRatio: `${bgNaturalSize.w} / ${bgNaturalSize.h}` }}
+                    onMouseDown={handleCropDrag}
+                    onTouchStart={handleCropDrag}
+                  >
+                    <img src={bgPreviewUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.4 }} />
+                    {(() => {
+                      const cropAspect = 7
+                      const imgAspect = bgNaturalSize.w / bgNaturalSize.h
+                      let cropW: number, cropH: number
+                      if (imgAspect > cropAspect) {
+                        cropH = 100
+                        cropW = (cropAspect / imgAspect) * 100
+                      } else {
+                        cropW = 100
+                        cropH = (imgAspect / cropAspect) * 100
+                      }
+                      const maxX = 100 - cropW
+                      const maxY = 100 - cropH
+                      const left = (bgPos.x / 100) * maxX
+                      const top = (bgPos.y / 100) * maxY
+                      return (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: `${left}%`, top: `${top}%`,
+                            width: `${cropW}%`, height: `${cropH}%`,
+                            border: '2px solid white',
+                            borderRadius: 4,
+                            boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
+                            pointerEvents: 'none',
+                          }}
+                        />
+                      )
+                    })()}
+                  </div>
+                  <div className="rounded-lg overflow-hidden border border-white/10" style={{ width: '100%', maxWidth: 360, height: 50 }}>
+                    <div style={{
+                      width: '100%', height: '100%',
+                      backgroundImage: `url(${bgPreviewUrl})`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
+                    }} />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
@@ -592,12 +677,40 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               ))}
             </div>
           </div>
-          <div className="flex items-center justify-between p-4">
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.ccSound', 'Claude Code Completion Sound')}</span>
+              <span className="text-xs text-white/40">{t('settings.ccSoundDesc', 'Play sound when Claude Code finishes a task')}</span>
+            </div>
+            <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.codexSound', 'Codex Completion Sound')}</span>
+              <span className="text-xs text-white/40">{t('settings.codexSoundDesc', 'Play sound when Codex finishes a task')}</span>
+            </div>
+            <Toggle checked={codexSoundEnabled} onChange={onToggleCodexSoundEnabled} />
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.cursorSound', 'Cursor Completion Sound')}</span>
+              <span className="text-xs text-white/40">{t('settings.cursorSoundDesc', 'Play sound when Cursor finishes a task')}</span>
+            </div>
+            <Toggle checked={cursorSoundEnabled} onChange={onToggleCursorSoundEnabled} />
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.waitingSound')}</span>
               <span className="text-xs text-white/40">{t('settings.waitingSoundDesc')}</span>
             </div>
             <Toggle checked={waitingSound} onChange={onToggleWaitingSound} />
+          </div>
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.autoCloseCompletion', 'Auto-close Completion Popup')}</span>
+              <span className="text-xs text-white/40">{t('settings.autoCloseCompletionDesc', 'Automatically close the completion popup after 5 seconds')}</span>
+            </div>
+            <Toggle checked={autoCloseCompletion} onChange={onToggleAutoCloseCompletion} />
           </div>
         </div>
       </section>
@@ -651,7 +764,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
                   onClick={async () => {
                     setUpdating(true)
                     setUpdateProgress(0)
-                    setUpdateProgressMsg(t('settings.preparingDownload'))
+                    setUpdateProgressMsg(resolveUpdateProgressText('preparing', t('settings.preparingDownload')))
                     setUpdateRunResult(null)
                     setUpdateRunMsg('')
                     try {

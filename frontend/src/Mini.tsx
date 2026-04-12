@@ -2,11 +2,12 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud, PanelLeft, Rows } from 'lucide-react'
+import { ChevronDown, ChevronUp, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
 import { SettingsTab } from './components/SettingsTab'
+import { UpdateModal, type UpdateModalInfo, type UpdateModalPhase } from './components/UpdateModal'
 import { AgentDetailView } from './components/AgentDetailView'
 import { CreateCharacterModal } from './components/CreateCharacterModal'
 import { ClaudeStatsView } from './components/ClaudeStatsView'
@@ -68,9 +69,18 @@ interface SessionSlot {
   petState?: PetState
 }
 
+interface UpdateProgressPayload {
+  stage: string
+  progress?: number | null
+  downloadedBytes?: number
+  totalBytes?: number | null
+  message?: string
+}
+
 const MAX_SLOTS = 10
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
+type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
 
 function ChatList({ messages, accentColor }: { messages: { role: string; text: string }[]; accentColor: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -482,6 +492,7 @@ export default function Mini() {
   const [expanded, setExpanded] = useState(false)
   const [showPanel, setShowPanel] = useState(false)
   const [agents, setAgents] = useState<AgentInfo[]>([])
+  const [hasConfiguredOpenClaw, setHasConfiguredOpenClaw] = useState(false)
   const [healthMap, setHealthMap] = useState<Record<string, boolean>>({})
   const [characters, setCharacters] = useState<CharacterMeta[]>([])
   const [agentCharMap, setAgentCharMap] = useState<Record<string, string>>({})
@@ -504,24 +515,75 @@ export default function Mini() {
   const [selectedSessionKey, setSelectedSessionKey] = useState<{ agentId: string; key: string } | null>(null)
   const [sessionMessages, setSessionMessages] = useState<any[]>([])
 
-  // Claude Code
+  // Claude Code & Cursor
   const [claudeSessions, setClaudeSessions] = useState<any[]>([])
-  const [claudeCharName, setClaudeCharName] = useState(DEFAULT_CHAR_NAME)
+  const claudeSessionsRef = useRef<any[]>([])
+  claudeSessionsRef.current = claudeSessions
+  const [charQueue, setCharQueue] = useState<string[]>([DEFAULT_CHAR_NAME])
   const [selectedClaudeSession, setSelectedClaudeSession] = useState<string | null>(null)
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
   const [showClaudeStats, setShowClaudeStats] = useState(false)
+  const [claudeStatsSource, setClaudeStatsSource] = useState<ClaudeStatsSource>('cc')
+  const [sessionNicknames, setSessionNicknames] = useState<Record<string, string>>({})
+  const [editingSessionTitle, setEditingSessionTitle] = useState<string | null>(null)
+  const editingTitleValueRef = useRef('')
+  const editingTitleDefaultRef = useRef('')
+  const composingRef = useRef(false)
+  const saveSessionNickname = useCallback(async (sessionId: string, val: string, defaultName: string) => {
+    const trimmed = val.trim()
+    setSessionNicknames((prev) => {
+      const next = { ...prev }
+      if (trimmed && trimmed !== defaultName) {
+        next[sessionId] = trimmed
+      } else {
+        delete next[sessionId]
+      }
+      load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+        await store.set('session_nicknames', next)
+        await store.save()
+      })
+      return next
+    })
+  }, [])
+  useEffect(() => {
+    if (!showPanel && editingSessionTitle) {
+      saveSessionNickname(editingSessionTitle, editingTitleValueRef.current, editingTitleDefaultRef.current)
+      setEditingSessionTitle(null)
+    }
+  }, [showPanel, editingSessionTitle, saveSessionNickname])
 
   // OC multi-connection: qualifiedId → connection params, qualifiedId → real agent ID, qualifiedId → source label
   const agentConnMapRef = useRef<Map<string, OcParams>>(new Map())
   const agentRealIdMapRef = useRef<Map<string, string>>(new Map())
   const [agentSourceLabels, setAgentSourceLabels] = useState<Record<string, string>>({})
 
+  const resolveClaudeStatsSource = useCallback((source?: string): ClaudeStatsSource => {
+    if (source === 'cursor') return 'cursor'
+    if (source === 'codex') return 'codex'
+    return 'cc'
+  }, [])
+  const resolveClaudeStatsSourceBySession = useCallback(
+    (sessionId: string): ClaudeStatsSource => {
+      const session = claudeSessionsRef.current.find((s) => s.sessionId === sessionId)
+      return resolveClaudeStatsSource(session?.source)
+    },
+    [resolveClaudeStatsSource],
+  )
+
   // Feature toggles
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
+  const [enableCodex, setEnableCodex] = useState(true)
+  const [enableCursor, setEnableCursor] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
+  const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
+  const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
+  const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
+  const [panelMaxHeight, setPanelMaxHeight] = useState(300)
+  const panelMaxHeightRef = useRef(300)
+  panelMaxHeightRef.current = panelMaxHeight
   const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
   const mascotPositionRef = useRef<'left' | 'right'>('right')
   const [islandBg, setIslandBg] = useState('__anime__')
@@ -545,26 +607,31 @@ export default function Mini() {
   }
   const [hiding, setHiding] = useState(false)
   const [pinned, setPinned] = useState(false)
-  const [viewMode, _setViewMode] = useState<'island' | 'efficiency'>('island')
-  const viewModeRef = useRef<'island' | 'efficiency'>('island')
+  const pinnedRef = useRef(false)
+  const [viewMode, _setViewMode] = useState<'island' | 'efficiency'>('efficiency')
+  const viewModeRef = useRef<'island' | 'efficiency'>('efficiency')
   const expandedRef = useRef(false)
-  const setViewMode = useCallback(async (v: 'island' | 'efficiency' | ((prev: 'island' | 'efficiency') => 'island' | 'efficiency')) => {
-    _setViewMode((prev) => {
-      const next = typeof v === 'function' ? v(prev) : v
-      viewModeRef.current = next
-      load('settings.json', { defaults: {}, autoSave: true }).then((store) => {
-        store.set('view_mode', next)
-        store.save()
-      })
-      return next
-    })
-  }, [])
-  const [showIdleSessions, setShowIdleSessions] = useState(false)
+  const expandedWindowModeRef = useRef<'island' | 'efficiency' | null>(null)
+  // showIdleSessions removed — all sessions visible, important ones sorted to top
   const collapsingRef = useRef(false)
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
-  const [moveMode, setMoveMode] = useState(false)
+  const [moveMode, _setMoveMode] = useState(false)
+  const moveModeRef = useRef(false)
+  const mascotDragActiveRef = useRef(false)
+  const setMoveMode = (v: boolean) => {
+    moveModeRef.current = v
+    _setMoveMode(v)
+  }
 
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
+  const updateModalOpenRef = useRef(false)
+  const pendingUpdateInfoRef = useRef<UpdateModalInfo | null>(null)
+  const updateModalRunOwnedRef = useRef(false)
+  const [updateModalPhase, setUpdateModalPhase] = useState<UpdateModalPhase>('available')
+  const [updateModalInfo, setUpdateModalInfo] = useState<UpdateModalInfo | null>(null)
+  const [updateModalProgress, setUpdateModalProgress] = useState<number | null>(null)
+  const [updateModalProgressStage, setUpdateModalProgressStage] = useState('preparing')
 
   // Load mini character from store
   const loadMiniChar = useCallback(async () => {
@@ -587,6 +654,10 @@ export default function Mini() {
 
   useEffect(() => {
     loadMiniChar()
+    load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+      const nicks = (await store.get('session_nicknames')) as Record<string, string> | null
+      if (nicks) setSessionNicknames(nicks)
+    })
     const unlisten = listen('character-changed', () => loadMiniChar())
     return () => {
       unlisten.then((fn) => fn())
@@ -595,12 +666,15 @@ export default function Mini() {
 
   useEffect(() => {
     load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
-      const saved = (await store.get('view_mode')) as string | null
-      if (saved === 'efficiency') {
-        _setViewMode('efficiency')
-        viewModeRef.current = 'efficiency'
-        invoke('set_mini_expanded', { expanded: false, position: 'right', efficiency: true }).catch(() => {})
-      }
+      _setViewMode('efficiency')
+      viewModeRef.current = 'efficiency'
+      invoke('set_mini_expanded', { expanded: false, position: 'right', efficiency: true }).catch(() => {})
+      await store.set('view_mode', 'efficiency')
+      // Force-reset mascot custom position to avoid off-screen placement.
+      // Keep collapsed default placement controlled by `set_mini_expanded`.
+      customPosRef.current = null
+      await store.set('mini_custom_pos', null)
+      await store.save()
     })
   }, [])
 
@@ -613,12 +687,16 @@ export default function Mini() {
     try {
       const chars = await loadCharacters()
       setCharacters(chars)
+      const store0 = await load('settings.json', { defaults: {}, autoSave: true })
+      const q = (await store0.get('char_queue')) as string[] | null
+      if (q && q.length) setCharQueue(q)
     } catch (e) {
       console.warn('[fetchAgents] loadCharacters failed:', e)
     }
     try {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const connections = await loadOcConnections()
+      setHasConfiguredOpenClaw(connections.some((conn) => connToOcParams(conn) !== null))
 
       // Detect connection config changes — show loading overlay if changed
       const snapshot = JSON.stringify(connections.map((c) => ({ id: c.id, type: c.type, host: c.host, user: c.user })))
@@ -992,15 +1070,28 @@ export default function Mini() {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
-      if (cc !== false) invoke('install_claude_hooks').catch(() => {})
+      const cod = await store.get('enable_codex')
+      setEnableCodex(cod !== false)
+      if (cc !== false || cod !== false) invoke('install_claude_hooks').catch(() => {})
+      const cur = await store.get('enable_cursor')
+      setEnableCursor(cur !== false)
+      if (cur !== false) invoke('install_cursor_hooks').catch(() => {})
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
+      const codsnd = await store.get('codex_sound_enabled')
+      if (typeof codsnd === 'boolean') setCodexSoundEnabled(codsnd)
+      const csnd = await store.get('cursor_sound_enabled')
+      if (typeof csnd === 'boolean') setCursorSoundEnabled(csnd)
       const ns = (await store.get('notify_sound')) as string
       if (ns === 'default' || ns === 'manbo') setNotifySound(ns)
       const ws = await store.get('waiting_sound')
       if (typeof ws === 'boolean') setWaitingSound(ws)
+      const acc = await store.get('auto_close_completion')
+      if (typeof acc === 'boolean') setAutoCloseCompletion(acc)
       const dsa = await store.get('disable_sleep_anim')
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
+      const pmh = await store.get('panel_max_height')
+      if (typeof pmh === 'number' && pmh >= 200 && pmh <= 500) setPanelMaxHeight(pmh)
       const mp = (await store.get('mascot_position')) as string
       if (mp === 'left' || mp === 'right') {
         setMascotPosition(mp)
@@ -1010,8 +1101,8 @@ export default function Mini() {
       if (bg) setIslandBg(bg)
       const bp = (await store.get('island_bg_pos')) as { x: number; y: number }
       if (bp) setBgPos(bp)
-      const ccChar = ((await store.get('claude_char')) as string) || DEFAULT_CHAR_NAME
-      setClaudeCharName(ccChar)
+      const queue = (await store.get('char_queue')) as string[] | null
+      if (queue && queue.length) setCharQueue(queue)
       invoke('get_ui_scale')
         .then((s) => {
           if (typeof s === 'number' && s > 0) setUiScale(s)
@@ -1020,15 +1111,38 @@ export default function Mini() {
     })()
   }, [])
 
-  // Poll Claude Code sessions
+  // Poll Claude/Codex/Cursor sessions
   useEffect(() => {
-    if (!enableClaudeCode) {
+    if (!(enableClaudeCode || enableCodex || enableCursor)) {
       setClaudeSessions([])
       return
     }
+    // Track which sessions already had lastResponse so we only auto-expand once.
+    const seenCompletions = new Set<string>()
     const poll = async () => {
       try {
         const sessions = (await invoke('get_claude_sessions')) as any[]
+        // In efficiency mode, auto-expand panel when a session just completed
+        // with an AI response (lastResponse appeared for the first time).
+        // Mark all newly completed sessions as seen, but only auto-expand
+        // if the session's terminal tab is not currently active.
+        for (const s of sessions) {
+          if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId)) {
+            seenCompletions.add(s.sessionId)
+            // Only auto-expand if tab not active and panel is collapsed
+            if (!updateModalOpenRef.current && !s.isActiveTab && viewModeRef.current === 'efficiency' && !expandedRef.current && !expandingRef.current && !collapsingRef.current) {
+              hoverExpandedRef.current = true
+              setCompletionSessionId(s.sessionId)
+              expandFnRef.current?.()
+            }
+          }
+        }
+        // Keep seenCompletions in sync: remove sessions that no longer have lastResponse
+        for (const sid of seenCompletions) {
+          if (!sessions.find((s: any) => s.sessionId === sid && s.lastResponse)) {
+            seenCompletions.delete(sid)
+          }
+        }
         setClaudeSessions(sessions)
       } catch {
         /* ignore */
@@ -1037,24 +1151,36 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode])
+  }, [enableClaudeCode, enableCodex, enableCursor])
 
-  // Listen for Claude task completion → play sound
+  // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
   soundEnabledRef.current = soundEnabled
+  const codexSoundEnabledRef = useRef(codexSoundEnabled)
+  codexSoundEnabledRef.current = codexSoundEnabled
+  const cursorSoundEnabledRef = useRef(cursorSoundEnabled)
+  cursorSoundEnabledRef.current = cursorSoundEnabled
   const notifySoundRef = useRef(notifySound)
   notifySoundRef.current = notifySound
   const waitingSoundRef = useRef(waitingSound)
   waitingSoundRef.current = waitingSound
+  const autoCloseCompletionRef = useRef(autoCloseCompletion)
+  autoCloseCompletionRef.current = autoCloseCompletion
+  const autoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    if (!enableClaudeCode) return
+    if (!(enableClaudeCode || enableCodex || enableCursor)) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
       if (ev.payload?.waiting && viewModeRef.current === 'efficiency') {
+        setEffListCollapsed(true)
         if (!expandedRef.current && expandFnRef.current) {
           expandFnRef.current()
         }
       }
-      if (!soundEnabledRef.current) return
+      const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
+      const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
+      const isCodex = ev.payload?.source === 'codex' || currentSession?.source === 'codex'
+      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : soundEnabledRef.current
+      if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
       if (notifySoundRef.current === 'manbo') {
         new Audio('/audio/manbo.m4a').play().catch(() => {})
@@ -1065,7 +1191,7 @@ export default function Mini() {
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [enableClaudeCode])
+  }, [enableClaudeCode, enableCodex, enableCursor])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
@@ -1164,7 +1290,8 @@ export default function Mini() {
     const isWaiting = cs.status === 'waiting'
     const isCompacting = cs.status === 'compacting'
     const isActive = cs.status === 'processing' || cs.status === 'tool_running'
-    const char = characters.find((c) => c.name === claudeCharName) || DEFAULT_CHAR
+    const qName = charQueue[i % charQueue.length]
+    const char = characters.find((c) => c.name === qName) || DEFAULT_CHAR
     const petState: PetState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle'
     return {
       agentId: `claude:${cs.sessionId}`,
@@ -1180,22 +1307,261 @@ export default function Mini() {
   const expandingRef = useRef(false)
   const expandFnRef = useRef<(() => void) | null>(null)
   const hoverExpandedRef = useRef(false)
+  // Track which session triggered auto-expand on completion, so we can
+  // show only that session's completion popup and collapse the rest.
+  // State drives re-render; ref allows reads from async callbacks.
+  const [completionSessionId, _setCompletionSessionId] = useState<string | null>(null)
+  const completionSessionIdRef = useRef<string | null>(null)
+  const [effListCollapsed, setEffListCollapsed] = useState(false)
+  const setCompletionSessionId = useCallback((id: string | null) => {
+    completionSessionIdRef.current = id
+    _setCompletionSessionId(id)
+    if (id) setEffListCollapsed(true)
+    if (autoCloseTimerRef.current) {
+      clearTimeout(autoCloseTimerRef.current)
+      autoCloseTimerRef.current = null
+    }
+    if (id && autoCloseCompletionRef.current) {
+      autoCloseTimerRef.current = setTimeout(() => {
+        completionSessionIdRef.current = null
+        _setCompletionSessionId(null)
+        autoCloseTimerRef.current = null
+      }, 5000)
+    }
+  }, [])
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const syncExpandedWindowLayout = useCallback(async (mode: 'island' | 'efficiency' = viewModeRef.current) => {
+    await invoke('set_mini_expanded', {
+      expanded: true,
+      position: mascotPositionRef.current,
+      efficiency: mode === 'efficiency',
+      maxHeight: panelMaxHeightRef.current,
+    })
+    expandedWindowModeRef.current = mode
+  }, [])
   const expand = useCallback(async () => {
     if (collapsingRef.current || expandingRef.current) return
     expandingRef.current = true
     setHiding(true)
-    await new Promise<void>((r) => setTimeout(r, 50))
-    await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current })
-    setHiding(false)
-    setExpanded(true)
-    expandedRef.current = true
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => setShowPanel(true))
-    })
-    expandingRef.current = false
-  }, [])
+    try {
+      await new Promise<void>((r) => setTimeout(r, 50))
+      await syncExpandedWindowLayout(viewModeRef.current)
+      setExpanded(true)
+      expandedRef.current = true
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => setShowPanel(true))
+      })
+    } catch (e) {
+      console.warn('[mini] expand failed:', e)
+      setShowPanel(false)
+      setExpanded(false)
+      expandedRef.current = false
+      expandedWindowModeRef.current = null
+    } finally {
+      setHiding(false)
+      expandingRef.current = false
+    }
+  }, [syncExpandedWindowLayout])
   expandFnRef.current = expand
+  const updateModalWindowAdjustedRef = useRef(false)
+  const updateModalPrevExpandedRef = useRef(false)
+
+  const ensureUpdateModalWindow = useCallback(async () => {
+    if (settingsModeRef.current) return
+    if (updateModalWindowAdjustedRef.current) return
+    updateModalWindowAdjustedRef.current = true
+    updateModalPrevExpandedRef.current = expandedRef.current
+    expandedWindowModeRef.current = null
+    try {
+      await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, keepOnTop: true })
+      await new Promise<void>((r) => setTimeout(r, 80))
+    } catch {
+      updateModalWindowAdjustedRef.current = false
+    }
+  }, [])
+
+  const restoreCollapsedMascotPosition = useCallback(async () => {
+    const pos = customPosRef.current
+    if (!pos) return
+    try {
+      await invoke('set_mini_origin', { x: pos.x, y: pos.y })
+    } catch (e) {
+      console.warn('[mini] restore custom mascot position failed:', e)
+    }
+  }, [])
+
+  const restoreWindowAfterUpdateModal = useCallback(async () => {
+    if (!updateModalWindowAdjustedRef.current) return
+    const wasExpanded = updateModalPrevExpandedRef.current
+    updateModalWindowAdjustedRef.current = false
+    if (settingsModeRef.current) return
+    try {
+      if (wasExpanded) {
+        await syncExpandedWindowLayout(viewModeRef.current)
+        setExpanded(true)
+        expandedRef.current = true
+        setShowPanel(true)
+      } else {
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
+        await restoreCollapsedMascotPosition()
+        setExpanded(false)
+        expandedRef.current = false
+        expandedWindowModeRef.current = null
+        setShowPanel(false)
+      }
+    } catch {}
+  }, [restoreCollapsedMascotPosition, syncExpandedWindowLayout])
+
+  const openAvailableUpdateModal = useCallback(
+    async (info: UpdateModalInfo) => {
+      if (settingsModeRef.current || settingsTransitioningRef.current || isCreateModalOpenRef.current) {
+        pendingUpdateInfoRef.current = info
+        return
+      }
+      setUpdateModalInfo(info)
+      setUpdateModalPhase('available')
+      setUpdateModalProgress(null)
+      setUpdateModalProgressStage('preparing')
+      hoverExpandedRef.current = false
+      if (hoverCloseTimerRef.current) {
+        clearTimeout(hoverCloseTimerRef.current)
+        hoverCloseTimerRef.current = null
+      }
+      setEffListCollapsed(true)
+      await ensureUpdateModalWindow()
+      updateModalOpenRef.current = true
+      setUpdateModalOpen(true)
+    },
+    [ensureUpdateModalWindow],
+  )
+
+  const closeUpdateModal = useCallback(() => {
+    updateModalRunOwnedRef.current = false
+    updateModalOpenRef.current = false
+    setUpdateModalOpen(false)
+    void restoreWindowAfterUpdateModal()
+  }, [restoreWindowAfterUpdateModal])
+
+  const skipCurrentUpdateVersion = useCallback(async () => {
+    if (!updateModalInfo?.latest) return
+    const store = await load('settings.json', { defaults: {}, autoSave: true })
+    await store.set('skipped_update_version', updateModalInfo.latest)
+    await store.save()
+    updateModalRunOwnedRef.current = false
+    updateModalOpenRef.current = false
+    setUpdateModalOpen(false)
+    void restoreWindowAfterUpdateModal()
+  }, [restoreWindowAfterUpdateModal, updateModalInfo?.latest])
+
+  const runUpdateFromModal = useCallback(async () => {
+    if (!updateModalInfo?.url) return
+    setUpdateModalPhase('downloading')
+    setUpdateModalProgress(0)
+    setUpdateModalProgressStage('preparing')
+    updateModalRunOwnedRef.current = true
+    hoverExpandedRef.current = false
+    if (hoverCloseTimerRef.current) {
+      clearTimeout(hoverCloseTimerRef.current)
+      hoverCloseTimerRef.current = null
+    }
+    setEffListCollapsed(true)
+    await ensureUpdateModalWindow()
+    updateModalOpenRef.current = true
+    setUpdateModalOpen(true)
+    try {
+      await invoke('run_update', { dmgUrl: updateModalInfo.url })
+    } catch (e) {
+      console.warn('[update modal] run_update failed:', e)
+      setUpdateModalPhase('available')
+    }
+  }, [ensureUpdateModalWindow, updateModalInfo?.url])
+
+  const restartFromModal = useCallback(() => {
+    invoke('exit_app').catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const checkForUpdates = async () => {
+      try {
+        const store = await load('settings.json', { defaults: {}, autoSave: true })
+        const now = Date.now()
+        const lastCheckedAt = Number((await store.get('update_last_check_at')) ?? 0)
+        if (lastCheckedAt > 0 && now - lastCheckedAt < 86_400_000) return
+        await store.set('update_last_check_at', now)
+        await store.save()
+        const info = (await invoke('check_for_update', { lang: i18n.language })) as UpdateModalInfo
+        if (!info?.hasUpdate) return
+        const skippedVersion = ((await store.get('skipped_update_version')) as string) || ''
+        if (skippedVersion && skippedVersion === info.latest) return
+        if (cancelled) return
+        openAvailableUpdateModal(info)
+      } catch {
+        /* ignore */
+      }
+    }
+    void checkForUpdates()
+    const timer = setInterval(() => {
+      void checkForUpdates()
+    }, 86_400_000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [i18n.language, openAvailableUpdateModal])
+
+  useEffect(() => {
+    const unlisten = listen<UpdateProgressPayload>('update-progress', (event) => {
+      if (!updateModalOpenRef.current && !updateModalRunOwnedRef.current) return
+      const payload = event.payload
+      const stage = payload.stage || 'downloading'
+      setUpdateModalProgress(typeof payload.progress === 'number' ? payload.progress : null)
+      setUpdateModalProgressStage(stage)
+      if (stage === 'ready_to_restart') {
+        setUpdateModalPhase('ready_to_restart')
+      } else if (stage === 'preparing' || stage === 'downloading' || stage === 'downloaded') {
+        setUpdateModalPhase('downloading')
+      }
+      if (!updateModalOpenRef.current) {
+        void (async () => {
+          await ensureUpdateModalWindow()
+          updateModalOpenRef.current = true
+          setUpdateModalOpen(true)
+        })()
+      }
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [ensureUpdateModalWindow])
+
+  useEffect(() => {
+    if (updateModalOpenRef.current) return
+    if (settingsMode || settingsTransitioning || isCreateModalOpen) return
+    const pending = pendingUpdateInfoRef.current
+    if (!pending) return
+    pendingUpdateInfoRef.current = null
+    void openAvailableUpdateModal(pending)
+  }, [isCreateModalOpen, openAvailableUpdateModal, settingsMode, settingsTransitioning])
+
+  useEffect(() => {
+    if (!updateModalOpen || updateModalPhase !== 'available' || !updateModalInfo?.hasUpdate) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const latest = (await invoke('check_for_update', { lang: i18n.language })) as UpdateModalInfo
+        if (cancelled) return
+        if (latest?.hasUpdate && latest.latest === updateModalInfo.latest) {
+          setUpdateModalInfo(latest)
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [i18n.language, updateModalInfo?.hasUpdate, updateModalInfo?.latest, updateModalOpen, updateModalPhase])
 
   const handleMascotPointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -1204,6 +1570,7 @@ export default function Mini() {
       // Normal mode: click to expand
       if (!moveMode) {
         hoverExpandedRef.current = false
+        setCompletionSessionId(null)
         expand()
         return
       }
@@ -1222,6 +1589,7 @@ export default function Mini() {
         if (!dragging) {
           if (Math.abs(ev.screenX - lastX) + Math.abs(ev.screenY - lastY) > 3) {
             dragging = true
+            mascotDragActiveRef.current = true
           } else return
         }
         const dx = ev.screenX - lastX
@@ -1232,6 +1600,7 @@ export default function Mini() {
       }
 
       const cleanup = () => {
+        mascotDragActiveRef.current = false
         try {
           el.releasePointerCapture(pid)
         } catch {}
@@ -1251,10 +1620,14 @@ export default function Mini() {
             document.body.style.cursor = ''
           })
         } else {
-          // Save dragged position (macOS native coordinates)
-          invoke('get_mini_origin').then((pos) => {
+          // Save dragged position (macOS native coordinates) to memory
+          // and persist to settings so it survives restarts.
+          invoke('get_mini_origin').then(async (pos) => {
             const [x, y] = pos as [number, number]
             customPosRef.current = { x, y }
+            const store = await load('settings.json', { defaults: {}, autoSave: true })
+            await store.set('mini_custom_pos', { x, y })
+            await store.save()
           })
         }
       }
@@ -1272,23 +1645,23 @@ export default function Mini() {
       setHiding(true)
       setExpanded(false)
       expandedRef.current = false
+      expandedWindowModeRef.current = null
       try {
         await new Promise<void>((r) => setTimeout(r, 50))
         await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
-        if (customPosRef.current) {
-          await invoke('set_mini_origin', customPosRef.current)
-        }
+        await restoreCollapsedMascotPosition()
         await new Promise<void>((r) => setTimeout(r, 50))
       } catch {}
       setHiding(false)
       setMoveMode(true)
     }, 350)
-  }, [])
+  }, [restoreCollapsedMascotPosition])
 
   const collapse = useCallback(async () => {
     if (collapsingRef.current) return
     collapsingRef.current = true
     hoverExpandedRef.current = false
+    setCompletionSessionId(null)
     if (hoverCloseTimerRef.current) {
       clearTimeout(hoverCloseTimerRef.current)
       hoverCloseTimerRef.current = null
@@ -1298,38 +1671,53 @@ export default function Mini() {
     setSelectedAgentId(null)
     setSelectedClaudeSession(null)
     setSelectedSessionKey(null)
+    setShowClaudeStats(false)
     const wasSettings = settingsModeRef.current
     if (wasSettings) {
       setShowSettingsOverlay(false)
       setSettingsTransitioning(true)
     }
-    const delay = wasSettings ? 280 : 350
+    const delay = wasSettings ? 280 : 480
     setTimeout(async () => {
       settingsModeRef.current = false
       setSettingsMode(false)
       setShowSettingsOverlay(false)
-      // If exiting settings via collapse (click outside), trigger immediate
-      // refresh so config changes are detected right away, not after 5s poll.
-      if (wasSettings) fetchAgents()
-      // Hide mascot first to avoid flicker at old position
+      if (wasSettings) {
+        setSettingsNav('pairing')
+        // Keep outside-click close behavior consistent with clicking "X":
+        // re-sync feature toggles from store immediately.
+        try {
+          const store = await load('settings.json', { defaults: {}, autoSave: true })
+          const cc = await store.get('enable_claudecode')
+          setEnableClaudeCode(cc !== false)
+          const cod = await store.get('enable_codex')
+          setEnableCodex(cod !== false)
+          const cur = await store.get('enable_cursor')
+          setEnableCursor(cur !== false)
+        } catch {}
+        // Trigger immediate refresh so config changes are reflected right away.
+        fetchAgents()
+      }
       setHiding(true)
-      // Use setTimeout instead of rAF (rAF may not fire when window is blurred)
+      // Unmount the expanded React tree before shrinking/repositioning the
+      // native Tauri window. Otherwise the last frames of the expanded panel
+      // can render inside the collapsed window geometry and look like a flicker.
+      setExpanded(false)
+      expandedRef.current = false
+      expandedWindowModeRef.current = null
       try {
-        await new Promise<void>((r) => setTimeout(r, 50))
+        await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
         if (wasSettings) {
           await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
         } else {
           await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
         }
-        setExpanded(false)
-        expandedRef.current = false
-        await new Promise<void>((r) => setTimeout(r, 50))
-        if (customPosRef.current) {
-          await invoke('set_mini_origin', customPosRef.current)
-        }
+        await restoreCollapsedMascotPosition()
       } catch {
         /* ensure hiding is always cleared */
       }
+      // Even if the native resize invoke fails, always clear the hiding shell so
+      // the mascot becomes visible again instead of getting stuck transparent.
       setHiding(false)
       setSettingsTransitioning(false)
       // Brief cooldown to prevent focus event from immediately re-expanding
@@ -1338,10 +1726,71 @@ export default function Mini() {
         settingsTransitioningRef.current = false
       }, 300)
     }, delay)
-  }, [fetchAgents])
+  }, [fetchAgents, restoreCollapsedMascotPosition])
+
+  // ── Efficiency-mode notch hover tracking (native cursor polling) ──
+  // On macOS the mini window sits in the menu-bar / notch area where the
+  // system intercepts mouse events, so web-level onMouseEnter never fires.
+  // A Rust-side 50ms poll of NSEvent.mouseLocation emits "efficiency-hover"
+  // events which we handle here to open / close the panel on hover.
+  useEffect(() => {
+    if (viewMode === 'efficiency' && !moveMode && !updateModalOpen && !settingsMode && !settingsTransitioning) {
+      invoke('set_efficiency_hover_tracking', { active: true }).catch(() => {})
+    } else {
+      invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
+    }
+    return () => {
+      invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
+    }
+  }, [viewMode, moveMode, updateModalOpen, settingsMode, settingsTransitioning])
+
+  useEffect(() => {
+    if (viewMode !== 'efficiency') return
+    const unlisten = listen<boolean>('efficiency-hover', (event) => {
+      if (settingsModeRef.current || settingsTransitioningRef.current) {
+        return
+      }
+      if (updateModalOpenRef.current) {
+        if (hoverCloseTimerRef.current) {
+          clearTimeout(hoverCloseTimerRef.current)
+          hoverCloseTimerRef.current = null
+        }
+        return
+      }
+      if (event.payload) {
+        // Cursor entered the notch / panel region.
+        // Cancel any pending auto-close timer first.
+        if (hoverCloseTimerRef.current) {
+          clearTimeout(hoverCloseTimerRef.current)
+          hoverCloseTimerRef.current = null
+        }
+        // If collapsed, not in a transition, and not in drag-move mode, expand via hover.
+        if (!expandedRef.current && !collapsingRef.current && !expandingRef.current && !moveModeRef.current) {
+          hoverExpandedRef.current = true
+          expandFnRef.current?.()
+        }
+      } else {
+        // Cursor left the region.  If the panel was hover-opened (and not pinned),
+        // schedule auto-close after a short grace period.
+        if (expandedRef.current && hoverExpandedRef.current && !pinnedRef.current) {
+          hoverCloseTimerRef.current = setTimeout(() => {
+            hoverExpandedRef.current = false
+            hoverCloseTimerRef.current = null
+            collapse()
+          }, 300)
+        }
+      }
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [viewMode, collapse])
 
   const enterSettings = useCallback(async () => {
     if (settingsModeRef.current || settingsTransitioningRef.current) return
+    // Entering settings is an intentional action — disable hover auto-close
+    // so the panel stays open when the mouse leaves the window.
+    hoverExpandedRef.current = false
     settingsTransitioningRef.current = true
     setSelectedAgentId(null)
     setSelectedClaudeSession(null)
@@ -1369,28 +1818,37 @@ export default function Mini() {
     settingsModeRef.current = false
     setSettingsMode(false)
     setSettingsNav('pairing')
+    // Re-sync feature toggles from store
+    const store = await load('settings.json', { defaults: {}, autoSave: true })
+    const cc = await store.get('enable_claudecode')
+    setEnableClaudeCode(cc !== false)
+    const cod = await store.get('enable_codex')
+    setEnableCodex(cod !== false)
+    const cur = await store.get('enable_cursor')
+    setEnableCursor(cur !== false)
     fetchAgents()
     try {
-      await invoke('set_mini_expanded', { expanded: true, position: mascotPositionRef.current })
+      await syncExpandedWindowLayout(viewModeRef.current)
     } catch {}
     setSettingsTransitioning(false)
     settingsTransitioningRef.current = false
-  }, [fetchAgents])
+  }, [fetchAgents, syncExpandedWindowLayout])
 
   // Click outside to collapse (only when not pinned)
   useEffect(() => {
-    if (!expanded || pinned || settingsMode || settingsTransitioning) return
+    if (!expanded || pinned || settingsMode || settingsTransitioning || updateModalOpen) return
     const onClick = (e: MouseEvent) => {
       if (isCreateModalOpenRef.current) return
       if (!(e.target as HTMLElement).closest('#mini-panel')) collapse()
     }
     window.addEventListener('mousedown', onClick)
     return () => window.removeEventListener('mousedown', onClick)
-  }, [expanded, pinned, settingsMode, settingsTransitioning, collapse])
+  }, [expanded, pinned, settingsMode, settingsTransitioning, updateModalOpen, collapse])
 
   // Window blur: collapse when user clicks outside the app (when not pinned, or in settings mode)
   // Skip blur when a file picker dialog is open
   useEffect(() => {
+    if (updateModalOpen) return
     if (!expanded) return
     if (pinned && !settingsMode) return
     const onClickCapture = (e: MouseEvent) => {
@@ -1417,22 +1875,28 @@ export default function Mini() {
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
     }
-  }, [expanded, pinned, settingsMode, collapse])
+  }, [expanded, pinned, settingsMode, updateModalOpen, collapse])
 
   useEffect(() => {
-    if (expanded || moveMode) return
+    if (expanded || moveMode || updateModalOpen) return
     const onFocus = () => {
       if (collapsingRef.current) return
       expand()
     }
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
-  }, [expanded, expand, moveMode])
+  }, [expanded, expand, moveMode, updateModalOpen])
 
   // Exit move mode when clicking outside mascot or when window loses focus
   useEffect(() => {
     if (!moveMode) return
-    const onBlur = () => setMoveMode(false)
+    const onBlur = () => {
+      // Programmatic mini-window moves can briefly blur the webview on macOS.
+      // Keep move mode alive while an actual mascot drag is in progress so the
+      // outline/hover state does not flash off for a frame.
+      if (mascotDragActiveRef.current) return
+      setMoveMode(false)
+    }
     window.addEventListener('blur', onBlur)
     return () => window.removeEventListener('blur', onBlur)
   }, [moveMode])
@@ -1443,7 +1907,6 @@ export default function Mini() {
   const hasWorking = anySessionActive || Object.values(healthMap).some(Boolean) || claudeWorking || claudeCompacting || claudeWaiting
   // Priority: waiting > compacting > working > idle
   const mainPetState: PetState = claudeWaiting ? 'waiting' : claudeCompacting ? 'compacting' : hasWorking ? 'working' : 'idle'
-  const shouldBob = !(disableSleepAnim && mainPetState === 'idle')
   const miniGif = getMiniGif(miniChar ?? undefined, mainPetState, true)
   const handleDeleteChar = useCallback(async (name: string) => {
     try {
@@ -1454,26 +1917,106 @@ export default function Mini() {
       console.warn('delete char failed:', e)
     }
   }, [])
+  const saveCharQueue = useCallback(async (queue: string[]) => {
+    setCharQueue(queue)
+    const store = await load('settings.json', { defaults: {}, autoSave: true })
+    await store.set('char_queue', queue)
+    await store.save()
+  }, [])
+  const [queuePickerOpen, setQueuePickerOpen] = useState(false)
+
   const inAgentDetail = selectedAgentId !== null
   const selectedAgent = agents.find((a) => a.id === selectedAgentId)
+  const inDetailPage = inAgentDetail || selectedClaudeSession !== null || selectedSessionKey !== null || showClaudeStats
+  const detailPageMaxHeight =
+    typeof window !== 'undefined'
+      ? Math.max(240, Math.floor(((window.screen?.availHeight || 800) * 0.75) / Math.max(uiScale, 0.01)))
+      : 600
 
-  // Panel dimensions — CSS uses fixed base sizes (380/400); on Windows high-DPI
-  // screens the panel root applies `zoom: uiScale` so all content (text, icons,
-  // spacing) scales uniformly to match the Rust-side window enlargement.
-  const panelW = 475
+  // Panel dimensions — CSS uses fixed base sizes; on Windows high-DPI screens
+  // the panel root applies `zoom: uiScale` so all content scales uniformly.
+  const panelW = viewMode === 'efficiency' ? 575 : 475
+  const closedNotchWidth = 44
+  const closedNotchHeight = 10
+  const openClipPath = 'inset(0 0 0 0 round 0 0 24px 24px)'
+  const closedClipPath = `inset(0 calc(50% - ${closedNotchWidth / 2}px) calc(100% - ${closedNotchHeight}px) calc(50% - ${closedNotchWidth / 2}px) round 0 0 8px 8px)`
+  const panelClipTransition = 'clip-path 0.42s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1)'
+  const panelChromeTransition = 'opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
   const panelRef = useRef<HTMLDivElement>(null)
 
+  const lastResizeHeightRef = useRef(0)
+  const resizeTweenFrameRef = useRef<number | null>(null)
+  const resizeTweenTargetRef = useRef(0)
+  const stopResizeTween = useCallback(() => {
+    if (resizeTweenFrameRef.current !== null) {
+      cancelAnimationFrame(resizeTweenFrameRef.current)
+      resizeTweenFrameRef.current = null
+    }
+  }, [])
+  const pushMiniHeight = useCallback((height: number, maxHeight: number) => {
+    invoke('resize_mini_height', { height, maxHeight, animate: false }).catch(() => {})
+  }, [])
+  const tweenMiniHeight = useCallback(
+    (from: number, to: number, maxHeight: number) => {
+      stopResizeTween()
+      resizeTweenTargetRef.current = to
+      const start = performance.now()
+      const duration = 240
+      const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3)
+      const step = (now: number) => {
+        const progress = Math.min((now - start) / duration, 1)
+        const value = from + (to - from) * easeOutCubic(progress)
+        lastResizeHeightRef.current = value
+        pushMiniHeight(value, maxHeight)
+        if (progress < 1 && resizeTweenTargetRef.current === to) {
+          resizeTweenFrameRef.current = requestAnimationFrame(step)
+          return
+        }
+        resizeTweenFrameRef.current = null
+        lastResizeHeightRef.current = to
+        pushMiniHeight(to, maxHeight)
+      }
+      resizeTweenFrameRef.current = requestAnimationFrame(step)
+    },
+    [pushMiniHeight, stopResizeTween],
+  )
   useEffect(() => {
     if (!expanded || settingsMode || settingsTransitioning || !showPanel) return
     const el = panelRef.current
     if (!el) return
+    let first = true
     const ro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect.height
-      if (h && h > 0) invoke('resize_mini_height', { height: Math.min(h * uiScale, 400 * uiScale) }).catch(() => {})
+      if (h && h > 0) {
+        const limit = inDetailPage ? detailPageMaxHeight : panelMaxHeight
+        const clamped = Math.min(h * uiScale, limit * uiScale)
+        const prev = lastResizeHeightRef.current || clamped
+        const delta = Math.abs(clamped - prev)
+        const shouldAnimate = !first && inDetailPage && delta > 10
+        first = false
+        if (shouldAnimate) {
+          tweenMiniHeight(prev, clamped, limit)
+          return
+        }
+        stopResizeTween()
+        lastResizeHeightRef.current = clamped
+        pushMiniHeight(clamped, limit)
+      }
     })
     ro.observe(el)
-    return () => ro.disconnect()
-  }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale])
+    return () => {
+      ro.disconnect()
+      stopResizeTween()
+    }
+  }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale, panelMaxHeight, inDetailPage, detailPageMaxHeight, pushMiniHeight, stopResizeTween, tweenMiniHeight])
+
+  useEffect(() => {
+    if (!expanded || !showPanel || settingsMode || settingsTransitioning || updateModalOpen) return
+    if (expandedWindowModeRef.current === viewMode) return
+    syncExpandedWindowLayout(viewMode).catch((e) => {
+      console.warn('[mini] sync expanded window layout failed:', e)
+    })
+  }, [expanded, showPanel, settingsMode, settingsTransitioning, updateModalOpen, viewMode, syncExpandedWindowLayout])
 
   return (
     <div
@@ -1486,15 +2029,11 @@ export default function Mini() {
       }}
     >
       {/* Collapsed */}
-      {!expanded && !hiding && (
+      {!expanded && !hiding && !updateModalOpen && (
         <div
           id="mini-panel"
-          onPointerDown={handleMascotPointerDown}
           onMouseEnter={() => {
-            if (!moveMode && viewMode === 'efficiency') {
-              hoverExpandedRef.current = true
-              expand()
-            }
+            // Hover expand disabled — efficiency mode only opens on click.
           }}
           style={{
             width: '100%',
@@ -1503,14 +2042,15 @@ export default function Mini() {
             alignItems: 'flex-start',
             justifyContent: 'center',
             background: viewMode === 'efficiency' ? 'rgba(0,0,0,0.01)' : undefined,
-            cursor: moveMode ? 'grab' : 'pointer',
             pointerEvents: 'auto',
           }}
         >
           <div
+            onPointerDown={handleMascotPointerDown}
             style={{
               position: 'relative',
-              animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : shouldBob ? 'bob 1.2s ease-in-out infinite' : 'none',
+              cursor: moveMode ? 'grab' : 'pointer',
+              animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : 'none',
               ...(moveMode
                 ? {
                     borderRadius: 12,
@@ -1562,7 +2102,7 @@ export default function Mini() {
       )}
 
       {/* Expanded panel */}
-      {expanded && !settingsMode && !settingsTransitioning && (
+      {expanded && !settingsMode && !settingsTransitioning && !updateModalOpen && (
         <div
           id="mini-panel"
           ref={panelRef}
@@ -1574,7 +2114,7 @@ export default function Mini() {
             }
           }}
           onMouseLeave={() => {
-            if (hoverExpandedRef.current) {
+            if (hoverExpandedRef.current && !pinnedRef.current) {
               hoverCloseTimerRef.current = setTimeout(() => {
                 hoverExpandedRef.current = false
                 hoverCloseTimerRef.current = null
@@ -1591,23 +2131,45 @@ export default function Mini() {
             zoom: uiScale !== 1 ? uiScale : undefined,
             width: panelW,
             height: 'auto',
-            maxHeight: 400,
+            maxHeight: inDetailPage ? detailPageMaxHeight : panelMaxHeight,
             overflowY: 'hidden',
             overflowX: 'hidden',
             display: 'flex',
             flexDirection: 'column',
-            background: '#18181c',
-            clipPath: showPanel ? 'inset(0 0 0 0 round 0 0 24px 24px)' : 'inset(0 calc(50% - 30px) calc(100% + 200px) calc(50% - 30px) round 0 0 8px 8px)',
-            boxShadow: showPanel ? '0 8px 32px rgba(0,0,0,0.8)' : '0 2px 8px rgba(0,0,0,0.3)',
-            transition: showPanel ? 'clip-path 0.45s cubic-bezier(0.22, 1.2, 0.36, 1), box-shadow 0.3s ease' : 'clip-path 0.25s cubic-bezier(0.4, 0, 0, 1), box-shadow 0.15s ease',
+            background: '#010101',
+            // Keep a real closed notch rectangle at the top-center. This mirrors
+            // ping-island's "always-present header" model and makes collapse
+            // feel like shrinking inward to the notch, not vanishing upward.
+            clipPath: showPanel ? openClipPath : closedClipPath,
+            boxShadow: showPanel ? '0 8px 32px rgba(0,0,0,0.8)' : '0 1px 4px rgba(0,0,0,0.18)',
+            transition: panelClipTransition,
           }}
         >
+          {/* Closed header: geometric anchor for clip-path collapse target. */}
+          {!showPanel && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: closedNotchWidth,
+                height: closedNotchHeight,
+                borderBottomLeftRadius: 8,
+                borderBottomRightRadius: 8,
+                background: '#010101',
+                pointerEvents: 'none',
+                zIndex: 30,
+              }}
+            />
+          )}
+
           {/* Top Control Bar — outside the transform wrapper so sticky works correctly */}
           <div
             className="flex items-center justify-between px-4 py-2.5 shrink-0 sticky top-0 z-20 bg-black text-white"
             style={{
               opacity: showPanel ? 1 : 0,
-              transition: showPanel ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s' : 'opacity 0.08s ease-out',
+              transition: panelChromeTransition,
             }}
           >
             <div className="flex items-center gap-4 min-w-0 flex-1">
@@ -1630,7 +2192,12 @@ export default function Mini() {
                   data-no-drag
                   onClick={(e) => {
                     e.stopPropagation()
-                    setPinned(!pinned)
+                    const next = !pinned
+                    setPinned(next)
+                    pinnedRef.current = next
+                    // If pinning while hover-opened, upgrade to intentional open
+                    // so mouse-leave won't auto-close.
+                    if (next) hoverExpandedRef.current = false
                   }}
                   className={`transition-colors ${pinned ? 'text-[#F0D140]' : 'text-slate-400 hover:text-slate-200'}`}
                   title={pinned ? t('mini.unpin') : t('mini.pin')}
@@ -1640,33 +2207,27 @@ export default function Mini() {
               )}
               <button
                 data-no-drag
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setViewMode((v) => (v === 'island' ? 'efficiency' : 'island'))
-                }}
-                className="text-slate-400 hover:text-[#F0D140] transition-colors"
-                title={viewMode === 'island' ? t('mini.efficiencyMode') || 'Efficiency Mode' : t('mini.islandMode') || 'Island Mode'}
-              >
-                {viewMode === 'island' ? <Rows className="w-4 h-4" strokeWidth={2.5} /> : <PanelLeft className="w-4 h-4" strokeWidth={2.5} />}
-              </button>
-              <button
-                data-no-drag
                 onClick={async (e) => {
                   e.stopPropagation()
-                  const next = !soundEnabled
+                  const allOn = soundEnabled || codexSoundEnabled || cursorSoundEnabled
+                  const next = !allOn
                   setSoundEnabled(next)
+                  setCodexSoundEnabled(next)
+                  setCursorSoundEnabled(next)
                   const store = await load('settings.json', { defaults: {}, autoSave: true })
                   await store.set('sound_enabled', next)
+                  await store.set('codex_sound_enabled', next)
+                  await store.set('cursor_sound_enabled', next)
                   await store.save()
                   if (next) {
                     if (notifySound === 'manbo') new Audio('/audio/manbo.m4a').play().catch(() => {})
                     else playDefaultSound()
                   }
                 }}
-                className={`transition-colors ${soundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
-                title={soundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
+                className={`transition-colors ${soundEnabled || codexSoundEnabled || cursorSoundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
+                title={soundEnabled || codexSoundEnabled || cursorSoundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
               >
-                {soundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
+                {soundEnabled || codexSoundEnabled || cursorSoundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
               </button>
             </div>
             <div className="flex items-center gap-4">
@@ -1711,12 +2272,8 @@ export default function Mini() {
               position: 'relative',
               zIndex: 1,
               opacity: showPanel ? 1 : 0,
-              transform: showPanel ? 'scale(1) translateY(0)' : 'scale(0.9) translateY(-20px)',
-              filter: showPanel ? 'blur(0px)' : 'blur(8px)',
               transformOrigin: 'top center',
-              transition: showPanel
-                ? 'opacity 0.25s cubic-bezier(0.2, 1, 0.3, 1) 0.05s, transform 0.4s cubic-bezier(0.2, 1, 0.3, 1), filter 0.25s ease 0.05s'
-                : 'opacity 0.08s ease-out, transform 0.08s ease-out, filter 0.08s ease-out',
+              transition: panelChromeTransition,
               flex: 1,
               minHeight: 0,
               display: 'flex',
@@ -1737,7 +2294,7 @@ export default function Mini() {
                     style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
                   >
                     <div className="flex flex-col bg-black" style={{ flex: 1, minHeight: 0 }}>
-                      <div className="flex-1 overflow-y-auto scrollbar-hidden">
+                      <div className="overflow-y-auto scrollbar-hidden" style={{ maxHeight: panelMaxHeight - 60 }}>
                         <AnimatePresence mode="popLayout">
                           {(() => {
                             const unified: { type: 'oc'; data: MiniSessionInfo; active: boolean; updatedAt: number }[] = allSessions.map((s) => ({
@@ -1746,25 +2303,44 @@ export default function Mini() {
                               active: s.active,
                               updatedAt: s.updatedAt,
                             }))
-                            const claudeUnified = claudeSessions.map((cs) => ({
+                            const filteredClaude = claudeSessions.filter((cs) => {
+                              if (cs.source === 'cursor' && !enableCursor) return false
+                              if (cs.source === 'codex' && !enableCodex) return false
+                              if (cs.source !== 'cursor' && cs.source !== 'codex' && !enableClaudeCode) return false
+                              return true
+                            })
+                            const claudeUnified = filteredClaude.map((cs, ci) => ({
                               type: 'claude' as const,
                               data: cs,
+                              claudeIdx: ci,
                               active: cs.status === 'processing' || cs.status === 'tool_running',
                               updatedAt: cs.updatedAt || 0,
                             }))
-                            const allItems = [...unified, ...claudeUnified].sort((a, b) => b.updatedAt - a.updatedAt)
-                            const isItemWorking = (item: (typeof allItems)[0]) => {
-                              if (item.type === 'oc') return item.active
-                              const cs = item.data as any
-                              return item.active || cs.status === 'waiting' || cs.status === 'compacting'
+                            // Sort: waiting first, then everything else by recency.
+                            const getPriority = (item: (typeof unified)[0] | (typeof claudeUnified)[0]) => {
+                              if (item.type === 'claude') {
+                                const cs = item.data as any
+                                if (cs.status === 'waiting') return 0
+                              }
+                              return 1
                             }
-                            const workingItems = allItems.filter(isItemWorking)
-                            const idleItems = allItems.filter((i) => !isItemWorking(i))
+                            const allItems = [...unified, ...claudeUnified].sort((a, b) => {
+                              const pa = getPriority(a),
+                                pb = getPriority(b)
+                              if (pa !== pb) return pa - pb
+                              return b.updatedAt - a.updatedAt
+                            })
 
                             if (allItems.length === 0) {
+                              const trackingTargets = [
+                                ...(hasConfiguredOpenClaw ? ['OpenClaw'] : []),
+                                ...(enableClaudeCode ? ['Claude Code'] : []),
+                                ...(enableCodex ? ['Codex'] : []),
+                                ...(enableCursor ? ['Cursor'] : []),
+                              ]
                               return (
                                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
-                                  {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
+                                  {trackingTargets.length > 0 && <p className="text-slate-500 text-sm font-medium">{t('mini.startTracking', { targets: trackingTargets.join(' / ') })}</p>}
                                 </motion.div>
                               )
                             }
@@ -1780,9 +2356,36 @@ export default function Mini() {
                               if (hrs < 24) return `${hrs}h`
                               return `${Math.floor(hrs / 24)}d`
                             }
-                            const hasWaiting = allItems.some((i) => i.type === 'claude' && (i.data as any).status === 'waiting')
-                            const shouldCollapse = hasWaiting && idleItems.length > 0
-                            const visibleItems = shouldCollapse && !showIdleSessions ? workingItems : allItems
+                            const formatChannelLabel = (channel?: string) => {
+                              const raw = (channel || '').trim()
+                              if (!raw) return ''
+                              const lower = raw.toLowerCase()
+                              if (lower.includes('feishu')) return 'Feishu'
+                              if (lower.includes('lark')) return 'Lark'
+                              if (lower.includes('telegram')) return 'Telegram'
+                              if (lower.includes('discord')) return 'Discord'
+                              if (lower.includes('slack')) return 'Slack'
+                              if (lower.includes('wechat') || lower.includes('weixin')) return 'WeChat'
+                              return raw.charAt(0).toUpperCase() + raw.slice(1)
+                            }
+                            const hasImportant = allItems.some((item) => {
+                              if (item.type !== 'claude') return false
+                              const cs = item.data as any
+                              if (cs.status === 'waiting' && cs.source !== 'cursor') return true
+                              if (!cs.status || cs.status === 'stopped') {
+                                if (cs.lastResponse && completionSessionId === cs.sessionId) return true
+                              }
+                              return false
+                            })
+                            const isImportant = (item: (typeof allItems)[0]) => {
+                              if (item.type !== 'claude') return false
+                              const cs = item.data as any
+                              if (cs.status === 'waiting' && cs.source !== 'cursor') return true
+                              if (cs.lastResponse && completionSessionId === cs.sessionId) return true
+                              return false
+                            }
+                            const visibleItems = effListCollapsed && hasImportant ? allItems.filter((item) => isImportant(item)) : allItems
+                            const hiddenCount = allItems.length - visibleItems.length
                             const elements: React.ReactNode[] = visibleItems.map((item, index) => {
                               if (item.type === 'oc') {
                                 const s = item.data
@@ -1791,11 +2394,20 @@ export default function Mini() {
                                 const agentName = `${agent?.identityEmoji || ''} ${agent?.identityName || s.agentId}`.trim()
                                 const charName = agentCharMap[s.agentId]
                                 const charMeta = characters.find((c) => c.name === charName)
-                                const gif = charMeta ? getMiniGif(charMeta, s.active ? 'working' : 'idle') : undefined
+                                const recentlyDone = !s.active && s.updatedAt && Date.now() - s.updatedAt < 5 * 60 * 1000
+                                const showCharGif = s.active || recentlyDone
+                                const petState: PetState = s.active ? 'working' : 'idle'
+                                const gif = charMeta ? getMiniGif(charMeta, petState) : undefined
                                 const title = `${agentName} #${seq}`
                                 const subtitle = s.lastUserMsg || ''
                                 const timeAgo = formatTimeAgo(s.updatedAt)
                                 const isWorking = s.active
+                                const openOcDetail = () => {
+                                  setSelectedClaudeSession(null)
+                                  setSelectedSessionKey(null)
+                                  setShowClaudeStats(false)
+                                  setSelectedAgentId(s.agentId)
+                                }
                                 return (
                                   <motion.div
                                     key={`list-oc-${s.agentId}-${s.key}`}
@@ -1824,10 +2436,18 @@ export default function Mini() {
                                       }
                                     }}
                                     className="group flex items-center gap-3 px-4 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                                    style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
+                                    style={{ padding: '10px 16px' }}
                                   >
-                                    {isWorking && (
-                                      <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
+                                    {showCharGif && (
+                                      <div
+                                        data-no-drag
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          openOcDetail()
+                                        }}
+                                        className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
+                                      >
+                                        <div className="absolute inset-0" style={{ left: -16 }} />
                                         {gif ? (
                                           <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
                                         ) : (
@@ -1841,23 +2461,70 @@ export default function Mini() {
                                             width: 8,
                                             height: 8,
                                             borderRadius: '50%',
-                                            background: '#2ecc71',
+                                            background: recentlyDone ? '#94a3b8' : '#2ecc71',
                                             border: '1.5px solid rgba(0,0,0,0.3)',
                                           }}
                                         />
                                       </div>
                                     )}
-                                    {!isWorking && (
-                                      <div className="shrink-0 flex items-center justify-center w-4 h-4">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                                    {!showCharGif && (
+                                      <div
+                                        data-no-drag
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          openOcDetail()
+                                        }}
+                                        className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
+                                      >
+                                        <div className="absolute inset-0" style={{ left: -16 }} />
+                                        <span className="w-1 h-1 rounded-full bg-slate-600" />
                                       </div>
                                     )}
-                                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                                      <span className={`text-[13px] font-bold shrink-0 ${isWorking ? 'text-white' : 'text-slate-300'}`}>{title}</span>
-                                      {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
+                                    <div className="flex min-w-0 flex-1 items-center gap-1.5" data-no-drag>
+                                      {editingSessionTitle === `oc:${s.agentId}:${s.key}` ? (
+                                        <input
+                                          autoFocus
+                                          data-no-drag
+                                          className="text-[13px] font-bold bg-transparent border-b border-slate-500 outline-none text-white w-24"
+                                          style={{ WebkitUserSelect: 'text', userSelect: 'text' }}
+                                          defaultValue={sessionNicknames[`oc:${s.agentId}:${s.key}`] || title}
+                                          ref={(el) => {
+                                            if (el) {
+                                              editingTitleValueRef.current = el.value
+                                              editingTitleDefaultRef.current = title
+                                            }
+                                          }}
+                                          onChange={(e) => { editingTitleValueRef.current = e.target.value }}
+                                          onCompositionStart={() => { composingRef.current = true }}
+                                          onCompositionEnd={(e) => { composingRef.current = false; editingTitleValueRef.current = (e.target as HTMLInputElement).value }}
+                                          onBlur={() => {
+                                            saveSessionNickname(`oc:${s.agentId}:${s.key}`, editingTitleValueRef.current, title)
+                                            setEditingSessionTitle(null)
+                                          }}
+                                          onKeyDown={(e) => {
+                                            if (composingRef.current) return
+                                            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                                            if (e.key === 'Escape') setEditingSessionTitle(null)
+                                          }}
+                                          onClick={(e) => e.stopPropagation()}
+                                        />
+                                      ) : (
+                                        <span
+                                          className={`text-[13px] font-bold shrink-0 cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                          onClick={(e) => e.stopPropagation()}
+                                          onDoubleClick={(e) => {
+                                            e.stopPropagation()
+                                            setEditingSessionTitle(`oc:${s.agentId}:${s.key}`)
+                                          }}
+                                        >
+                                          {sessionNicknames[`oc:${s.agentId}:${s.key}`] || title}
+                                        </span>
+                                      )}
+                                      {subtitle && <span className="text-[13px] font-normal text-slate-500 shrink-0">· {subtitle}</span>}
+                                      {s.lastAssistantMsg && <span className="text-[11px] text-white/40 truncate">· {s.lastAssistantMsg}</span>}
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0">
-                                      {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300">{s.channel}</span>}
+                                      {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300">{formatChannelLabel(s.channel)}</span>}
                                       <div className="w-8 flex items-center justify-center">
                                         <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
                                         <button
@@ -1878,15 +2545,31 @@ export default function Mini() {
                                 )
                               } else {
                                 const cs = item.data
-                                const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                const defaultProjectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                const projectName = sessionNicknames[cs.sessionId] || defaultProjectName
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
                                 const isCompacting = cs.status === 'compacting'
                                 const isWorking = isActive || isWaiting || isCompacting
-                                const charMeta = characters.find((c) => c.name === claudeCharName)
-                                const gif = charMeta ? getMiniGif(charMeta, isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle') : undefined
+                                const recentlyDone = !isWorking && cs.status === 'stopped' && cs.updatedAt && Date.now() - cs.updatedAt < 5 * 60 * 1000
+                                const showCharGif = isWorking || recentlyDone
+                                const ci = 'claudeIdx' in item ? (item as { claudeIdx: number }).claudeIdx : 0
+                                const charMeta = characters.find((c) => c.name === charQueue[ci % charQueue.length])
+                                const petState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle'
+                                const gif = charMeta ? getMiniGif(charMeta, petState) : undefined
                                 const subtitle = cs.userPrompt || ''
                                 const timeAgo = formatTimeAgo(cs.updatedAt || 0)
+                                const isCursorSource = cs.source === 'cursor'
+                                const isCodexSource = cs.source === 'codex'
+                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : 'Claude'
+                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : 'bg-[#3f211d] text-[#e87a65]'
+                                const openClaudeDetail = () => {
+                                  setSelectedAgentId(null)
+                                  setSelectedSessionKey(null)
+                                  setSelectedClaudeSession(null)
+                                  setClaudeStatsSource(resolveClaudeStatsSource(cs.source))
+                                  setShowClaudeStats(true)
+                                }
                                 return (
                                   <motion.div
                                     key={`list-claude-${cs.sessionId}`}
@@ -1898,15 +2581,27 @@ export default function Mini() {
                                     data-no-drag
                                     onClick={() => {
                                       if (!isWaiting) {
-                                        invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
+                                        if (cs.source === 'cursor') {
+                                          invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
+                                        } else {
+                                          invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
+                                        }
                                       }
                                     }}
                                     className={`group hover:bg-white/[0.04] transition-colors ${isWaiting ? '' : 'cursor-pointer'}`}
-                                    style={{ padding: isWorking ? '10px 16px' : '8px 16px' }}
+                                    style={{ padding: '10px 16px' }}
                                   >
                                     <div className="flex items-center gap-3">
-                                      {isWorking && (
-                                        <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
+                                      {showCharGif && (
+                                        <div
+                                          data-no-drag
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            openClaudeDetail()
+                                          }}
+                                          className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
+                                        >
+                                          <div className="absolute inset-0" style={{ left: -16 }} />
                                           {gif ? (
                                             <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
                                           ) : (
@@ -1920,23 +2615,73 @@ export default function Mini() {
                                               width: 8,
                                               height: 8,
                                               borderRadius: '50%',
-                                              background: isWaiting ? '#f59e0b' : '#2ecc71',
+                                              background: isWaiting ? '#f59e0b' : recentlyDone ? '#94a3b8' : '#2ecc71',
                                               border: '1.5px solid rgba(0,0,0,0.3)',
                                             }}
                                           />
                                         </div>
                                       )}
-                                      {!isWorking && (
-                                        <div className="shrink-0 flex items-center justify-center w-4 h-4">
-                                          <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                                      {!showCharGif && (
+                                        <div
+                                          data-no-drag
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            openClaudeDetail()
+                                          }}
+                                          className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
+                                        >
+                                          <div className="absolute inset-0" style={{ left: -16 }} />
+                                          <span className="w-1 h-1 rounded-full bg-slate-600" />
                                         </div>
                                       )}
-                                      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                                        <span className={`text-[13px] font-bold shrink-0 ${isWorking ? 'text-white' : 'text-slate-300'}`}>{projectName}</span>
+                                      <div className="flex min-w-0 flex-1 items-center gap-1.5" data-no-drag>
+                                        {editingSessionTitle === cs.sessionId ? (
+                                          <input
+                                            autoFocus
+                                            data-no-drag
+                                            className="text-[13px] font-bold bg-transparent border-b border-slate-500 outline-none text-white w-24"
+                                            style={{ WebkitUserSelect: 'text', userSelect: 'text' }}
+                                            defaultValue={projectName}
+                                            ref={(el) => {
+                                              if (el) {
+                                                editingTitleValueRef.current = el.value
+                                                editingTitleDefaultRef.current = defaultProjectName
+                                              }
+                                            }}
+                                            onChange={(e) => { editingTitleValueRef.current = e.target.value }}
+                                            onCompositionStart={() => { composingRef.current = true }}
+                                            onCompositionEnd={(e) => { composingRef.current = false; editingTitleValueRef.current = (e.target as HTMLInputElement).value }}
+                                            onBlur={() => {
+                                              saveSessionNickname(cs.sessionId, editingTitleValueRef.current, defaultProjectName)
+                                              setEditingSessionTitle(null)
+                                            }}
+                                            onKeyDown={(e) => {
+                                              if (composingRef.current) return
+                                              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                                              if (e.key === 'Escape') setEditingSessionTitle(null)
+                                            }}
+                                            onClick={(e) => e.stopPropagation()}
+                                          />
+                                        ) : (
+                                          <span
+                                            className={`text-[13px] font-bold shrink-0 cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                            onClick={(e) => {
+                                              // Keep title area reserved for rename interaction.
+                                              // Clicking title should not trigger jump.
+                                              e.stopPropagation()
+                                            }}
+                                            onDoubleClick={(e) => {
+                                              e.stopPropagation()
+                                              setEditingSessionTitle(cs.sessionId)
+                                            }}
+                                          >
+                                            {projectName}
+                                          </span>
+                                        )}
                                         {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
                                       </div>
                                       <div className="flex items-center gap-2 shrink-0">
-                                        <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#3f211d] text-[#e87a65]">Claude</span>
+                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal ${sourceBadgeClass}`}>{sourceLabel}</span>
                                         <div className="w-8 flex items-center justify-center">
                                           <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
                                           <button
@@ -1954,73 +2699,210 @@ export default function Mini() {
                                         </div>
                                       </div>
                                     </div>
-                                    {isWaiting && (
+                                    {/* ── 提醒弹窗 (Reminder Popup) ──
+                                       在效率模式下，当 CC session 需要用户批准
+                                       (PermissionRequest → isWaiting) 且该 session
+                                       对应的终端 tab 不在当前激活状态时，自动弹出
+                                       此面板。包含四个操作按钮：拒绝、允许一次、
+                                       全部允许、自动批准。
+                                       用途：让用户无需切换到终端即可快速处理权限请求。 */}
+                                    {isWaiting && cs.source !== 'cursor' && (
                                       <div className="mt-2">
                                         {cs.tool && (
                                           <div className="flex items-center gap-1.5 mb-2">
                                             <span className="text-amber-400 text-[12px]">⚠</span>
-                                            <span className="text-amber-400 text-[12px] font-normal">{cs.tool}</span>
+                                            <span className="text-amber-400 text-[12px] font-bold">{cs.tool}</span>
                                           </div>
                                         )}
                                         {cs.toolInput &&
                                           (() => {
                                             try {
                                               const input = JSON.parse(cs.toolInput)
-                                              const preview = input.command || input.file_path || input.content?.slice(0, 100) || cs.toolInput.slice(0, 100)
+                                              // Write/Edit: show file name + numbered code lines
+                                              if ((cs.tool === 'Write' || cs.tool === 'Edit') && (input.file_path || input.content)) {
+                                                const fileName = input.file_path ? input.file_path.split('/').pop() : ''
+                                                const isNew = cs.tool === 'Write'
+                                                const content = input.content || input.new_string || input.old_string || ''
+                                                const lines = content.split('\n')
+                                                return (
+                                                  <div className="mb-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-hidden">
+                                                    {fileName && (
+                                                      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#2a2a2e] sticky top-0 bg-[#1a1a1e] z-10">
+                                                        <span className="text-[12px] text-slate-300 font-mono">{fileName}</span>
+                                                        {isNew && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400">{t('mini.newFile', '新文件')}</span>}
+                                                      </div>
+                                                    )}
+                                                    <div className="px-3 py-2 max-h-[120px] overflow-y-auto scrollbar-thin">
+                                                      {lines.map((line: string, i: number) => (
+                                                        <div key={i} className="flex gap-3 leading-[1.6]">
+                                                          <span className="text-[11px] text-slate-600 font-mono select-none w-5 text-right shrink-0">{i + 1}</span>
+                                                          <pre className="text-[11px] text-slate-300 font-mono whitespace-pre-wrap break-all">{line || ' '}</pre>
+                                                        </div>
+                                                      ))}
+                                                    </div>
+                                                  </div>
+                                                )
+                                              }
+                                              if (typeof input.justification === 'string' && input.justification.trim()) {
+                                                return (
+                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
+                                                    <pre className="text-[11px] text-amber-300 font-mono whitespace-pre-wrap break-all leading-tight">{input.justification}</pre>
+                                                  </div>
+                                                )
+                                              }
+                                              // Bash: show command
+                                              if (cs.tool === 'Bash' && input.command) {
+                                                return (
+                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
+                                                    <pre className="text-[11px] text-slate-300 font-mono whitespace-pre-wrap break-all leading-tight">{input.command}</pre>
+                                                  </div>
+                                                )
+                                              }
+                                              // Fallback: show parsed fields
+                                              const preview = input.command || input.file_path || input.content?.slice(0, 150) || cs.toolInput.slice(0, 150)
                                               return (
-                                                <div className="mb-2 p-2 rounded bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
+                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
                                                   <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{preview}</pre>
                                                 </div>
                                               )
                                             } catch {
                                               return (
-                                                <div className="mb-2 p-2 rounded bg-[#1a1a1e] border border-[#2a2a2e] max-h-[80px] overflow-hidden">
-                                                  <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{cs.toolInput.slice(0, 100)}</pre>
+                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
+                                                  <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{cs.toolInput.slice(0, 150)}</pre>
                                                 </div>
                                               )
                                             }
                                           })()}
                                         <div className="flex gap-2">
-                                          <button
-                                            data-no-drag
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'deny' }).catch(() => {})
-                                            }}
-                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
-                                          >
-                                            {t('mini.deny', '拒绝')}
-                                          </button>
-                                          <button
-                                            data-no-drag
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'allow_once' }).catch(() => {})
-                                            }}
-                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
-                                          >
-                                            {t('mini.allowOnce', '允许一次')}
-                                          </button>
-                                          <button
-                                            data-no-drag
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'allow_all' }).catch(() => {})
-                                            }}
-                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-emerald-900/50 text-emerald-300 hover:bg-emerald-800/50 transition-colors"
-                                          >
-                                            {t('mini.allowAll', '全部允许')}
-                                          </button>
-                                          <button
-                                            data-no-drag
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision: 'auto_approve' }).catch(() => {})
-                                            }}
-                                            className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-rose-900/50 text-rose-300 hover:bg-rose-800/50 transition-colors"
-                                          >
-                                            {t('mini.autoApprove', '自动批准')}
-                                          </button>
+                                          {(() => {
+                                            // Immediately clear the waiting state locally so
+                                            // the permission popup closes without waiting for
+                                            // the next 2s poll cycle.
+                                            const resolvePermission = (decision: string) => {
+                                              invoke('resolve_claude_permission', { sessionId: cs.sessionId, decision }).catch(() => {})
+                                              // Clear waiting state locally so popup disappears instantly
+                                              setClaudeSessions((prev) => prev.map((s) => (s.sessionId === cs.sessionId ? { ...s, status: 'processing', tool: undefined, toolInput: undefined } : s)))
+                                              // Collapse the panel
+                                              hoverExpandedRef.current = false
+                                              collapse()
+                                            }
+                                            if (cs.source === 'codex') {
+                                              return (
+                                                <>
+                                                  <button
+                                                    data-no-drag
+                                                    onClick={(e) => {
+                                                      e.stopPropagation()
+                                                      invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                                      hoverExpandedRef.current = false
+                                                      collapse()
+                                                    }}
+                                                    className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                                  >
+                                                    {t('mini.viewInCodex', '前往 Codex')}
+                                                  </button>
+                                                  <button
+                                                    data-no-drag
+                                                    onClick={(e) => {
+                                                      e.stopPropagation()
+                                                      hoverExpandedRef.current = false
+                                                      collapse()
+                                                    }}
+                                                    className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                                  >
+                                                    {t('mini.later', '稍后处理')}
+                                                  </button>
+                                                </>
+                                              )
+                                            }
+                                            return (
+                                              <>
+                                                <button
+                                                  data-no-drag
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    resolvePermission('deny')
+                                                  }}
+                                                  className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                                >
+                                                  {t('mini.deny', '拒绝')}
+                                                </button>
+                                                <button
+                                                  data-no-drag
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    resolvePermission('allow_once')
+                                                  }}
+                                                  className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
+                                                >
+                                                  {t('mini.allowOnce', '允许一次')}
+                                                </button>
+                                                <button
+                                                  data-no-drag
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    resolvePermission('allow_all')
+                                                  }}
+                                                  className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-emerald-900/50 text-emerald-300 hover:bg-emerald-800/50 transition-colors"
+                                                >
+                                                  {t('mini.allowAll', '全部允许')}
+                                                </button>
+                                                <button
+                                                  data-no-drag
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    resolvePermission('auto_approve')
+                                                  }}
+                                                  className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-rose-900/50 text-rose-300 hover:bg-rose-800/50 transition-colors"
+                                                >
+                                                  {t('mini.autoApprove', '自动批准')}
+                                                </button>
+                                              </>
+                                            )
+                                          })()}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {/* ── 完成提醒弹窗 (Completion Reminder) ──
+                                       任务完成且终端未激活时，显示用户问题和 AI 回复预览，
+                                       点击跳转到对应终端。
+                                       只有刚完成的 session 才展开弹窗，其余已完成的只显示标题行。 */}
+                                    {!isWaiting && !isWorking && cs.lastResponse && completionSessionId === cs.sessionId && (
+                                      <div data-no-drag className="mt-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-hidden">
+                                        <div
+                                          className="flex items-center justify-between px-3 py-2 border-b border-[#2a2a2e] cursor-pointer hover:bg-[#222226] transition-colors"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setCompletionSessionId(null)
+                                            if (cs.source === 'cursor') {
+                                              invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
+                                            } else {
+                                              invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                            }
+                                          }}
+                                        >
+                                          <span className="text-[12px] text-slate-300 truncate">
+                                            {cs.userPrompt ? (
+                                              <>
+                                                <span className="text-slate-500">{t('mini.you', '你')}：</span>
+                                                {cs.userPrompt}
+                                              </>
+                                            ) : (
+                                              <span className="text-slate-500">{t('mini.taskCompleted', 'Task completed')}</span>
+                                            )}
+                                          </span>
+                                          <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
+                                        </div>
+                                        <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin text-[12px] text-slate-400 leading-[1.6] markdown-content">
+                                          {(cs.source === 'cursor' || cs.source === 'codex') && cs.lastResponse === '✓' ? (
+                                            <p>
+                                              {cs.source === 'codex'
+                                                ? t('mini.codeDone', 'Code has finished working. Click to view.')
+                                                : t('mini.cursorDone', 'Cursor has finished working. Click to view.')}
+                                            </p>
+                                          ) : (
+                                            <ReactMarkdown>{cs.lastResponse}</ReactMarkdown>
+                                          )}
                                         </div>
                                       </div>
                                     )}
@@ -2028,31 +2910,34 @@ export default function Mini() {
                                 )
                               }
                             })
-                            if (shouldCollapse && !showIdleSessions) {
+                            if (hiddenCount > 0) {
                               elements.push(
-                                <motion.div
-                                  key="idle-toggle"
-                                  initial={{ opacity: 0 }}
-                                  animate={{ opacity: 1 }}
-                                  data-no-drag
-                                  onClick={() => setShowIdleSessions(true)}
-                                  className="flex items-center justify-center py-2.5 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                                >
-                                  <span className="text-[12px] text-slate-500">{`其余 ${idleItems.length} 个 session`}</span>
+                                <motion.div key="expand-list-btn" layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex justify-center py-2">
+                                  <button
+                                    data-no-drag
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setEffListCollapsed(false)
+                                    }}
+                                    className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors"
+                                  >
+                                    {t('mini.showMore', 'Show {{count}} more', { count: hiddenCount })}
+                                  </button>
                                 </motion.div>,
                               )
-                            }
-                            if (shouldCollapse && showIdleSessions) {
+                            } else if (!effListCollapsed && hasImportant && allItems.length > 1) {
                               elements.push(
-                                <motion.div
-                                  key="idle-collapse"
-                                  initial={{ opacity: 0 }}
-                                  animate={{ opacity: 1 }}
-                                  data-no-drag
-                                  onClick={() => setShowIdleSessions(false)}
-                                  className="flex items-center justify-center py-2 hover:bg-white/[0.04] transition-colors cursor-pointer"
-                                >
-                                  <span className="text-[12px] text-slate-500">收起</span>
+                                <motion.div key="collapse-list-btn" layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex justify-center py-2">
+                                  <button
+                                    data-no-drag
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setEffListCollapsed(true)
+                                    }}
+                                    className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors"
+                                  >
+                                    {t('mini.collapse', 'Collapse')}
+                                  </button>
                                 </motion.div>,
                               )
                             }
@@ -2206,9 +3091,11 @@ export default function Mini() {
                               data-no-drag
                               onClick={() => {
                                 if (slot.agentId.startsWith('claude:')) {
+                                  const sessionId = slot.agentId.slice('claude:'.length)
                                   setSelectedAgentId(null)
                                   setSelectedSessionKey(null)
                                   setSelectedClaudeSession(null)
+                                  setClaudeStatsSource(resolveClaudeStatsSourceBySession(sessionId))
                                   setShowClaudeStats(true)
                                 } else {
                                   setSelectedClaudeSession(null)
@@ -2260,7 +3147,15 @@ export default function Mini() {
                     <div className="p-2 bg-[#0f0f13] flex flex-col gap-0.5" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                       {allSessions.length === 0 && claudeSessions.length === 0 && !refreshingAgents && (
                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
-                          {enableClaudeCode && <p className="text-slate-500 text-sm font-medium">{t('mini.ccStartTracking')}</p>}
+                          {(() => {
+                            const targets = [
+                              ...(hasConfiguredOpenClaw ? ['OpenClaw'] : []),
+                              ...(enableClaudeCode ? ['Claude Code'] : []),
+                              ...(enableCodex ? ['Codex'] : []),
+                              ...(enableCursor ? ['Cursor'] : []),
+                            ]
+                            return targets.length > 0 ? <p className="text-slate-500 text-sm font-medium">{t('mini.startTracking', { targets: targets.join(' / ') })}</p> : null
+                          })()}
                           <button
                             data-no-drag
                             onClick={(e) => {
@@ -2283,9 +3178,16 @@ export default function Mini() {
                               active: s.active,
                               updatedAt: s.updatedAt,
                             }))
-                            const claudeUnified = claudeSessions.map((cs) => ({
+                            const filteredClaude = claudeSessions.filter((cs) => {
+                              if (cs.source === 'cursor' && !enableCursor) return false
+                              if (cs.source === 'codex' && !enableCodex) return false
+                              if (cs.source !== 'cursor' && cs.source !== 'codex' && !enableClaudeCode) return false
+                              return true
+                            })
+                            const claudeUnified = filteredClaude.map((cs, ci) => ({
                               type: 'claude' as const,
                               data: cs,
+                              claudeIdx: ci,
                               active: cs.status === 'processing' || cs.status === 'tool_running',
                               updatedAt: cs.updatedAt || 0,
                             }))
@@ -2422,10 +3324,10 @@ export default function Mini() {
                 <motion.div
                   key="oc-chat"
                   style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-                  initial={{ opacity: 0, x: 30 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -30 }}
-                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                  initial={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
+                  exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  transition={{ duration: 0.25, delay: 0.05 }}
                 >
                   {sessionMessages.length === 0 ? (
                     <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>{t('common.loading')}</div>
@@ -2438,10 +3340,10 @@ export default function Mini() {
                 <motion.div
                   key="claude-chat"
                   style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-                  initial={{ opacity: 0, x: 30 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -30 }}
-                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                  initial={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
+                  exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  transition={{ duration: 0.25, delay: 0.05 }}
                 >
                   {claudeConversation.length === 0 ? (
                     <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>{t('common.loading')}</div>
@@ -2453,23 +3355,23 @@ export default function Mini() {
                 /* ===== Claude Code stats ===== */
                 <motion.div
                   key="claude-stats"
-                  style={{ background: '#1a1a1a' }}
-                  initial={{ opacity: 0, x: 30 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -30 }}
-                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                  style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+                  initial={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
+                  exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  transition={{ duration: 0.25, delay: 0.05 }}
                 >
-                  <ClaudeStatsView />
+                  <ClaudeStatsView source={claudeStatsSource} />
                 </motion.div>
               ) : (
                 /* ===== Agent detail panel (ui-2 style) ===== */
                 <motion.div
                   key="agent-detail"
-                  style={{ background: '#1a1a1a' }}
-                  initial={{ opacity: 0, x: 30 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -30 }}
-                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                  style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+                  initial={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
+                  exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  transition={{ duration: 0.25, delay: 0.05 }}
                 >
                   <AgentDetailView agent={selectedAgent} metrics={metrics} extraInfo={extraInfo} />
                 </motion.div>
@@ -2633,28 +3535,167 @@ export default function Mini() {
                             </div>
                           </div>
                         )}
-                        {enableClaudeCode && (
-                          <div className="mb-8">
-                            <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">Claude Code</h2>
-                            <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                              <AgentAccordionItem
-                                agent={{ id: 'claude-code', identityName: 'Claude Code' }}
-                                characters={characters}
-                                currentChar={claudeCharName}
-                                isOpen={openAccordionId === 'claude-code'}
-                                onToggle={() => setOpenAccordionId(openAccordionId === 'claude-code' ? null : 'claude-code')}
-                                onOpenCreate={() => setIsCreateModalOpen(true)}
-                                onDeleteChar={handleDeleteChar}
-                                onSelect={async (charName) => {
-                                  setClaudeCharName(charName)
-                                  const store = await load('settings.json', { defaults: {}, autoSave: true })
-                                  await store.set('claude_char', charName)
-                                  await store.save()
-                                }}
-                              />
+                        <div className="mb-8">
+                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">{t('mini.charQueue', 'Agent Character Queue')}</h2>
+                          <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
+                            <div className="p-4 space-y-2">
+                              {charQueue.map((name, qi) => {
+                                const charMeta = characters.find((c) => c.name === name)
+                                const preview = charMeta ? getMiniGif(charMeta, false) : undefined
+                                return (
+                                  <div key={`${name}-${qi}`} className="flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
+                                    <span className="text-[11px] text-white/30 w-5 text-center shrink-0">{qi + 1}</span>
+                                    <div className="w-9 h-9 shrink-0 rounded-lg overflow-hidden bg-black/50 border border-white/10">
+                                      {preview ? (
+                                        <img src={preview} alt={name} className="w-full h-full object-contain opacity-90" style={{ imageRendering: 'pixelated' }} draggable={false} />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
+                                      )}
+                                    </div>
+                                    <span className="text-sm text-white/80 truncate flex-1">{charMeta?.builtin ? t(`charNames.${name}`, name) : name}</span>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <button
+                                        onClick={() => {
+                                          if (qi === 0) return
+                                          const q = [...charQueue]
+                                          ;[q[qi - 1], q[qi]] = [q[qi], q[qi - 1]]
+                                          saveCharQueue(q)
+                                        }}
+                                        disabled={qi === 0}
+                                        className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
+                                      >
+                                        <ChevronUp className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          if (qi === charQueue.length - 1) return
+                                          const q = [...charQueue]
+                                          ;[q[qi], q[qi + 1]] = [q[qi + 1], q[qi]]
+                                          saveCharQueue(q)
+                                        }}
+                                        disabled={qi === charQueue.length - 1}
+                                        className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
+                                      >
+                                        <ChevronDown className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          if (charQueue.length <= 1) return
+                                          saveCharQueue(charQueue.filter((_, j) => j !== qi))
+                                        }}
+                                        disabled={charQueue.length <= 1}
+                                        className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed ml-1"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                              <button
+                                onClick={() => setQueuePickerOpen(!queuePickerOpen)}
+                                className="flex items-center gap-2 w-full p-2.5 rounded-xl border border-dashed border-white/10 text-white/40 hover:text-white/70 hover:border-white/20 hover:bg-white/[0.02] transition-colors"
+                              >
+                                <Plus className="w-4 h-4" />
+                                <span className="text-sm">{t('mini.addChar', 'Add Character')}</span>
+                              </button>
+                              <AnimatePresence>
+                                {queuePickerOpen && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+                                    className="overflow-hidden"
+                                  >
+                                    <div className="pt-2 border-t border-white/5">
+                                      <div className="flex items-center justify-between mb-2">
+                                        <span className="text-[11px] text-white/30">{t('mini.selectToAdd', 'Select a character to add')}</span>
+                                        <button
+                                          onClick={() => setIsCreateModalOpen(true)}
+                                          className="flex items-center justify-center w-6 h-6 rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+                                          title={t('mini.createChar')}
+                                        >
+                                          <Plus className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                      <div className="max-h-[220px] overflow-y-auto pr-1 scrollbar-white">
+                                        {(() => {
+                                          const charsWithMini = characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0)
+                                          const groups: { ip: string; chars: typeof charsWithMini }[] = []
+                                          const ipOrder: string[] = []
+                                          for (const c of charsWithMini) {
+                                            const ip = c.ip || '自定义'
+                                            if (!ipOrder.includes(ip)) ipOrder.push(ip)
+                                          }
+                                          const customIdx = ipOrder.indexOf('自定义')
+                                          if (customIdx > 0) {
+                                            ipOrder.splice(customIdx, 1)
+                                            ipOrder.unshift('自定义')
+                                          }
+                                          const otherIdx = ipOrder.indexOf('其他')
+                                          if (otherIdx >= 0 && otherIdx < ipOrder.length - 1) {
+                                            ipOrder.splice(otherIdx, 1)
+                                            ipOrder.push('其他')
+                                          }
+                                          for (const ip of ipOrder) {
+                                            groups.push({ ip, chars: charsWithMini.filter((c) => (c.ip || '自定义') === ip) })
+                                          }
+                                          return groups.map(({ ip, chars }) => (
+                                            <div key={ip} className="mb-3 last:mb-0">
+                                              <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">
+                                                {ip === '自定义'
+                                                  ? t('mini.custom')
+                                                  : ip === '其他'
+                                                    ? t('mini.other')
+                                                    : ip === '原神'
+                                                      ? t('mini.ipGenshin')
+                                                      : ip === '赛马娘'
+                                                        ? t('mini.ipUmaMusume')
+                                                        : ip}
+                                              </div>
+                                              <div className="grid grid-cols-3 gap-2">
+                                                {chars.map((c) => {
+                                                  const cPreview = getMiniGif(c, false)
+                                                  return (
+                                                    <div
+                                                      key={c.name}
+                                                      onClick={() => {
+                                                        saveCharQueue([...charQueue, c.name])
+                                                        setQueuePickerOpen(false)
+                                                      }}
+                                                      className="flex items-center gap-2 p-2 rounded-lg bg-white/5 border border-transparent hover:bg-white/10 hover:border-white/10 cursor-pointer transition-all"
+                                                    >
+                                                      <div className="w-8 h-8 shrink-0 rounded-md overflow-hidden bg-black/50 border border-white/10">
+                                                        {cPreview ? (
+                                                          <img
+                                                            src={cPreview}
+                                                            alt={c.name}
+                                                            className="w-full h-full object-contain opacity-90"
+                                                            style={{ imageRendering: 'pixelated' }}
+                                                            draggable={false}
+                                                          />
+                                                        ) : (
+                                                          <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
+                                                        )}
+                                                      </div>
+                                                      <span className="text-xs text-white/70 truncate">{c.builtin ? t(`charNames.${c.name}`, c.name) : c.name}</span>
+                                                    </div>
+                                                  )
+                                                })}
+                                              </div>
+                                            </div>
+                                          ))
+                                        })()}
+                                      </div>
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                              <p className="text-[11px] text-white/20 px-1 pt-1">{t('mini.queueHint', 'Characters rotate across sessions in queue order.')}</p>
                             </div>
                           </div>
-                        )}
+                        </div>
                         {agents.length > 0 && characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0).length < agents.length && (
                           <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">{t('mini.notEnoughChars')}</div>
                         )}
@@ -2678,11 +3719,39 @@ export default function Mini() {
                           await store.set('notify_sound', v)
                           await store.save()
                         }}
+                        soundEnabled={soundEnabled}
+                        onToggleSoundEnabled={async (v) => {
+                          setSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('sound_enabled', v)
+                          await store.save()
+                        }}
+                        codexSoundEnabled={codexSoundEnabled}
+                        onToggleCodexSoundEnabled={async (v) => {
+                          setCodexSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('codex_sound_enabled', v)
+                          await store.save()
+                        }}
+                        cursorSoundEnabled={cursorSoundEnabled}
+                        onToggleCursorSoundEnabled={async (v) => {
+                          setCursorSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('cursor_sound_enabled', v)
+                          await store.save()
+                        }}
                         waitingSound={waitingSound}
                         onToggleWaitingSound={async (v) => {
                           setWaitingSound(v)
                           const store = await getStore()
                           await store.set('waiting_sound', v)
+                          await store.save()
+                        }}
+                        autoCloseCompletion={autoCloseCompletion}
+                        onToggleAutoCloseCompletion={async (v) => {
+                          setAutoCloseCompletion(v)
+                          const store = await getStore()
+                          await store.set('auto_close_completion', v)
                           await store.save()
                         }}
                         mascotPosition={mascotPosition}
@@ -2705,6 +3774,13 @@ export default function Mini() {
                           setBgPos(v)
                           const store = await getStore()
                           await store.set('island_bg_pos', v)
+                          await store.save()
+                        }}
+                        panelMaxHeight={panelMaxHeight}
+                        onChangePanelMaxHeight={async (v) => {
+                          setPanelMaxHeight(v)
+                          const store = await getStore()
+                          await store.set('panel_max_height', v)
                           await store.save()
                         }}
                       />
@@ -2752,6 +3828,18 @@ export default function Mini() {
           </>
         )}
       </AnimatePresence>
+
+      <UpdateModal
+        open={updateModalOpen}
+        phase={updateModalPhase}
+        info={updateModalInfo}
+        progress={updateModalProgress}
+        progressStage={updateModalProgressStage}
+        onLater={closeUpdateModal}
+        onSkipVersion={skipCurrentUpdateVersion}
+        onUpdateNow={runUpdateFromModal}
+        onRestartNow={restartFromModal}
+      />
 
       <CreateCharacterModal
         isOpen={isCreateModalOpen}

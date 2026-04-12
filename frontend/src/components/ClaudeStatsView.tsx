@@ -27,6 +27,7 @@ interface ClaudeStats {
 }
 
 type ChartMetric = 'tokens' | 'messages'
+type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
 
 function DailyChart({ stats }: { stats: DailyStats[] }) {
   const { t } = useTranslation()
@@ -106,17 +107,18 @@ function DailyChart({ stats }: { stats: DailyStats[] }) {
   )
 }
 
-export function ClaudeStatsView() {
+export function ClaudeStatsView({ source = 'cc' }: { source?: ClaudeStatsSource }) {
   const { t } = useTranslation()
   const [stats, setStats] = useState<ClaudeStats | null>(null)
 
   useEffect(() => {
-    invoke('get_claude_stats').then((s: any) => setStats(s)).catch(() => {})
-  }, [])
+    setStats(null)
+    invoke('get_claude_stats', { source }).then((s: any) => setStats(s)).catch(() => {})
+  }, [source])
 
   if (!stats) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 gap-3">
+      <div className="flex-1 min-h-0 flex flex-col items-center justify-center py-24 gap-3">
         <motion.div
           animate={{ rotate: 360 }}
           transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
@@ -131,13 +133,18 @@ export function ClaudeStatsView() {
   }
 
   const totalTokens = stats.totalInputTokens + stats.totalOutputTokens + stats.totalCacheReadTokens + stats.totalCacheWriteTokens
+  const titleKey = source === 'cursor'
+    ? 'claudeStats.titleCursor'
+    : source === 'codex'
+      ? 'claudeStats.titleCodex'
+      : 'claudeStats.title'
 
   return (
-    <div className="px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin" style={{ maxHeight: 'calc(400px - 44px)' }}>
+    <div className="flex-1 min-h-0 px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex flex-col">
-          <h1 className="text-lg font-semibold text-white tracking-tight">{t('claudeStats.title')}</h1>
+          <h1 className="text-lg font-semibold text-white tracking-tight">{t(titleKey)}</h1>
         </div>
         <span className="text-xs text-white/40">{t('claudeStats.last14Days')}</span>
       </div>

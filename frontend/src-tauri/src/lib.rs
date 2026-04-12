@@ -7,6 +7,25 @@ use std::time::SystemTime;
 #[cfg(target_os = "windows")]
 static FULLSCREEN_HIDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use percent_encoding::percent_decode_str;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether the efficiency-mode notch hover tracking thread should be running.
+static EFFICIENCY_HOVER_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the hover poll thread is actually alive (set true on entry, false on exit).
+static EFFICIENCY_HOVER_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the mini panel is currently expanded (used by the hover poll to
+/// decide which detection region to check — collapsed notch area vs expanded
+/// panel area).
+static EFFICIENCY_EXPANDED: AtomicBool = AtomicBool::new(false);
+/// Cached screen geometry for the notch hover poll thread so it doesn't need
+/// to access NSWindow from a background thread.
+/// (screen_x, screen_y, screen_width, screen_height, notch_offset)
+static NOTCH_SCREEN_INFO: Mutex<Option<(f64, f64, f64, f64, f64)>> = Mutex::new(None);
+/// Cached mini window frame (x, y, w, h) in macOS screen coordinates
+/// (bottom-left origin).  Updated by `set_mini_expanded` and
+/// `resize_mini_height` so the hover poll can use the real frame size
+/// instead of hard-coded constants.
+static MINI_WINDOW_FRAME: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
 
 /// Per-host SSH backoff state.
 struct SshBackoffState {
@@ -3217,14 +3236,37 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
     {
         let win_clone = win.clone();
         app.run_on_main_thread(move || {
-            use objc2::runtime::AnyObject;
+            use objc2::runtime::{AnyClass, AnyObject};
             use objc2::msg_send;
             use objc2_foundation::{NSRect, NSPoint, NSSize};
             if let Ok(ns_win) = win_clone.ns_window() {
                 let obj = unsafe { &*(ns_win as *mut AnyObject) };
                 let frame: NSRect = unsafe { msg_send![obj, frame] };
+                let screen_frame: NSRect = unsafe {
+                    let screen: *mut AnyObject = msg_send![obj, screen];
+                    if screen.is_null() {
+                        let cls = match AnyClass::get(c"NSScreen") {
+                            Some(c) => c,
+                            None => return,
+                        };
+                        let main_screen: *mut AnyObject = msg_send![cls, mainScreen];
+                        if main_screen.is_null() {
+                            return;
+                        }
+                        msg_send![&*main_screen, frame]
+                    } else {
+                        msg_send![&*screen, frame]
+                    }
+                };
+
+                let min_x = screen_frame.origin.x;
+                let max_x = (screen_frame.origin.x + screen_frame.size.width - frame.size.width).max(min_x);
+                let min_y = screen_frame.origin.y;
+                let max_y = (screen_frame.origin.y + screen_frame.size.height - frame.size.height).max(min_y);
+                let clamped_x = x.max(min_x).min(max_x);
+                let clamped_y = y.max(min_y).min(max_y);
                 let new_frame = NSRect::new(
-                    NSPoint::new(x, y),
+                    NSPoint::new(clamped_x, clamped_y),
                     NSSize::new(frame.size.width, frame.size.height),
                 );
                 unsafe {
@@ -3240,10 +3282,17 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
     Ok(())
 }
 
+/// Kept as a compatibility no-op while macOS IME handling is fixed directly on
+/// the underlying Wry webview class.
+#[tauri::command]
+async fn set_ime_mode(_app: tauri::AppHandle, _active: bool) -> Result<(), String> {
+    Ok(())
+}
+
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
-async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>) -> Result<(), String> {
+async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>, max_height: Option<f64>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
 
@@ -3278,36 +3327,44 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 };
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
+                    // Cache screen geometry for the efficiency hover poll thread.
+                    if let Ok(mut info) = NOTCH_SCREEN_INFO.lock() {
+                        *info = Some((sx, sy, sw, sh, notch_off));
+                    }
+                    EFFICIENCY_EXPANDED.store(expanded, Ordering::SeqCst);
+
                     unsafe {
                         let _: () = msg_send![obj, setLevel: 27isize];
                     }
-                    if expanded {
-                        let win_w = 500.0;
-                        let win_h = 400.0;
+                    let (final_x, final_y, final_w, final_h) = if expanded {
+                        let win_w = if efficiency.unwrap_or(false) { 600.0 } else { 500.0 };
+                        let win_h = max_height.unwrap_or(350.0).max(200.0).min(500.0);
                         let x = sx + (sw - win_w) / 2.0;
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                            let ns_app_cls = AnyClass::get(c"NSApplication").unwrap();
+                            let ns_app: *mut AnyObject = msg_send![ns_app_cls, sharedApplication];
+                            let _: () = msg_send![&*ns_app, activateIgnoringOtherApps: true];
+                            let null: *mut AnyObject = std::ptr::null_mut();
+                            let _: () = msg_send![obj, makeKeyAndOrderFront: null];
                         }
+                        (x, y, win_w, win_h)
                     } else {
-                        let is_efficiency = efficiency.unwrap_or(false);
-                        let (win_w, win_h, x) = if is_efficiency {
-                            let w = notch_off * 2.0 + 20.0;
-                            let h = 50.0;
-                            let x = sx + (sw - w) / 2.0;
-                            (w, h, x)
-                        } else {
-                            let w = 60.0;
-                            let h = 45.0;
-                            let x = collapsed_x(sx, sw, w, &pos, notch_off);
-                            (w, h, x)
-                        };
+                        let win_w = 60.0;
+                        let win_h = 45.0;
+                        let x = collapsed_x(sx, sw, win_w, &pos, notch_off);
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
                         }
+                        (x, y, win_w, win_h)
+                    };
+                    // Cache the real window frame for the hover poll thread.
+                    if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                        *f = Some((final_x, final_y, final_w, final_h));
                     }
                 }
             }
@@ -3326,7 +3383,8 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
             let sw = monitor.size().width as f64 / scale;
             let ui = win_ui_scale(&monitor);
             if expanded {
-                let win_w = (500.0 * ui).round();
+                let base_w = if efficiency.unwrap_or(false) { 600.0 } else { 500.0 };
+                let win_w = (base_w * ui).round();
                 let win_h = (400.0 * ui).round();
                 let x = mx + (sw - win_w) / 2.0;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
@@ -3348,20 +3406,114 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
     Ok(())
 }
 
+/// Start or stop cursor-position polling for efficiency-mode hover detection.
+///
+/// On macOS the mini window sits in the menu-bar / notch area. The system
+/// menu bar intercepts mouse-move events, so the webview never receives
+/// `mouseenter` / `mouseleave` DOM events there.  This command spawns a
+/// lightweight background thread (50 ms poll) that reads `NSEvent.mouseLocation`
+/// and compares it against the notch region (collapsed) or the panel region
+/// (expanded).  It emits `"efficiency-hover"` events (`true` = entered,
+/// `false` = left) so the frontend can open / close the panel.
+#[tauri::command]
+async fn set_efficiency_hover_tracking(app: tauri::AppHandle, active: bool) -> Result<(), String> {
+    EFFICIENCY_HOVER_ACTIVE.store(active, Ordering::SeqCst);
+    if active && !EFFICIENCY_HOVER_THREAD_ALIVE.load(Ordering::SeqCst) {
+        let app2 = app.clone();
+        std::thread::spawn(move || efficiency_hover_poll(app2));
+    }
+    Ok(())
+}
+
+/// Background polling loop for efficiency-mode hover.
+/// Checks the cursor position against two regions:
+///  - **Collapsed**: a wide strip around the notch (notch_off*2 + 200 px,
+///    50 px tall at the top of the screen) — much wider than the actual
+///    window so the user can approach from either side.
+///  - **Expanded**: the panel area (500 × 400 px, top-center).
+fn efficiency_hover_poll(app: tauri::AppHandle) {
+    use std::time::{Duration, Instant};
+    EFFICIENCY_HOVER_THREAD_ALIVE.store(true, Ordering::SeqCst);
+    let mut was_inside = false;
+    let mut last_enter_emit = Instant::now();
+    while EFFICIENCY_HOVER_ACTIVE.load(Ordering::SeqCst) {
+        let info = NOTCH_SCREEN_INFO.lock().ok().and_then(|g| *g);
+        if let Some((sx, sy, sw, sh, notch_off)) = info {
+            let cursor = macos_cursor_position();
+            let is_expanded = EFFICIENCY_EXPANDED.load(Ordering::SeqCst);
+
+            let inside = if is_expanded {
+                // Exact window frame — close as soon as cursor leaves the panel.
+                if let Some((fx, fy, fw, fh)) = MINI_WINDOW_FRAME.lock().ok().and_then(|g| *g) {
+                    cursor.0 >= fx && cursor.0 <= fx + fw
+                        && cursor.1 >= fy && cursor.1 <= fy + fh
+                } else {
+                    false
+                }
+            } else {
+                // When collapsed, use a generous strip across the notch so the
+                // user can hover from either side of the menu bar.
+                let rw = notch_off * 2.0 + 60.0;
+                let rh = 50.0;
+                let rx = sx + (sw - rw) / 2.0;
+                let ry = sy + sh - rh;
+                cursor.0 >= rx && cursor.0 <= rx + rw
+                    && cursor.1 >= ry && cursor.1 <= ry + rh
+            };
+
+            if inside && !was_inside {
+                let _ = app.emit("efficiency-hover", true);
+                last_enter_emit = Instant::now();
+            } else if inside && was_inside && last_enter_emit.elapsed() > Duration::from_millis(300) {
+                // Re-announce so the frontend can act after a collapse transition clears.
+                let _ = app.emit("efficiency-hover", true);
+                last_enter_emit = Instant::now();
+            } else if !inside && was_inside {
+                let _ = app.emit("efficiency-hover", false);
+            }
+            was_inside = inside;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    EFFICIENCY_HOVER_THREAD_ALIVE.store(false, Ordering::SeqCst);
+}
+
+/// Read the current mouse cursor position via `[NSEvent mouseLocation]`.
+/// Returns (x, y) in macOS screen coordinates (bottom-left origin).
+#[cfg(target_os = "macos")]
+fn macos_cursor_position() -> (f64, f64) {
+    unsafe {
+        use objc2::msg_send;
+        use objc2_foundation::NSPoint;
+        if let Some(cls) = objc2::runtime::AnyClass::get(c"NSEvent") {
+            let loc: NSPoint = msg_send![cls, mouseLocation];
+            (loc.x, loc.y)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_cursor_position() -> (f64, f64) {
+    (0.0, 0.0)
+}
+
 /// Resize the expanded mini window height while keeping it top-aligned.
 /// macOS: bottom-left origin, so adjust y to keep bottom aligned.
 /// Windows: top-left origin, so just resize height.
 #[tauri::command]
-async fn resize_mini_height(app: tauri::AppHandle, height: f64) -> Result<(), String> {
+async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Option<f64>, animate: Option<bool>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
+    let limit = max_height.unwrap_or(350.0).max(200.0).min(2000.0);
     // Scale height limits on Windows to match DPI-aware window sizes
     #[cfg(target_os = "windows")]
     let h = {
         let ui = if let Ok(Some(m)) = win.current_monitor() { win_ui_scale(&m) } else { 1.0 };
-        (height * ui).round().max(45.0 * ui).min(400.0 * ui)
+        (height * ui).round().max(45.0 * ui).min(limit * ui)
     };
     #[cfg(not(target_os = "windows"))]
-    let h = height.max(45.0).min(400.0);
+    let h = height.max(45.0).min(limit);
 
     #[cfg(target_os = "macos")]
     {
@@ -3382,12 +3534,18 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64) -> Result<(), St
                 } else { screen };
                 let sf: NSRect = unsafe { msg_send![&*screen_ptr, frame] };
                 let cur: NSRect = unsafe { msg_send![obj, frame] };
+                let capped_h = h.min((sf.size.height * 0.75).max(200.0));
+                let new_y = sf.origin.y + sf.size.height - capped_h;
                 let new_frame = NSRect::new(
-                    NSPoint::new(cur.origin.x, sf.origin.y + sf.size.height - h),
-                    NSSize::new(cur.size.width, h),
+                    NSPoint::new(cur.origin.x, new_y),
+                    NSSize::new(cur.size.width, capped_h),
                 );
                 unsafe {
-                    let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: false];
+                    let do_animate: bool = animate.unwrap_or(false);
+                    let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: do_animate];
+                }
+                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                    *f = Some((cur.origin.x, new_y, cur.size.width, capped_h));
                 }
             }
         }).map_err(|e| e.to_string())?;
@@ -3406,11 +3564,17 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64) -> Result<(), St
 }
 
 /// Resize the mini window to 3/4 of screen, centered, with normal window level.
-/// Used for settings panel mode. Pass `restore: true` to go back to mini mode.
+/// Used for settings/update modal mode. Pass `restore: true` to go back to mini mode.
 #[tauri::command]
-async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<String>) -> Result<(), String> {
+async fn set_mini_size(
+    app: tauri::AppHandle,
+    restore: bool,
+    position: Option<String>,
+    keep_on_top: Option<bool>,
+) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
+    let want_top = keep_on_top.unwrap_or(restore);
 
     #[cfg(target_os = "macos")]
     {
@@ -3443,6 +3607,11 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                 };
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
+                    // Keep the hover poll's screen geometry cache fresh even when
+                    // the mini window is temporarily resized into settings/update mode.
+                    if let Ok(mut info) = NOTCH_SCREEN_INFO.lock() {
+                        *info = Some((sx, sy, sw, sh, notch_off));
+                    }
                     if restore {
                         let win_w = 60.0;
                         let win_h = 45.0;
@@ -3450,9 +3619,18 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
-                            let _: () = msg_send![obj, setLevel: 27isize];
+                            let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
-                            let _: () = msg_send![obj, orderFrontRegardless];
+                            if want_top {
+                                let _: () = msg_send![obj, orderFrontRegardless];
+                            }
+                        }
+                        // Restoring from settings/update mode returns the widget to
+                        // the collapsed notch state, so the hover poll must switch
+                        // back to collapsed-region detection immediately.
+                        EFFICIENCY_EXPANDED.store(false, Ordering::SeqCst);
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((x, y, win_w, win_h));
                         }
                     } else {
                         let win_w = (sw * 0.85).round();
@@ -3461,8 +3639,18 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
-                            let _: () = msg_send![obj, setLevel: 0isize];
+                            let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                            if want_top {
+                                let _: () = msg_send![obj, orderFrontRegardless];
+                            }
+                        }
+                        // Settings/update mode is not the normal expanded panel.
+                        // Clear the expanded hover state so a stale panel frame does
+                        // not survive after the window is later restored.
+                        EFFICIENCY_EXPANDED.store(false, Ordering::SeqCst);
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((x, y, win_w, win_h));
                         }
                     }
                 }
@@ -3486,15 +3674,13 @@ async fn set_mini_size(app: tauri::AppHandle, restore: bool, position: Option<St
                 let notch_off = (80.0 * ui).round();
                 let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
-                    let _ = win.set_always_on_top(true);
-                }
+                let _ = win.set_always_on_top(want_top && !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst));
                 let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             } else {
                 let win_w = (sw * 0.85).round();
                 let win_h = (sh * 0.85).round();
                 let x = mx + (sw - win_w) / 2.0;
-                let _ = win.set_always_on_top(false);
+                let _ = win.set_always_on_top(want_top && !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst));
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
                 let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             }
@@ -4360,6 +4546,43 @@ pub struct ClaudeSession {
     /// Raw permission_suggestions JSON from the PermissionRequest hook event.
     #[serde(rename = "permissionSuggestions", skip_serializing_if = "Option::is_none")]
     pub permission_suggestions: Option<serde_json::Value>,
+    /// AI's last response text (truncated), forwarded from the Stop hook event.
+    /// Shown in the efficiency-mode completion reminder popup.
+    #[serde(rename = "lastResponse", skip_serializing_if = "Option::is_none")]
+    pub last_response: Option<String>,
+    /// Whether this session's terminal tab is currently the active/focused tab.
+    /// Set dynamically in `get_claude_sessions` — not persisted.
+    #[serde(rename = "isActiveTab")]
+    pub is_active_tab: bool,
+    /// Source of this session: "cc" (Claude Code), "codex" (Codex), or "cursor" (Cursor IDE).
+    pub source: String,
+    /// Ghostty terminal `id` captured when the session is first seen.
+    /// Used by `jump_to_claude_terminal` to select the exact tab instead
+    /// of relying on CWD/title matching which is ambiguous.
+    #[serde(skip)]
+    pub terminal_id: Option<String>,
+    /// Host terminal app name (e.g. "Ghostty", "Cursor", "iTerm2").
+    /// Captured once at session creation via process chain walk.
+    #[serde(skip)]
+    pub host_terminal: Option<String>,
+    /// Bound Cursor extension port for this session.
+    /// Unlike `pid`, this is stable for the lifetime of a Cursor window.
+    /// We resolve it from the session cwd/workspace and reuse it on click.
+    #[serde(skip)]
+    pub cursor_port: Option<u16>,
+    /// Workspace root matched to the bound Cursor window.
+    /// Stored so we can revalidate the binding when the session cwd changes.
+    #[serde(skip)]
+    pub cursor_workspace_root: Option<String>,
+    /// Human-readable workspace name reported by the Cursor extension.
+    /// Used to raise the correct Cursor window on macOS before focusing content.
+    #[serde(skip)]
+    pub cursor_workspace_name: Option<String>,
+    /// Native window handle (hex string) from the Cursor extension.
+    /// Uniquely identifies a Cursor window even when multiple windows
+    /// share the same workspace root.
+    #[serde(skip)]
+    pub cursor_native_handle: Option<String>,
 }
 
 type PendingPermissions = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>;
@@ -4367,6 +4590,27 @@ type PendingPermissions = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Stri
 struct ClaudeState {
     sessions: Arc<Mutex<HashMap<String, ClaudeSession>>>,
     pending_permissions: PendingPermissions,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CursorWindowMeta {
+    port: u16,
+    #[serde(default)]
+    focused: bool,
+    #[serde(default, rename = "workspaceName")]
+    workspace_name: String,
+    #[serde(default, rename = "workspaceRoots")]
+    workspace_roots: Vec<String>,
+    #[serde(default, rename = "nativeHandle")]
+    native_handle: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CursorWindowBinding {
+    port: u16,
+    workspace_root: String,
+    workspace_name: String,
+    native_handle: Option<String>,
 }
 
 /// Compute the JSONL session file path (matching notchi's ConversationParser.sessionFilePath)
@@ -4382,25 +4626,170 @@ fn claude_session_file_path(session_id: &str, cwd: &str) -> PathBuf {
     home.join(".claude").join("projects").join(project_dir).join(format!("{}.jsonl", session_id))
 }
 
+fn collect_jsonl_files_recursive(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if !root.exists() {
+        return out;
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let claude_projects = home.join(".claude").join("projects");
+    if !claude_projects.exists() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if let Ok(project_dirs) = std::fs::read_dir(claude_projects) {
+        for project_entry in project_dirs.flatten() {
+            let project_dir = project_entry.path();
+            if !project_dir.is_dir() {
+                continue;
+            }
+            if let Ok(files) = std::fs::read_dir(project_dir) {
+                for file_entry in files.flatten() {
+                    let path = file_entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_codex_session_jsonl_files() -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let codex_sessions = home.join(".Codex").join("sessions");
+    collect_jsonl_files_recursive(&codex_sessions)
+}
+
+fn find_claude_session_file(session_id: &str) -> Option<PathBuf> {
+    let target = format!("{}.jsonl", session_id);
+    for path in collect_claude_project_jsonl_files() {
+        if path.file_name().and_then(|n| n.to_str()) == Some(target.as_str()) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn find_codex_session_file(session_id: &str) -> Option<PathBuf> {
+    // Codex stores sessions as:
+    //   ~/.Codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl
+    // so we cannot derive the path from cwd; we must scan for a filename
+    // containing the session id.
+    for path in collect_codex_session_jsonl_files() {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".jsonl") && name.contains(session_id) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn resolve_session_jsonl_path(session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
+    // Prefer Claude's deterministic path when cwd is known, then fall back to
+    // directory scans. This keeps existing behavior fast while adding Codex
+    // compatibility.
+    if let Some(cwd_str) = cwd {
+        if !cwd_str.is_empty() {
+            let by_cwd = claude_session_file_path(session_id, cwd_str);
+            if by_cwd.exists() {
+                return Some(by_cwd);
+            }
+        }
+    }
+    find_claude_session_file(session_id).or_else(|| find_codex_session_file(session_id))
+}
+
 /// Check if a JSONL file indicates an interrupted session
 fn check_interrupted(path: &std::path::Path) -> bool {
     if let Ok(content) = std::fs::read_to_string(path) {
-        // Find the LAST user-type line and check only that one for the
-        // interruption marker. Previous versions checked any of the last 20
-        // lines, which meant an old ESC interruption marker would persist
-        // even after the user submitted a new prompt — the file watcher
-        // would keep resetting "processing"/"tool_running" → "stopped",
-        // fighting with the hook events that correctly set the status.
-        for line in content.lines().rev().take(50) {
+        // Determine interruption from the latest meaningful event.
+        // This supports both Claude and Codex transcript formats.
+        for line in content.lines().rev().take(120) {
+            // Codex: explicit turn abort marker.
+            if line.contains("\"type\":\"event_msg\"") && line.contains("\"type\":\"turn_aborted\"") {
+                return true;
+            }
+            // Codex: tool call rejected by user (skip/deny).
+            if line.contains("\"type\":\"function_call_output\"") {
+                if line.contains("rejected by user")
+                    || line.contains("Rejected(\\\"rejected by user\\\")")
+                {
+                    return true;
+                }
+                // A non-rejection function output means older interruption markers
+                // no longer represent current state.
+                return false;
+            }
+            // Any newer user message supersedes older interruption markers.
+            if line.contains("\"type\":\"event_msg\"") && line.contains("\"type\":\"user_message\"") {
+                return false;
+            }
             if line.contains("\"type\":\"user\"") {
-                // This is the most recent user message in the file.
-                // Only consider the session interrupted if THIS message
-                // is the interruption marker, not an earlier one.
-                return line.contains("[Request interrupted by user");
+                return line.contains("[Request interrupted by user")
+                    || line.contains("<turn_aborted>");
             }
         }
     }
     false
+}
+
+/// Determine whether a Stop event represents a user-aborted turn rather than a
+/// normal completion. Cursor stop hooks expose a completion status, while some
+/// clients only reveal the interruption via transcript markers.
+fn stop_event_was_interrupted(event: &serde_json::Value, session_source: &str, claude_status: &str) -> bool {
+    let status = claude_status.trim().to_ascii_lowercase();
+    if session_source == "cursor" {
+        if status == "completed" {
+            return false;
+        }
+        if matches!(status.as_str(), "interrupted" | "cancelled" | "canceled" | "aborted" | "stopped") {
+            return true;
+        }
+    }
+
+    let stop_message = event.get("lastResponse")
+        .or_else(|| event.get("last_assistant_message"))
+        .or_else(|| event.get("codex_last_assistant_message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if stop_message.contains("[Request interrupted by user")
+        || stop_message.contains("<turn_aborted>")
+        || stop_message.contains("turn_aborted")
+        || stop_message.contains("rejected by user")
+    {
+        return true;
+    }
+
+    event.get("transcript_path")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty())
+        .map(|p| check_interrupted(std::path::Path::new(p)))
+        .unwrap_or(false)
 }
 
 // --- Session File Watcher (matching notchi's NotchiStateMachine) ---
@@ -4456,12 +4845,15 @@ fn start_session_file_watcher(
 
                 let mut changed = false;
 
-                // Interruption detection: working but file shows interrupted
-                if session.status == "processing" || session.status == "tool_running" {
+                // Interruption detection: active/waiting but file shows interrupted
+                if matches!(session.status.as_str(), "processing" | "tool_running" | "waiting") {
                     if check_interrupted(&path2) {
                         log::info!("File watcher: interrupted session {}", sid2);
                         session.status = "stopped".to_string();
                         session.is_processing = false;
+                        session.tool = None;
+                        session.tool_input = None;
+                        session.permission_suggestions = None;
                         changed = true;
                     }
                 }
@@ -4524,6 +4916,90 @@ fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+/// Get the terminal ID of Ghostty's currently focused tab, if Ghostty is frontmost.
+/// Returns None if Ghostty is not running or not frontmost.
+#[cfg(target_os = "macos")]
+fn get_active_ghostty_terminal_id() -> Option<String> {
+    let script = r#"
+        if not (application "Ghostty" is running) then return ""
+        tell application "System Events"
+            set fp to name of first application process whose frontmost is true
+        end tell
+        if fp is not "Ghostty" then return ""
+        tell application "Ghostty"
+            try
+                return id of first terminal of selected tab of front window as text
+            end try
+        end tell
+        return ""
+    "#;
+    let output = std::process::Command::new("osascript")
+        .arg("-e").arg(script)
+        .output().ok()?;
+    let tid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if tid.is_empty() { None } else { Some(tid) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_active_ghostty_terminal_id() -> Option<String> { None }
+
+/// Returns the short name of the frontmost application (macOS only).
+/// Used to suppress completion popups when the user is already looking
+/// at the relevant app (Cursor, Codex, etc.).
+#[cfg(target_os = "macos")]
+fn get_frontmost_app_name() -> String {
+    let script = r#"
+        set appName to short name of (info for (path to frontmost application))
+        return appName
+    "#;
+    let output = std::process::Command::new("osascript")
+        .arg("-e").arg(script)
+        .output();
+    match output {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_frontmost_app_name() -> String { String::new() }
+
+fn is_cursor_frontmost_app(name: &str) -> bool {
+    name == "Cursor" || name == "oc-claw"
+}
+
+fn is_codex_frontmost_app(name: &str) -> bool {
+    if name == "oc-claw" || name == "Code" || name == "Visual Studio Code" {
+        return true;
+    }
+    let lowered = name.to_ascii_lowercase();
+    lowered == "codex" || lowered.contains("codex")
+}
+
+fn is_codex_host_terminal(name: &str) -> bool {
+    name == "Code" || name == "Visual Studio Code" || name.eq_ignore_ascii_case("codex")
+}
+
+/// Check if the frontmost app matches the host terminal name.
+/// `host_terminal` comes from process-chain detection (e.g. "Terminal",
+/// "iTerm2", "Warp") while `frontmost` is the short app name from
+/// NSWorkspace (e.g. "Terminal", "iTerm2", "Warp").
+/// Also handles "oc-claw" (our own panel can steal focus).
+fn frontmost_matches_host_terminal(frontmost: &str, host_terminal: &str) -> bool {
+    if frontmost == "oc-claw" {
+        return true;
+    }
+    if frontmost.eq_ignore_ascii_case(host_terminal) {
+        return true;
+    }
+    // macOS Terminal.app reports as "Terminal" in both NSWorkspace and ps
+    if host_terminal == "Apple_Terminal" && frontmost == "Terminal" {
+        return true;
+    }
+    false
+}
+
+
 #[tauri::command]
 async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec<ClaudeSession>, String> {
     // Stale session guard: if the CC process was killed (Ctrl+C / SIGKILL)
@@ -4531,19 +5007,41 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     // processing, tool_running, compacting) would get stuck forever.
     // Check PID liveness for all non-terminal statuses and clear to "stopped".
     // Uses per-session PID tracking + kill(pid, 0) — a zero-cost syscall.
+    //
+    // Cursor sessions use a different strategy: Cursor's hook processes are
+    // short-lived (one per event), so $PPID dies immediately after each hook.
+    // Instead of PID-alive checks, use a timeout: if no event arrives within
+    // 120s, assume Cursor has stopped working.
     {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         for session in sessions.values_mut() {
             let dominated = matches!(session.status.as_str(),
                 "waiting" | "processing" | "tool_running" | "compacting");
-            if dominated {
+            if !dominated { continue; }
+
+            if session.source == "cursor" || session.source == "codex" {
+                // Cursor/Codex: timeout-based staleness (120s without any event update).
+                // Hook PPIDs are not always stable enough for PID-alive checks.
+                let age_ms = now_ms.saturating_sub(session.updated_at);
+                if age_ms > 120_000 {
+                    log::info!(
+                        "[get_claude_sessions] {} session {} stale ({}ms since last event), clearing {}",
+                        session.source,
+                        session.session_id,
+                        age_ms,
+                        session.status
+                    );
+                    session.status = "stopped".to_string();
+                    session.pending_agents = 0;
+                }
+            } else {
+                // CC: PID-alive check
                 if let Some(pid) = session.pid {
                     if !is_pid_alive(pid) {
                         log::info!("[get_claude_sessions] CC pid {} dead, clearing {} for {}", pid, session.status, session.session_id);
                         session.status = "stopped".to_string();
-                        // Reset pending_agents so future Stop events aren't
-                        // permanently suppressed (SubagentStop will never arrive
-                        // from a dead CC process).
                         session.pending_agents = 0;
                     }
                 }
@@ -4554,10 +5052,49 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     }
 
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let active_tid = get_active_ghostty_terminal_id();
     let mut list: Vec<ClaudeSession> = sessions.values()
         .filter(|s| !s.cwd.is_empty())
+        .filter(|s| !is_codex_internal_utility_session(s))
         .cloned()
         .collect();
+    // Mark sessions' active tab:
+    // - Ghostty: match by terminal ID
+    // - CC running inside Cursor's integrated terminal: check if Cursor is frontmost
+    // - Cursor IDE sessions: set at Stop time in process_claude_event
+    // - Codex standalone app: check if Codex/Code is frontmost
+    let frontmost = get_frontmost_app_name();
+    let cursor_is_active = is_cursor_frontmost_app(&frontmost);
+    let codex_is_active = is_codex_frontmost_app(&frontmost);
+    let is_ghostty = |s: &ClaudeSession| -> bool {
+        matches!(s.host_terminal.as_deref(), Some("Ghostty" | "ghostty"))
+    };
+    if let Some(ref tid) = active_tid {
+        for s in &mut list {
+            if s.source != "cursor" && is_ghostty(s) {
+                s.is_active_tab = s.terminal_id.as_deref() == Some(tid.as_str());
+            }
+        }
+    }
+    for s in &mut list {
+        if s.source == "cursor" {
+            continue;
+        }
+        if s.is_active_tab {
+            continue;
+        }
+        if s.source == "codex" {
+            s.is_active_tab = codex_is_active;
+        } else if let Some(ht) = s.host_terminal.as_deref() {
+            if ht == "Cursor" {
+                s.is_active_tab = cursor_is_active;
+            } else if is_codex_host_terminal(ht) {
+                s.is_active_tab = codex_is_active;
+            } else if !is_ghostty(s) {
+                s.is_active_tab = frontmost_matches_host_terminal(&frontmost, ht);
+            }
+        }
+    }
     list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(list)
 }
@@ -4693,10 +5230,21 @@ struct ClaudeStats {
 }
 
 #[tauri::command]
-async fn get_claude_stats() -> Result<ClaudeStats, String> {
-    let home = dirs::home_dir().ok_or("no home dir")?;
-    let claude_dir = home.join(".claude").join("projects");
-    if !claude_dir.exists() {
+async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String> {
+    let source = source.unwrap_or_default().to_ascii_lowercase();
+    let jsonl_files = match source.as_str() {
+        "codex" => collect_codex_session_jsonl_files(),
+        // Cursor hook transcripts are currently parsed through Claude-style JSONL.
+        // Keep Cursor aligned with the Claude parser until a dedicated Cursor
+        // transcript index is introduced.
+        "cursor" | "cc" | "claude" => collect_claude_project_jsonl_files(),
+        _ => {
+            let mut files = collect_claude_project_jsonl_files();
+            files.extend(collect_codex_session_jsonl_files());
+            files
+        }
+    };
+    if jsonl_files.is_empty() {
         return Ok(ClaudeStats {
             total_input_tokens: 0, total_output_tokens: 0,
             total_cache_read_tokens: 0, total_cache_write_tokens: 0,
@@ -4719,109 +5267,207 @@ async fn get_claude_stats() -> Result<ClaudeStats, String> {
     let cutoff = now - chrono::Duration::days(14);
     let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
 
-    if let Ok(project_dirs) = std::fs::read_dir(&claude_dir) {
-        for project_entry in project_dirs.flatten() {
-            if !project_entry.path().is_dir() { continue; }
-            if let Ok(files) = std::fs::read_dir(project_entry.path()) {
-                for file_entry in files.flatten() {
-                    let path = file_entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+    for path in jsonl_files {
+        // Use file modification time to skip old files quickly.
+        let modified_day = path.metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .map(|t| {
+                let dt: chrono::DateTime<chrono::Utc> = t.into();
+                dt
+            });
+        if let Some(modified) = modified_day {
+            if modified < cutoff {
+                continue;
+            }
+        }
 
-                    // Use file modification time to skip old files quickly
-                    if let Ok(meta) = path.metadata() {
-                        if let Ok(modified) = meta.modified() {
-                            let mod_time: chrono::DateTime<chrono::Utc> = modified.into();
-                            if mod_time < cutoff { continue; }
-                        }
-                    }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
 
-                    let content = match std::fs::read_to_string(&path) {
-                        Ok(c) => c,
-                        Err(_) => continue,
-                    };
+        let mut session_counted = false;
+        let mut session_day: Option<String> = None;
 
-                    let mut session_counted = false;
-                    for line in content.lines() {
-                        if line.trim().is_empty() { continue; }
-                        let parsed: serde_json::Value = match serde_json::from_str(line) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
+        // Codex logs cumulative token totals on each token_count event.
+        // We convert cumulative totals into per-event deltas to avoid
+        // double-counting repeated snapshots.
+        let mut prev_codex_total_input: Option<u64> = None;
+        let mut prev_codex_total_output: Option<u64> = None;
+        let mut prev_codex_total_cached_input: Option<u64> = None;
 
-                        if parsed.get("type").and_then(|v| v.as_str()) != Some("assistant") { continue; }
-                        let msg = match parsed.get("message") {
-                            Some(m) => m,
-                            None => continue,
-                        };
-                        let usage = match msg.get("usage") {
-                            Some(u) => u,
-                            None => continue,
-                        };
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let parsed: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
 
-                        // Extract date from timestamp
-                        let date = parsed.get("timestamp")
-                            .and_then(|v| v.as_str())
-                            .and_then(|ts| ts.get(..10))
-                            .unwrap_or("")
-                            .to_string();
+            let line_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-                        if date < cutoff_str { continue; }
+            // Claude Code format: assistant entries carry usage directly.
+            if line_type == "assistant" {
+                let msg = match parsed.get("message") {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let usage = match msg.get("usage") {
+                    Some(u) => u,
+                    None => continue,
+                };
 
-                        let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let cache_write = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let date = parsed.get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(|ts| ts.get(..10))
+                    .unwrap_or("")
+                    .to_string();
+                if date < cutoff_str {
+                    continue;
+                }
 
-                        if model.is_empty() {
-                            if let Some(m) = msg.get("model").and_then(|v| v.as_str()) {
-                                model = m.to_string();
-                            }
-                        }
+                let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cache_write = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
 
-                        total_input += input;
-                        total_output += output;
-                        total_cache_read += cache_read;
-                        total_cache_write += cache_write;
-                        total_messages += 1;
-
-                        if !session_counted {
-                            session_counted = true;
-                            total_sessions += 1;
-                        }
-
-                        if !date.is_empty() {
-                            let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
-                                date: date.clone(),
-                                input_tokens: 0, output_tokens: 0,
-                                cache_read_tokens: 0, cache_write_tokens: 0,
-                                messages: 0, sessions: 0,
-                            });
-                            entry.input_tokens += input;
-                            entry.output_tokens += output;
-                            entry.cache_read_tokens += cache_read;
-                            entry.cache_write_tokens += cache_write;
-                            entry.messages += 1;
-                        }
-                    }
-
-                    // Count session per day (use first message date)
-                    if session_counted {
-                        if let Some(first_day) = daily_map.keys().next().cloned() {
-                            // Actually count in the day the session was modified
-                            if let Ok(meta) = path.metadata() {
-                                if let Ok(modified) = meta.modified() {
-                                    let mod_time: chrono::DateTime<chrono::Utc> = modified.into();
-                                    let day = mod_time.format("%Y-%m-%d").to_string();
-                                    if let Some(entry) = daily_map.get_mut(&day) {
-                                        entry.sessions += 1;
-                                    } else if let Some(entry) = daily_map.get_mut(&first_day) {
-                                        entry.sessions += 1;
-                                    }
-                                }
-                            }
-                        }
+                if model.is_empty() {
+                    if let Some(m) = msg.get("model").and_then(|v| v.as_str()) {
+                        model = m.to_string();
                     }
                 }
+
+                total_input += input;
+                total_output += output;
+                total_cache_read += cache_read;
+                total_cache_write += cache_write;
+                total_messages += 1;
+
+                if !session_counted {
+                    session_counted = true;
+                    total_sessions += 1;
+                }
+                if session_day.is_none() && !date.is_empty() {
+                    session_day = Some(date.clone());
+                }
+
+                if !date.is_empty() {
+                    let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                        date: date.clone(),
+                        input_tokens: 0, output_tokens: 0,
+                        cache_read_tokens: 0, cache_write_tokens: 0,
+                        messages: 0, sessions: 0,
+                    });
+                    entry.input_tokens += input;
+                    entry.output_tokens += output;
+                    entry.cache_read_tokens += cache_read;
+                    entry.cache_write_tokens += cache_write;
+                    entry.messages += 1;
+                }
+                continue;
+            }
+
+            // Codex format metadata.
+            if line_type == "session_meta" && model.is_empty() {
+                if let Some(m) = parsed.get("payload")
+                    .and_then(|p| p.get("model"))
+                    .and_then(|v| v.as_str()) {
+                    model = m.to_string();
+                } else if let Some(provider) = parsed.get("payload")
+                    .and_then(|p| p.get("model_provider"))
+                    .and_then(|v| v.as_str()) {
+                    model = provider.to_string();
+                }
+                continue;
+            }
+
+            // Codex format usage: event_msg -> payload.type=token_count -> info.total_token_usage.
+            if line_type == "event_msg" && parsed.get("payload")
+                .and_then(|p| p.get("type"))
+                .and_then(|v| v.as_str()) == Some("token_count") {
+                let total_usage = match parsed.get("payload")
+                    .and_then(|p| p.get("info"))
+                    .and_then(|i| i.get("total_token_usage")) {
+                    Some(v) => v,
+                    None => continue,
+                };
+
+                let total_input_now = total_usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let total_output_now = total_usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let total_cached_now = total_usage.get("cached_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                let delta_input = match prev_codex_total_input {
+                    Some(prev) => total_input_now.saturating_sub(prev),
+                    None => total_input_now,
+                };
+                let delta_output = match prev_codex_total_output {
+                    Some(prev) => total_output_now.saturating_sub(prev),
+                    None => total_output_now,
+                };
+                let delta_cached = match prev_codex_total_cached_input {
+                    Some(prev) => total_cached_now.saturating_sub(prev),
+                    None => total_cached_now,
+                };
+
+                prev_codex_total_input = Some(total_input_now);
+                prev_codex_total_output = Some(total_output_now);
+                prev_codex_total_cached_input = Some(total_cached_now);
+
+                // Same cumulative snapshot can be emitted multiple times.
+                if delta_input == 0 && delta_output == 0 && delta_cached == 0 {
+                    continue;
+                }
+
+                let date = parsed.get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(|ts| ts.get(..10))
+                    .unwrap_or("")
+                    .to_string();
+                if date < cutoff_str {
+                    continue;
+                }
+
+                total_input += delta_input;
+                total_output += delta_output;
+                total_cache_read += delta_cached;
+                total_messages += 1;
+
+                if !session_counted {
+                    session_counted = true;
+                    total_sessions += 1;
+                }
+                if session_day.is_none() && !date.is_empty() {
+                    session_day = Some(date.clone());
+                }
+
+                if !date.is_empty() {
+                    let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                        date: date.clone(),
+                        input_tokens: 0, output_tokens: 0,
+                        cache_read_tokens: 0, cache_write_tokens: 0,
+                        messages: 0, sessions: 0,
+                    });
+                    entry.input_tokens += delta_input;
+                    entry.output_tokens += delta_output;
+                    entry.cache_read_tokens += delta_cached;
+                    entry.messages += 1;
+                }
+            }
+        }
+
+        // Count one session per day.
+        if session_counted {
+            let day = session_day.or_else(|| modified_day.map(|d| d.format("%Y-%m-%d").to_string()));
+            if let Some(day_str) = day {
+                let entry = daily_map.entry(day_str.clone()).or_insert_with(|| ClaudeDailyStats {
+                    date: day_str.clone(),
+                    input_tokens: 0, output_tokens: 0,
+                    cache_read_tokens: 0, cache_write_tokens: 0,
+                    messages: 0, sessions: 0,
+                });
+                entry.sessions += 1;
             }
         }
     }
@@ -4882,6 +5528,378 @@ async fn activate_app(app_name: String) -> Result<String, String> {
     }
 }
 
+fn cwd_matches_workspace_root(cwd: &str, workspace_root: &str) -> bool {
+    if cwd.is_empty() || workspace_root.is_empty() {
+        return false;
+    }
+    if cwd == workspace_root {
+        return true;
+    }
+    cwd.strip_prefix(workspace_root)
+        .map(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+        .unwrap_or(false)
+}
+
+fn cursor_workspace_name_from_path(path_str: &str) -> String {
+    std::path::Path::new(path_str)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn read_local_http_response(port: u16, request: String) -> Option<(u16, String)> {
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, SocketAddr, TcpStream};
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(120))
+        .ok()?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(200)));
+    stream.write_all(request.as_bytes()).ok()?;
+    let _ = stream.shutdown(Shutdown::Write);
+
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).ok()?;
+    if buf.is_empty() {
+        return None;
+    }
+
+    let response = String::from_utf8_lossy(&buf);
+    let (headers, body) = response.split_once("\r\n\r\n")?;
+    let status = headers.lines().next()?.split_whitespace().nth(1)?.parse::<u16>().ok()?;
+
+    let is_chunked = headers.to_ascii_lowercase().contains("transfer-encoding: chunked");
+    let decoded_body = if is_chunked {
+        decode_chunked_body(body)
+    } else {
+        body.to_string()
+    };
+
+    Some((status, decoded_body))
+}
+
+fn decode_chunked_body(raw: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = raw;
+    loop {
+        let remaining_trimmed = remaining.trim_start_matches("\r\n");
+        let (size_str, rest) = match remaining_trimmed.split_once("\r\n") {
+            Some(pair) => pair,
+            None => break,
+        };
+        let chunk_size = match usize::from_str_radix(size_str.trim(), 16) {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+        if chunk_size == 0 {
+            break;
+        }
+        let chunk_data: String = rest.chars().take(chunk_size).collect();
+        result.push_str(&chunk_data);
+        remaining = &rest[chunk_data.len().min(rest.len())..];
+    }
+    result
+}
+
+fn get_cursor_window_meta(port: u16) -> Option<CursorWindowMeta> {
+    let request = format!(
+        "GET /window-meta HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    let (status, body) = read_local_http_response(port, request)?;
+    if status != 200 {
+        return None;
+    }
+    serde_json::from_str::<CursorWindowMeta>(&body).ok()
+}
+
+fn post_cursor_window_action(port: u16, path: &str, body: &str) -> bool {
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body,
+    );
+    read_local_http_response(port, request)
+        .map(|(status, _)| (200..300).contains(&status))
+        .unwrap_or(false)
+}
+
+fn resolve_cursor_window_binding(
+    cwd: &str,
+    existing_port: Option<u16>,
+    existing_native_handle: Option<&str>,
+) -> Option<CursorWindowBinding> {
+    #[derive(Debug)]
+    struct Candidate {
+        port: u16,
+        workspace_root: String,
+        workspace_name: String,
+        native_handle: Option<String>,
+        score: usize,
+        focused: bool,
+        keep_existing: bool,
+        handle_match: bool,
+    }
+
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for port in 23456..=23460u16 {
+        let meta = match get_cursor_window_meta(port) {
+            Some(meta) => meta,
+            None => continue,
+        };
+
+        let mut best_root: Option<String> = None;
+        let mut best_score: usize = 0;
+        for root in &meta.workspace_roots {
+            if cwd_matches_workspace_root(cwd, root) {
+                let score = root.len();
+                if score >= best_score {
+                    best_score = score;
+                    best_root = Some(root.clone());
+                }
+            }
+        }
+
+        if let Some(workspace_root) = best_root {
+            let handle_match = match (existing_native_handle, &meta.native_handle) {
+                (Some(existing), Some(current)) => existing == current,
+                _ => false,
+            };
+            candidates.push(Candidate {
+                port: meta.port,
+                workspace_root,
+                workspace_name: if meta.workspace_name.is_empty() {
+                    cursor_workspace_name_from_path(cwd)
+                } else {
+                    meta.workspace_name
+                },
+                native_handle: meta.native_handle,
+                score: best_score,
+                focused: meta.focused,
+                keep_existing: existing_port == Some(meta.port),
+                handle_match,
+            });
+        }
+    }
+
+    // If we have a native handle match, that wins unconditionally —
+    // it means we previously bound to this exact window.
+    if let Some(idx) = candidates.iter().position(|c| c.handle_match) {
+        let c = &candidates[idx];
+        return Some(CursorWindowBinding {
+            port: c.port,
+            workspace_root: c.workspace_root.clone(),
+            workspace_name: c.workspace_name.clone(),
+            native_handle: c.native_handle.clone(),
+        });
+    }
+
+    candidates.sort_by(|a, b| {
+        b.score.cmp(&a.score)
+            .then_with(|| b.keep_existing.cmp(&a.keep_existing))
+            .then_with(|| b.focused.cmp(&a.focused))
+            .then_with(|| a.port.cmp(&b.port))
+    });
+
+    let best = candidates.first()?;
+    if let Some(second) = candidates.get(1) {
+        let ambiguous = best.score == second.score
+            && best.keep_existing == second.keep_existing
+            && best.focused == second.focused;
+        if ambiguous {
+            return None;
+        }
+    }
+
+    Some(CursorWindowBinding {
+        port: best.port,
+        workspace_root: best.workspace_root.clone(),
+        workspace_name: best.workspace_name.clone(),
+        native_handle: best.native_handle.clone(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn check_accessibility_permission() -> bool {
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    unsafe { AXIsProcessTrusted() }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_accessibility_permission() -> bool {
+    true
+}
+
+#[tauri::command]
+async fn check_ax_permission() -> Result<bool, String> {
+    Ok(check_accessibility_permission())
+}
+
+#[tauri::command]
+async fn request_ax_permission() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::c_void;
+
+        #[link(name = "CoreFoundation", kind = "framework")]
+        extern "C" {
+            fn CFStringCreateWithCString(alloc: *const c_void, c_str: *const u8, encoding: u32) -> *const c_void;
+            fn CFDictionaryCreate(
+                alloc: *const c_void, keys: *const *const c_void, values: *const *const c_void,
+                count: isize, key_cbs: *const c_void, val_cbs: *const c_void,
+            ) -> *const c_void;
+            fn CFRelease(cf: *const c_void);
+            static kCFTypeDictionaryKeyCallBacks: c_void;
+            static kCFTypeDictionaryValueCallBacks: c_void;
+            static kCFBooleanTrue: *const c_void;
+        }
+
+        #[link(name = "ApplicationServices", kind = "framework")]
+        extern "C" {
+            fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        }
+
+        unsafe {
+            let key = CFStringCreateWithCString(
+                std::ptr::null(),
+                b"AXTrustedCheckOptionPrompt\0".as_ptr(),
+                0x08000100, // kCFStringEncodingUTF8
+            );
+            let keys = [key];
+            let values = [kCFBooleanTrue];
+            let dict = CFDictionaryCreate(
+                std::ptr::null(), keys.as_ptr(), values.as_ptr(), 1,
+                &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks,
+            );
+            AXIsProcessTrustedWithOptions(dict);
+            CFRelease(dict);
+            CFRelease(key);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn activate_cursor_workspace_window(workspace_name: &str) {
+    let ax_ok = check_accessibility_permission();
+    let escaped_workspace = workspace_name.replace('\\', "\\\\").replace('"', "\\\"");
+
+    let script = if !ax_ok || escaped_workspace.is_empty() {
+        // No AX permission or no workspace name — just activate Cursor.
+        // This brings *some* Cursor window to front but can't target a
+        // specific one. Still useful as a fallback.
+        r#"tell application "Cursor" to activate"#.to_string()
+    } else {
+        format!(
+            r#"tell application "System Events"
+    set cursorProcs to every process whose name is "Cursor"
+    if (count of cursorProcs) is 0 then
+        tell application "Cursor" to activate
+        return
+    end if
+    set cursorProc to item 1 of cursorProcs
+    set matched to false
+    repeat with w in windows of cursorProc
+        try
+            if name of w contains "{workspace}" then
+                perform action "AXRaise" of w
+                set frontmost of cursorProc to true
+                set matched to true
+                exit repeat
+            end if
+        end try
+    end repeat
+    if not matched then
+        set frontmost of cursorProc to true
+    end if
+end tell"#,
+            workspace = escaped_workspace,
+        )
+    };
+
+    let _ = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output();
+}
+
+/// Focus the Cursor terminal tab for a given session.
+/// Cursor hook payloads do not contain a stable terminal pid. The pid we see in
+/// events changes from one hook invocation to the next, so it is not reliable
+/// for jump-back. Instead we bind each session to a specific Cursor window by:
+/// 1. Matching the session cwd against window metadata exposed by the extension
+///    (`/window-meta` on ports 23456-23460).
+/// 2. Reusing that bound port on click so we target one Cursor window instead
+///    of broadcasting to all windows and hoping the right one wins.
+/// 3. Raising the matching Cursor window on macOS by workspace name.
+#[tauri::command]
+async fn focus_cursor_terminal(session_id: String, state: tauri::State<'_, ClaudeState>) -> Result<String, String> {
+    log::info!("[focus_cursor] called for session={}", &session_id[..session_id.len().min(8)]);
+
+    let ax_ok = check_accessibility_permission();
+    log::info!("[focus_cursor] accessibility_permission={}", ax_ok);
+
+    let (cwd, existing_port, existing_workspace_root, existing_workspace_name, existing_native_handle) = {
+        let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        match sessions.get(&session_id) {
+            Some(s) => (
+                s.cwd.clone(),
+                s.cursor_port,
+                s.cursor_workspace_root.clone(),
+                s.cursor_workspace_name.clone(),
+                s.cursor_native_handle.clone(),
+            ),
+            None => (String::new(), None, None, None, None),
+        }
+    };
+
+    let resolved_binding = if !cwd.is_empty() {
+        resolve_cursor_window_binding(&cwd, existing_port, existing_native_handle.as_deref())
+    } else {
+        None
+    };
+
+    if let Some(binding) = &resolved_binding {
+        if let Ok(mut sessions) = state.sessions.lock() {
+            if let Some(session) = sessions.get_mut(&session_id) {
+                session.cursor_port = Some(binding.port);
+                session.cursor_workspace_root = Some(binding.workspace_root.clone());
+                session.cursor_workspace_name = Some(binding.workspace_name.clone());
+                session.cursor_native_handle = binding.native_handle.clone();
+            }
+        }
+    }
+
+    let port = resolved_binding.as_ref().map(|b| b.port).or(existing_port);
+    let workspace_name = resolved_binding.as_ref().map(|b| b.workspace_name.clone())
+        .or(existing_workspace_name)
+        .or_else(|| existing_workspace_root.as_deref().map(cursor_workspace_name_from_path))
+        .or_else(|| (!cwd.is_empty()).then(|| cursor_workspace_name_from_path(&cwd)))
+        .unwrap_or_default();
+
+    log::info!("[focus_cursor] session={} cwd={} port={:?} workspace_name={}",
+        &session_id[..session_id.len().min(8)], cwd, port, workspace_name);
+
+    #[cfg(target_os = "macos")]
+    activate_cursor_workspace_window(&workspace_name);
+
+    if let Some(port) = port {
+        let focused = post_cursor_window_action(port, "/focus-window", "{}");
+        log::info!("[focus_cursor] POST /focus-window to port {} → {}", port, focused);
+        if focused {
+            return Ok(format!("Focused Cursor window on port {}", port));
+        }
+        return Ok(format!("Activated Cursor window but /focus-window failed on port {}", port));
+    }
+
+    #[cfg(target_os = "macos")]
+    activate_cursor_workspace_window(&workspace_name);
+
+    Ok("Activated Cursor without a bound window".to_string())
+}
+
 /// Jump to the terminal running a Claude Code session.
 /// Walks the parent process chain from the given PID to identify the terminal app,
 /// then uses AppleScript (macOS) to activate and focus the matching window.
@@ -4889,12 +5907,157 @@ async fn activate_app(app_name: String) -> Result<String, String> {
 async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, ClaudeState>) -> Result<String, String> {
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get(&session_id).ok_or("Session not found")?;
-    let pid = session.pid.ok_or("No PID tracked for this session")?;
     let cwd = session.cwd.clone();
+    let terminal_id = session.terminal_id.clone();
+    let pid = session.pid;
+    let source = session.source.clone();
     drop(sessions);
 
     #[cfg(target_os = "macos")]
     {
+        let try_activate_app = |app_name: &str| -> bool {
+            let script = format!(r#"tell application "{}" to activate"#, app_name.replace('"', "\\\""));
+            if std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            std::process::Command::new("open")
+                .args(["-a", app_name])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+
+        // Codex sessions should jump to the Codex app directly.
+        // Do not route through Ghostty first; that causes the "terminal flash"
+        // and may still require manual dock clicks to bring Codex frontmost.
+        if source == "codex" {
+            for app_name in ["Codex", "Code"] {
+                if try_activate_app(app_name) {
+                    return Ok(format!("Activated {}", app_name));
+                }
+            }
+            // If Codex app activation fails (e.g. not installed as app bundle),
+            // continue with terminal-based fallback paths below.
+        }
+
+        // Fast path: if we have a Ghostty terminal ID from hooks, jump directly
+        // to that tab without depending on PID ancestry checks.
+        if let Some(tid_raw) = terminal_id.as_deref() {
+            if !tid_raw.is_empty() {
+                let escaped_tid = tid_raw.replace('\\', "\\\\").replace('"', "\\\"");
+                let script = format!(
+                    r#"tell application "Ghostty"
+    if not (it is running) then return ""
+    set targetWindow to missing value
+    set targetTab to missing value
+    set targetTerminal to missing value
+    repeat with aWindow in windows
+        repeat with aTab in tabs of aWindow
+            repeat with aTerminal in terminals of aTab
+                try
+                    if (id of aTerminal as text) is "{tid}" then
+                        set targetWindow to aWindow
+                        set targetTab to aTab
+                        set targetTerminal to aTerminal
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if targetTerminal is not missing value then exit repeat
+        end repeat
+        if targetTerminal is not missing value then exit repeat
+    end repeat
+    if targetTerminal is missing value then return ""
+    activate
+    delay 0.05
+    if targetTab is not missing value then
+        select tab targetTab
+        delay 0.05
+    end if
+    if targetWindow is not missing value then
+        set index of targetWindow to 1
+    end if
+    focus targetTerminal
+    return "matched"
+end tell"#,
+                    tid = escaped_tid,
+                );
+                if let Ok(out) = std::process::Command::new("osascript").args(["-e", &script]).output() {
+                    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if out.status.success() && stdout == "matched" {
+                        return Ok("Jumped to Ghostty".to_string());
+                    }
+                }
+
+                // Some Ghostty builds may format terminal IDs slightly differently.
+                // Retry with a prefix contains-match to avoid false negatives.
+                let tid_prefix = &tid_raw[..tid_raw.len().min(8)];
+                if !tid_prefix.is_empty() {
+                    let escaped_prefix = tid_prefix.replace('\\', "\\\\").replace('"', "\\\"");
+                    let fallback_script = format!(
+                        r#"tell application "Ghostty"
+    if not (it is running) then return ""
+    set targetWindow to missing value
+    set targetTab to missing value
+    set targetTerminal to missing value
+    repeat with aWindow in windows
+        repeat with aTab in tabs of aWindow
+            repeat with aTerminal in terminals of aTab
+                try
+                    if (id of aTerminal as text) contains "{prefix}" then
+                        set targetWindow to aWindow
+                        set targetTab to aTab
+                        set targetTerminal to aTerminal
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if targetTerminal is not missing value then exit repeat
+        end repeat
+        if targetTerminal is not missing value then exit repeat
+    end repeat
+    if targetTerminal is missing value then return ""
+    activate
+    delay 0.05
+    if targetTab is not missing value then
+        select tab targetTab
+        delay 0.05
+    end if
+    if targetWindow is not missing value then
+        set index of targetWindow to 1
+    end if
+    focus targetTerminal
+    return "matched"
+end tell"#,
+                        prefix = escaped_prefix,
+                    );
+                    if let Ok(out) = std::process::Command::new("osascript").args(["-e", &fallback_script]).output() {
+                        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if out.status.success() && stdout == "matched" {
+                            return Ok("Jumped to Ghostty".to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let pid = if let Some(p) = pid {
+            p
+        } else if source == "codex" {
+            for app_name in ["Codex", "Ghostty", "Cursor"] {
+                if try_activate_app(app_name) {
+                    return Ok(format!("Activated {}", app_name));
+                }
+            }
+            return Err("No PID tracked for this Codex session".to_string());
+        } else {
+            return Err("No PID tracked for this session".to_string());
+        };
         // Walk parent process chain to find the terminal application
         let terminal_app = find_terminal_app_for_pid(pid);
 
@@ -4905,20 +6068,45 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
 
         match terminal_app.as_deref() {
             Some("Ghostty" | "ghostty") => {
-                // Ghostty exposes id, working directory, and name (title) per terminal
-                // but NOT tty. Claude Code sets tab titles containing the session ID,
-                // so matching by session ID substring in the title is the most precise.
+                // Matching strategy (most → least precise):
+                // 0. Stored terminal `id` captured at session start
+                // 1. Session ID substring in tab title
+                // 2. Working directory (ambiguous if multiple tabs share CWD)
+                //
+                // IMPORTANT: do NOT `activate` before matching — that would
+                // bring Ghostty to front showing whatever tab was last
+                // selected, giving a wrong-tab flash.
+                let escaped_tid = terminal_id.as_deref().unwrap_or("").replace('\\', "\\\\").replace('"', "\\\"");
                 let script = format!(
                     r#"tell application "Ghostty"
     if not (it is running) then return ""
-    activate
 
     set targetWindow to missing value
     set targetTab to missing value
     set targetTerminal to missing value
 
-    -- Pass 1: match by session ID in tab title (most precise)
-    if "{sid}" is not "" then
+    -- Pass 0: match by stored terminal id (most precise)
+    if "{tid}" is not "" then
+        repeat with aWindow in windows
+            repeat with aTab in tabs of aWindow
+                repeat with aTerminal in terminals of aTab
+                    try
+                        if (id of aTerminal as text) is "{tid}" then
+                            set targetWindow to aWindow
+                            set targetTab to aTab
+                            set targetTerminal to aTerminal
+                            exit repeat
+                        end if
+                    end try
+                end repeat
+                if targetTerminal is not missing value then exit repeat
+            end repeat
+            if targetTerminal is not missing value then exit repeat
+        end repeat
+    end if
+
+    -- Pass 1: match by session ID in tab title
+    if targetTerminal is missing value and "{sid}" is not "" then
         repeat with aWindow in windows
             repeat with aTab in tabs of aWindow
                 repeat with aTerminal in terminals of aTab
@@ -4937,7 +6125,7 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
         end repeat
     end if
 
-    -- Pass 2: match by working directory (fallback for non-Claude tabs)
+    -- Pass 2: match by working directory (least precise)
     if targetTerminal is missing value and "{cwd}" is not "" then
         repeat with aWindow in windows
             repeat with aTab in tabs of aWindow
@@ -4959,19 +6147,21 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
 
     if targetTerminal is missing value then return ""
 
-    if targetWindow is not missing value then
-        activate window targetWindow
-        delay 0.04
-    end if
+    -- Activate AFTER matching so the correct tab is shown immediately.
+    activate
+    delay 0.05
     if targetTab is not missing value then
         select tab targetTab
-        delay 0.04
+        delay 0.05
+    end if
+    if targetWindow is not missing value then
+        set index of targetWindow to 1
     end if
     focus targetTerminal
     return "matched"
 end tell"#,
+                    tid = escaped_tid,
                     sid = escaped_sid,
-                    // Use first 8+ chars of session ID for title matching
                     sid_prefix = &escaped_sid[..escaped_sid.len().min(12)],
                     cwd = escaped_cwd,
                 );
@@ -5036,6 +6226,12 @@ end tell"#,
                 }
                 Ok("Jumped to Terminal.app".to_string())
             }
+            Some("Cursor") => {
+                let _ = std::process::Command::new("open")
+                    .args(["-a", "Cursor"])
+                    .output();
+                Ok("Jumped to Cursor".to_string())
+            }
             Some(app_name) => {
                 let script = format!(
                     r#"tell application "{}" to activate"#,
@@ -5047,6 +6243,13 @@ end tell"#,
                 Ok(format!("Jumped to {}", app_name))
             }
             None => {
+                if source == "codex" {
+                    for app_name in ["Codex", "Ghostty", "Cursor"] {
+                        if try_activate_app(app_name) {
+                            return Ok(format!("Activated {}", app_name));
+                        }
+                    }
+                }
                 if !cwd.is_empty() {
                     let _ = std::process::Command::new("open").arg(&cwd).spawn();
                 }
@@ -5078,6 +6281,8 @@ fn find_terminal_app_for_pid(pid: u32) -> Option<String> {
         "kitty",
         "Alacritty", "alacritty",
         "kaku",
+        "Cursor",
+        "Codex", "codex",
     ];
 
     let mut current_pid = pid;
@@ -5140,8 +6345,47 @@ fn get_tty_for_pid(pid: u32) -> Option<String> {
 ///   }
 ///
 /// Legacy format (single "url" field) is still supported for backward compatibility.
+fn normalize_lang_tag(lang: &str) -> String {
+    lang.trim().to_lowercase().replace('_', "-")
+}
+
+fn pick_localized_notes(notes_i18n: &serde_json::Value, lang: Option<&str>) -> Option<String> {
+    let obj = notes_i18n.as_object()?;
+    let mut keys: Vec<String> = Vec::new();
+    if let Some(raw) = lang {
+        let normalized = normalize_lang_tag(raw);
+        if !normalized.is_empty() {
+            keys.push(normalized.clone());
+            if let Some((prefix, _)) = normalized.split_once('-') {
+                if !prefix.is_empty() {
+                    keys.push(prefix.to_string());
+                }
+            }
+        }
+    }
+    keys.push("en".to_string());
+    keys.push("zh".to_string());
+    for key in keys {
+        if let Some(value) = obj.get(&key).and_then(|v| v.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    for value in obj.values() {
+        if let Some(text) = value.as_str() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[tauri::command]
-async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+async fn check_for_update(app: tauri::AppHandle, lang: Option<String>) -> Result<serde_json::Value, String> {
     let current = app.config().version.clone().unwrap_or_default();
 
     let update_url = if cfg!(debug_assertions) {
@@ -5188,6 +6432,11 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
     let url = platform["url"].as_str()
         .or_else(|| json["url"].as_str())
         .unwrap_or("");
+    let notes = pick_localized_notes(&platform["notes_i18n"], lang.as_deref())
+        .or_else(|| pick_localized_notes(&json["notes_i18n"], lang.as_deref()))
+        .or_else(|| platform["notes"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .or_else(|| json["notes"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .unwrap_or_default();
     let has_update = version_cmp(latest, &current);
     log::info!("[update] platform={} latest={} current={} hasUpdate={}", platform_key, latest, current, has_update);
 
@@ -5196,6 +6445,7 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, St
         "latest": latest,
         "hasUpdate": has_update,
         "url": url,
+        "notes": notes,
     }))
 }
 
@@ -5550,25 +6800,7 @@ if ($appPath) {{
 
 #[tauri::command]
 async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>, String> {
-    let home = dirs::home_dir().ok_or("no home dir")?;
-    let claude_dir = home.join(".claude").join("projects");
-    if !claude_dir.exists() {
-        return Ok(vec![]);
-    }
-
-    // Find the JSONL file for this session across project dirs
-    let mut jsonl_path: Option<PathBuf> = None;
-    if let Ok(entries) = std::fs::read_dir(&claude_dir) {
-        for entry in entries.flatten() {
-            let p = entry.path().join(format!("{}.jsonl", session_id));
-            if p.exists() {
-                jsonl_path = Some(p);
-                break;
-            }
-        }
-    }
-
-    let path = match jsonl_path {
+    let path = match resolve_session_jsonl_path(&session_id, None) {
         Some(p) => p,
         None => return Ok(vec![]),
     };
@@ -5587,38 +6819,68 @@ async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>,
         };
 
         let msg_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if msg_type != "assistant" && msg_type != "user" && msg_type != "human" { continue; }
-        if parsed.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) { continue; }
 
-        let role = if msg_type == "assistant" { "assistant" } else { "user" };
+        // Claude/OpenClaw-style records: type=assistant|user|human.
+        if msg_type == "assistant" || msg_type == "user" || msg_type == "human" {
+            if parsed.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) {
+                continue;
+            }
 
-        // Extract text content
-        let text = if let Some(s) = parsed.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_str()) {
-            s.to_string()
-        } else if let Some(arr) = parsed.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
-            arr.iter()
-                .filter(|b| {
-                    let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    t == "text"
-                })
-                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
+            let role = if msg_type == "assistant" { "assistant" } else { "user" };
+            let text = if let Some(s) = parsed.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_str()) {
+                s.to_string()
+            } else if let Some(arr) = parsed.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                arr.iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                continue;
+            };
+
+            if text.trim().is_empty() {
+                continue;
+            }
+            if text.starts_with("<command-name>") || text.starts_with("[Request interrupted") {
+                continue;
+            }
+            if text.starts_with("<task-notification>") || text.starts_with("<local-command") {
+                continue;
+            }
+
+            let text = if text.starts_with("This session is being continued from a previous conversation") {
+                "/compact".to_string()
+            } else {
+                text
+            };
+            let timestamp = parsed.get("timestamp").and_then(|t| t.as_str()).map(String::from);
+            messages.push(ChatMessage { role: role.to_string(), text, timestamp });
             continue;
-        };
+        }
 
-        if text.trim().is_empty() { continue; }
-        if text.starts_with("<command-name>") || text.starts_with("[Request interrupted") { continue; }
-        if text.starts_with("<task-notification>") || text.starts_with("<local-command") { continue; }
-
-        // Replace compaction summary with short indicator
-        let text = if text.starts_with("This session is being continued from a previous conversation") {
-            "/compact".to_string()
-        } else { text };
-
-        let timestamp = parsed.get("timestamp").and_then(|t| t.as_str()).map(String::from);
-        messages.push(ChatMessage { role: role.to_string(), text, timestamp });
+        // Codex records: event_msg payload user_message / agent_message.
+        if msg_type == "event_msg" {
+            let payload_type = parsed.get("payload")
+                .and_then(|p| p.get("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let role = match payload_type {
+                "user_message" => "user",
+                "agent_message" => "assistant",
+                _ => continue,
+            };
+            let text = parsed.get("payload")
+                .and_then(|p| p.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let timestamp = parsed.get("timestamp").and_then(|t| t.as_str()).map(String::from);
+            messages.push(ChatMessage { role: role.to_string(), text, timestamp });
+        }
     }
 
     messages.reverse();
@@ -5659,6 +6921,18 @@ export OOCLAW_INTERACTIVE=$IS_INTERACTIVE
 # and clear stale "waiting" sessions.
 export CC_PID=$PPID
 
+# Capture Ghostty terminal ID once per CC session (cached per CC PID).
+# The hook runs inside the CC terminal, so the focused tab is the right one.
+_TID_CACHE="/tmp/ooclaw-tid-$PPID"
+if [ -f "$_TID_CACHE" ]; then
+    export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
+else
+    export GHOSTTY_TID=$(osascript -e 'try
+tell application "Ghostty" to return id of first terminal of selected tab of front window as text
+end try' 2>/dev/null || echo "")
+    [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
+fi
+
 /usr/bin/python3 -c "
 import json, os, socket, sys
 
@@ -5690,6 +6964,11 @@ output = {
     'pid': int(os.environ.get('CC_PID', '0')) or None,
 }
 
+# Ghostty terminal ID for precise tab jumping
+_tid = os.environ.get('GHOSTTY_TID', '')
+if _tid:
+    output['terminalId'] = _tid
+
 if hook_event == 'UserPromptSubmit':
     prompt = input_data.get('prompt', '')
     if prompt:
@@ -5701,7 +6980,30 @@ if tool:
 
 tool_input = input_data.get('tool_input', {})
 if tool_input:
-    output['toolInput'] = json.dumps(tool_input)[:200]
+    # For Write/Edit, build a slim JSON with complete structure so the
+    # frontend can parse it and show file name + numbered code lines.
+    if tool in ('Write', 'Edit'):
+        slim = {}
+        if tool_input.get('file_path'):
+            slim['file_path'] = tool_input['file_path']
+        c = tool_input.get('content') or tool_input.get('new_string') or tool_input.get('old_string') or ''
+        if c:
+            slim['content'] = c[:5000]
+        output['toolInput'] = json.dumps(slim)
+    elif tool == 'Bash':
+        slim = {}
+        if tool_input.get('command'):
+            slim['command'] = tool_input['command'][:500]
+        if tool_input.get('description'):
+            slim['description'] = tool_input['description'][:200]
+        output['toolInput'] = json.dumps(slim)
+    else:
+        output['toolInput'] = json.dumps(tool_input)[:300]
+
+if hook_event == 'Stop':
+    msg = input_data.get('last_assistant_message', '')
+    if msg:
+        output['lastResponse'] = msg[:2000]
 
 if hook_event == 'PermissionRequest':
     output['permission_suggestions'] = input_data.get('permission_suggestions', [])
@@ -5847,7 +7149,366 @@ try {
     std::fs::write(&settings_path, serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
 
+    // Keep Codex desktop integration in sync with Claude integration.
+    // Frontend still invokes `install_claude_hooks`, so we install both
+    // hook systems here to avoid requiring frontend API changes.
+    install_codex_hooks().await?;
+
     Ok(())
+}
+
+async fn install_codex_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let codex_dir = home.join(".Codex");
+    let hooks_dir = codex_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
+
+    #[cfg(unix)]
+    let hook_path = hooks_dir.join("ooclaw-codex-hook.sh");
+    #[cfg(windows)]
+    let hook_path = hooks_dir.join("ooclaw-codex-hook.ps1");
+
+    #[cfg(unix)]
+    {
+        let hook_script = r#"#!/bin/bash
+# ooclaw Codex hook - forwards events to /tmp/ooclaw-claude.sock
+SOCKET_PATH="/tmp/ooclaw-claude.sock"
+[ -S "$SOCKET_PATH" ] || { echo '{}'; exit 0; }
+export CC_PID=$PPID
+
+# Capture Ghostty terminal ID once per Codex process so stop-time active-tab
+# checks and click-to-jump can target the exact tab.
+_TID_CACHE="/tmp/ooclaw-tid-$PPID"
+if [ -f "$_TID_CACHE" ]; then
+    export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
+else
+    export GHOSTTY_TID=$(osascript -e 'try
+tell application "Ghostty" to return id of first terminal of selected tab of front window as text
+end try' 2>/dev/null || echo "")
+    [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
+fi
+
+/usr/bin/python3 -c "
+import json, os, socket, sys
+
+raw = sys.stdin.read()
+if not raw.strip():
+    print('{}')
+    sys.exit(0)
+
+try:
+    data = json.loads(raw)
+except:
+    print('{}')
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    print('{}')
+    sys.exit(0)
+
+if not data.get('source'):
+    data['source'] = 'codex'
+
+if not data.get('pid'):
+    try:
+        pid = int(os.environ.get('CC_PID', '0'))
+        if pid > 0:
+            data['pid'] = pid
+    except:
+        pass
+
+tid = os.environ.get('GHOSTTY_TID', '')
+if tid and not data.get('terminalId'):
+    data['terminalId'] = tid
+
+hook_event = data.get('hook_event_name') or data.get('event') or data.get('codex_event_type') or ''
+if hook_event and not data.get('hook_event_name'):
+    data['hook_event_name'] = hook_event
+
+# Codex may omit cwd in some events. Fall back to process cwd so session
+# records still have a stable workspace path.
+if not data.get('cwd') and not data.get('workdir'):
+    try:
+        data['cwd'] = os.getcwd()
+    except:
+        pass
+
+payload = json.dumps(data)
+
+try:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect('$SOCKET_PATH')
+    sock.sendall(payload.encode('utf-8'))
+
+    if hook_event == 'PermissionRequest':
+        sock.shutdown(socket.SHUT_WR)
+        response = b''
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        sock.close()
+        if response:
+            sys.stdout.write(response.decode('utf-8', errors='replace'))
+        else:
+            sys.stdout.write('{}')
+    else:
+        sock.shutdown(socket.SHUT_WR)
+        sock.close()
+        sys.stdout.write('{}')
+except:
+    sys.stdout.write('{}')
+"
+"#;
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, keep the hook simple: forward Codex JSON to the existing
+        // oc-claw TCP hook server. `process_claude_event` handles both Codex
+        // and Claude field variants.
+        let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+try {
+    $raw = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        [Console]::Out.Write('{}')
+        exit 0
+    }
+
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json } catch {}
+    if ($obj -ne $null) {
+        $ccPid = (Get-Process -Id $PID).Parent.Parent.Id
+        if (-not $obj.source) { $obj.source = 'codex' }
+        if ($ccPid -and -not $obj.pid) { $obj | Add-Member -NotePropertyName pid -NotePropertyValue $ccPid -Force }
+        if (-not $obj.hook_event_name -and $obj.codex_event_type) { $obj.hook_event_name = $obj.codex_event_type }
+        if (-not $obj.cwd -and -not $obj.workdir) { $obj.cwd = (Get-Location).Path }
+        $raw = $obj | ConvertTo-Json -Compress -Depth 20
+    }
+
+    $hookName = ''
+    if ($obj -ne $null -and $obj.hook_event_name) { $hookName = [string]$obj.hook_event_name }
+
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
+    $stream = $client.GetStream()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush()
+    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+
+    if ($hookName -eq 'PermissionRequest') {
+        $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+        $response = $reader.ReadToEnd()
+        if ($response) { [Console]::Out.Write($response) } else { [Console]::Out.Write('{}') }
+        $reader.Close()
+    } else {
+        [Console]::Out.Write('{}')
+    }
+    [Console]::Out.Flush()
+    $client.Close()
+} catch {
+    try { [Console]::Out.Write('{}'); [Console]::Out.Flush() } catch {}
+}
+"#;
+        std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
+    }
+
+    let hooks_json_path = codex_dir.join("hooks.json");
+    let mut config: serde_json::Value = if hooks_json_path.exists() {
+        let content = std::fs::read_to_string(&hooks_json_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    if config.get("hooks").is_none() {
+        config["hooks"] = serde_json::json!({});
+    }
+    let hooks = config["hooks"].as_object_mut().ok_or("hooks is not an object")?;
+
+    #[cfg(windows)]
+    let hook_command = format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+        hook_path.to_string_lossy().replace('\\', "/"),
+    );
+    #[cfg(not(windows))]
+    let hook_command = hook_path.to_string_lossy().to_string();
+
+    let has_our_hook = |entry: &serde_json::Value| -> bool {
+        let is_ours = |cmd: &str| -> bool {
+            cmd == hook_command || cmd.contains("ooclaw-codex-hook")
+        };
+        entry.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c))
+            || entry.get("hooks").and_then(|hs| hs.as_array()).map_or(false, |hs| {
+                hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c)))
+            })
+    };
+
+    let hook_def = serde_json::json!({"type": "command", "command": hook_command});
+    let event_names = [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PermissionRequest",
+        "Stop",
+        "StopFailure",
+        "SubagentStop",
+    ];
+    for event_name in event_names {
+        let arr = hooks.entry(event_name.to_string()).or_insert(serde_json::json!([]));
+        let list = arr.as_array_mut().ok_or("hook event is not an array")?;
+        list.retain(|entry| !has_our_hook(entry));
+        list.push(serde_json::json!({"hooks": [hook_def.clone()]}));
+    }
+
+    let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&hooks_json_path, json_str).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+fn codex_requires_escalation(event: &serde_json::Value) -> bool {
+    fn read_bool(v: &serde_json::Value, keys: &[&str]) -> bool {
+        keys.iter()
+            .filter_map(|k| v.get(k))
+            .any(|x| x.as_bool().unwrap_or(false))
+    }
+
+    fn read_string<'a>(v: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+        keys.iter().find_map(|k| v.get(k).and_then(|x| x.as_str()))
+    }
+
+    fn has_explicit_escalation_markers(v: &serde_json::Value) -> bool {
+        let sandbox_mode = read_string(v, &["sandbox_permissions", "sandboxPermissions"])
+            .unwrap_or("");
+        if sandbox_mode.eq_ignore_ascii_case("require_escalated")
+            || sandbox_mode.eq_ignore_ascii_case("escalated")
+        {
+            return true;
+        }
+        if read_bool(
+            v,
+            &[
+                "with_escalated_permissions",
+                "withEscalatedPermissions",
+                "requires_approval",
+                "requiresApproval",
+                "approval_required",
+                "approvalRequired",
+            ],
+        ) {
+            return true;
+        }
+        let justification = read_string(v, &["justification"]).unwrap_or("").trim();
+        !justification.is_empty()
+    }
+
+    fn parse_tool_input(event: &serde_json::Value) -> Option<serde_json::Value> {
+        let tool_input = event.get("tool_input").or_else(|| event.get("toolInput"))?;
+        if tool_input.is_object() {
+            return Some(tool_input.clone());
+        }
+        if let Some(raw) = tool_input.as_str() {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) {
+                return Some(parsed);
+            }
+        }
+        None
+    }
+
+    // Preferred path: explicit approval/escalation fields.
+    if has_explicit_escalation_markers(event) {
+        return true;
+    }
+    let parsed_tool_input = parse_tool_input(event);
+    if let Some(tool_input) = parsed_tool_input.as_ref() {
+        if has_explicit_escalation_markers(tool_input) {
+            return true;
+        }
+    }
+
+    // Fallback for Codex payloads that omit explicit flags:
+    // PreToolUse(Bash) in default permission mode with an obvious
+    // out-of-workspace write command almost always means approval UI.
+    let tool_name = read_string(event, &["tool", "tool_name"]).unwrap_or("");
+    let permission_mode = read_string(event, &["permission_mode", "permissionMode"]).unwrap_or("");
+    let is_codex_like = event.get("turn_id").is_some()
+        || event.get("hook_event_name").is_some()
+        || read_string(event, &["source"]).unwrap_or("").eq_ignore_ascii_case("codex");
+    if !(is_codex_like && tool_name == "Bash" && permission_mode == "default") {
+        return false;
+    }
+
+    let command = parsed_tool_input
+        .as_ref()
+        .and_then(|ti| read_string(ti, &["command"]))
+        .unwrap_or("");
+    if command.is_empty() {
+        return false;
+    }
+    command.contains("$HOME/")
+        || command.contains("/Users/")
+        || command.contains("Desktop/")
+        || command.contains(" cat > ")
+        || command.contains(" > ")
+        || command.contains("<<'EOF'")
+        || command.contains("<<EOF")
+}
+
+fn is_codex_internal_utility_event(event: &serde_json::Value) -> bool {
+    let permission_mode = event.get("permission_mode")
+        .or_else(|| event.get("permissionMode"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if permission_mode != "bypassPermissions" {
+        return false;
+    }
+
+    let prompt = event.get("prompt")
+        .or_else(|| event.get("userPrompt"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if prompt.starts_with("You are a helpful assistant. You will be presented with a user prompt") {
+        return true;
+    }
+
+    let transcript_is_null = event.get("transcript_path").map(|v| v.is_null()).unwrap_or(false);
+    let source = event.get("source").and_then(|v| v.as_str()).unwrap_or("");
+    let model = event.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    if transcript_is_null && (source == "startup" || model == "gpt-5.4-mini") {
+        return true;
+    }
+
+    let last_message = event.get("last_assistant_message")
+        .or_else(|| event.get("codex_last_assistant_message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim_start();
+    if last_message.starts_with("{\"title\":") {
+        return true;
+    }
+
+    false
+}
+
+fn is_codex_internal_utility_session(session: &ClaudeSession) -> bool {
+    if session.source != "codex" {
+        return false;
+    }
+
+    let prompt = session.user_prompt.as_deref().unwrap_or("");
+    if prompt.starts_with("You are a helpful assistant. You will be presented with a user prompt") {
+        return true;
+    }
+
+    let last = session.last_response.as_deref().unwrap_or("").trim_start();
+    last.starts_with("{\"title\":")
 }
 
 /// Process a Claude hook event (shared logic between Unix socket and TCP server).
@@ -5857,6 +7518,7 @@ fn process_claude_event(
     buf: &str,
     state: &Arc<Mutex<HashMap<String, ClaudeSession>>>,
     app: &tauri::AppHandle,
+    source_override: Option<&str>,
 ) -> Option<(String, String)> {
     log::info!("[claude_event] raw buf len={} content={}", buf.len(), &buf[..buf.len().min(500)]);
     if let Ok(event) = serde_json::from_str::<serde_json::Value>(buf) {
@@ -5864,12 +7526,58 @@ fn process_claude_event(
         // hook format AND raw CC field names (session_id, hook_event_name, status).
         // On Windows the hook now forwards raw CC JSON directly to avoid truncation issues
         // with large payloads (Stop events contain last_assistant_message with full response text).
-        let session_id = event.get("sessionId").or_else(|| event.get("session_id"))
+        let session_id = event.get("sessionId")
+            .or_else(|| event.get("session_id"))
+            .or_else(|| event.get("conversation_id"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
         if session_id.is_empty() { log::warn!("[claude_event] empty sessionId, ignoring"); return None; }
 
-        let hook_event = event.get("event").or_else(|| event.get("hook_event_name"))
+        let raw_hook_event = event.get("event")
+            .or_else(|| event.get("hook_event_name"))
+            .or_else(|| event.get("codex_event_type"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // Normalize Cursor's camelCase event names to CC's PascalCase.
+        // Cursor and CC have different hook event sets:
+        //   Cursor: beforeSubmitPrompt, stop, beforeShellExecution, afterShellExecution,
+        //           beforeMCPExecution, afterMCPExecution, afterFileEdit, beforeReadFile,
+        //           afterAgentThought, afterAgentResponse
+        //   CC:     UserPromptSubmit, Stop, PreToolUse, PostToolUse, SessionStart, etc.
+        let hook_event = match raw_hook_event.as_str() {
+            "beforeSubmitPrompt" => "UserPromptSubmit".to_string(),
+            "hook-user-prompt-submit" => "UserPromptSubmit".to_string(),
+            "sessionStart" => "SessionStart".to_string(),
+            "sessionEnd" => "SessionEnd".to_string(),
+            "agentStop" => "Stop".to_string(),
+            "StopFailure" | "stopFailure" => "Stop".to_string(),
+            "preToolUse" => "PreToolUse".to_string(),
+            "postToolUse" | "postToolUseFailure" => "PostToolUse".to_string(),
+            "subagentStart" => "PreToolUse".to_string(),
+            "subagentStop" => "SubagentStop".to_string(),
+            "preCompact" => "PreCompact".to_string(),
+            // Cursor-specific tool events → map to PreToolUse/PostToolUse
+            "beforeShellExecution" | "beforeMCPExecution" | "beforeReadFile" => "PreToolUse".to_string(),
+            "afterShellExecution" | "afterMCPExecution" | "afterFileEdit" => "PostToolUse".to_string(),
+            "afterAgentThought" | "afterAgentResponse" => "PostToolUse".to_string(),
+            "stop" => "Stop".to_string(),
+            other => other.to_string(),
+        };
+
+        // Codex desktop may emit internal utility sessions (for example title
+        // generation). These should not appear in the session list or trigger
+        // completion notifications.
+        if is_codex_internal_utility_event(&event) {
+            if let Ok(mut sessions) = state.lock() {
+                sessions.remove(&session_id);
+            }
+            stop_session_file_watcher(&session_id);
+            log::info!(
+                "[claude_event] ignore internal codex utility session={} event={}",
+                session_id,
+                hook_event
+            );
+            return None;
+        }
+
         let claude_status = event.get("claudeStatus").or_else(|| event.get("status"))
             .and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
 
@@ -5882,14 +7590,25 @@ fn process_claude_event(
             matches!(cmd, "/clear" | "/compact" | "/help" | "/cost" | "/status" | "/vim" | "/fast" | "/model" | "/login" | "/logout")
         } else { false };
 
+        let pretool_needs_waiting = hook_event == "PreToolUse" && codex_requires_escalation(&event);
         let mut status = match hook_event.as_str() {
             "UserPromptSubmit" => {
                 if is_local_slash { "stopped".to_string() } else { "processing".to_string() }
             }
             "PreCompact" => "compacting".to_string(),
             "PreToolUse" => {
-                let tool = event.get("tool").and_then(|v| v.as_str()).unwrap_or("");
-                if tool == "AskUserQuestion" { "waiting".to_string() } else { "tool_running".to_string() }
+                let tool = event.get("tool")
+                    .or_else(|| event.get("tool_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                // Different clients may report interactive choice tools with
+                // slightly different names. Treat both as waiting states so
+                // the selection popup can be shown consistently.
+                if tool == "AskUserQuestion" || tool == "AskQuestion" || pretool_needs_waiting {
+                    "waiting".to_string()
+                } else {
+                    "tool_running".to_string()
+                }
             }
             "PostToolUse" => "processing".to_string(),
             "Stop" => "stopped".to_string(),
@@ -5922,6 +7641,8 @@ fn process_claude_event(
         let was_processing;
         let was_compacting;
         let pending_agents;
+        let session_source: String;
+        let stop_was_interrupted;
 
         {
             let mut sessions = state.lock().unwrap();
@@ -5930,9 +7651,16 @@ fn process_claude_event(
             was_compacting = prev_status == "compacting";
 
             if hook_event == "SessionEnd" {
+                session_source = sessions.get(&session_id).map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string());
                 sessions.remove(&session_id);
                 pending_agents = 0;
+                stop_was_interrupted = false;
             } else {
+                // Determine source: explicit override from socket server, or from JSON, or default "cc"
+                let source = source_override
+                    .map(|s| s.to_string())
+                    .or_else(|| event.get("source").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_else(|| "cc".to_string());
                 let session = sessions.entry(session_id.clone()).or_insert_with(|| ClaudeSession {
                     session_id: session_id.clone(),
                     cwd: String::new(),
@@ -5945,8 +7673,33 @@ fn process_claude_event(
                     is_processing: false,
                     pid: None,
                     pending_agents: 0,
+                    last_response: None,
+                    is_active_tab: false,
+                    source: source.clone(),
                     permission_suggestions: None,
+                    terminal_id: None,
+                    host_terminal: None,
+                    cursor_port: None,
+                    cursor_workspace_root: None,
+                    cursor_workspace_name: None,
+                    cursor_native_handle: None,
                 });
+                // Only upgrade source, never downgrade:
+                // cc < codex < cursor.
+                // Once a session is identified as codex/cursor, later generic
+                // CC events (source=cc) for the same sessionId must not
+                // overwrite it, otherwise active-tab/staleness logic regresses.
+                let source_rank = |s: &str| -> u8 {
+                    match s {
+                        "cc" => 1,
+                        "codex" => 2,
+                        "cursor" => 3,
+                        _ => 0,
+                    }
+                };
+                if source_rank(&source) >= source_rank(&session.source) {
+                    session.source = source.clone();
+                }
 
                 // Track pending sub-agents:
                 // - PreToolUse with tool=Agent → a sub-agent is being launched
@@ -5958,7 +7711,7 @@ fn process_claude_event(
                     // New user prompt = fresh start. Reset counter in case previous
                     // agents were killed or SubagentStop was never delivered.
                     session.pending_agents = 0;
-                } else if hook_event == "PreToolUse" && tool_name == "Agent" {
+                } else if (hook_event == "PreToolUse" && tool_name == "Agent") || raw_hook_event == "subagentStart" {
                     session.pending_agents += 1;
                     log::info!("[claude_event] session={} Agent launched, pending_agents={}",
                         &session_id[..session_id.len().min(8)], session.pending_agents);
@@ -5970,28 +7723,189 @@ fn process_claude_event(
 
                 session.status = status.clone();
                 session.is_processing = is_processing;
-                session.cwd = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let incoming_cwd = event.get("cwd")
+                    .or_else(|| event.get("workdir"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if !incoming_cwd.is_empty() || session.cwd.is_empty() {
+                    session.cwd = incoming_cwd.to_string();
+                }
                 session.interactive = event.get("interactive").and_then(|v| v.as_bool()).unwrap_or(true);
                 session.updated_at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
 
+                if session.source == "cursor" && !session.cwd.is_empty() {
+                    // Cursor hook payloads do not expose a stable window ID or terminal PID.
+                    // Instead we bind the session to the extension port whose workspace roots
+                    // best match the session cwd. We do this on first sighting and whenever a
+                    // new prompt starts so a re-opened / re-focused window can rebind cleanly.
+                    let needs_rebind = hook_event == "UserPromptSubmit"
+                        || session.cursor_port.is_none()
+                        || session.cursor_workspace_root.as_ref()
+                            .map(|root| !cwd_matches_workspace_root(&session.cwd, root))
+                            .unwrap_or(false);
+
+                    if needs_rebind {
+                        if let Some(binding) = resolve_cursor_window_binding(
+                            &session.cwd,
+                            session.cursor_port,
+                            session.cursor_native_handle.as_deref(),
+                        ) {
+                            if session.cursor_port != Some(binding.port)
+                                || session.cursor_workspace_root.as_deref() != Some(binding.workspace_root.as_str()) {
+                                log::info!(
+                                    "[cursor_bind] session={} port={} workspace_root={} workspace_name={} native_handle={:?}",
+                                    &session_id[..session_id.len().min(8)],
+                                    binding.port,
+                                    binding.workspace_root,
+                                    binding.workspace_name,
+                                    binding.native_handle,
+                                );
+                            }
+                            session.cursor_port = Some(binding.port);
+                            session.cursor_workspace_root = Some(binding.workspace_root);
+                            session.cursor_workspace_name = Some(binding.workspace_name);
+                            session.cursor_native_handle = binding.native_handle;
+                        } else {
+                            log::info!(
+                                "[cursor_bind] session={} unresolved cwd={}",
+                                &session_id[..session_id.len().min(8)],
+                                session.cwd,
+                            );
+                        }
+                    }
+                }
+
                 if let Some(t) = event.get("tool").or_else(|| event.get("tool_name")).and_then(|v| v.as_str()) {
                     if !t.is_empty() { session.tool = Some(t.to_string()); }
                 }
-                if let Some(t) = event.get("toolInput").or_else(|| event.get("tool_input")).and_then(|v| v.as_str()) {
-                    if !t.is_empty() { session.tool_input = Some(t.to_string()); }
+                if let Some(tool_input_val) = event.get("toolInput").or_else(|| event.get("tool_input")) {
+                    let tool_input_text = tool_input_val
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| serde_json::to_string(tool_input_val).ok());
+                    if let Some(t) = tool_input_text {
+                        if !t.is_empty() {
+                            session.tool_input = Some(t);
+                        }
+                    }
                 }
-                if let Some(t) = event.get("userPrompt").and_then(|v| v.as_str()) {
+                if let Some(t) = event.get("userPrompt")
+                    .or_else(|| event.get("prompt"))
+                    .and_then(|v| v.as_str()) {
                     if !t.is_empty() { session.user_prompt = Some(t.to_string()); }
                 }
                 // Store CC process PID from hook event for stale-session detection
                 if let Some(p) = event.get("pid").and_then(|v| v.as_u64()) {
-                    session.pid = Some(p as u32);
+                    let pid_u32 = p as u32;
+                    session.pid = Some(pid_u32);
+                    #[cfg(target_os = "macos")]
+                    if session.host_terminal.is_none() && session.source != "cursor" {
+                        session.host_terminal = find_terminal_app_for_pid(pid_u32);
+                        log::info!("[claude_event] session={} host_terminal={:?}",
+                            &session_id[..session_id.len().min(8)], session.host_terminal);
+                        if session.source == "cc"
+                            && session
+                                .host_terminal
+                                .as_deref()
+                                .map(is_codex_host_terminal)
+                                .unwrap_or(false)
+                        {
+                            session.source = "codex".to_string();
+                        }
+                    }
+                }
+
+                // Store Ghostty terminal ID from hook event for precise tab jumping.
+                // The hook captures this from inside the CC terminal, so it's
+                // always the correct tab — even for pre-existing sessions.
+                if session.terminal_id.is_none() {
+                    if let Some(tid) = event.get("terminalId").and_then(|v| v.as_str()) {
+                        if !tid.is_empty() {
+                            log::info!("[claude_event] session={} stored terminal_id={}",
+                                &session_id[..session_id.len().min(8)], tid);
+                            session.terminal_id = Some(tid.to_string());
+                        }
+                    }
                 }
 
                 if hook_event == "Stop" || hook_event == "SubagentStop" {
                     session.tool = None;
                     session.tool_input = None;
+                }
+
+                // Store AI's last response for the completion reminder popup.
+                // Clear on new prompt so stale responses don't linger.
+                //
+                // For Cursor: afterAgentResponse fires before stop and carries
+                // the actual response text. We stash it here so the Stop handler
+                // can use it instead of a placeholder.
+                if raw_hook_event == "afterAgentResponse" {
+                    if let Some(resp) = event.get("lastResponse").and_then(|v| v.as_str()) {
+                        if !resp.is_empty() {
+                            session.last_response = Some(resp.to_string());
+                        }
+                    }
+                }
+
+                // Check at Stop time (real-time, not polling) whether the user
+                // is already looking at this terminal tab. If so, skip setting
+                // last_response so the completion popup never triggers.
+                if hook_event == "Stop" {
+                    let interrupted = stop_event_was_interrupted(&event, &session.source, &claude_status);
+                    // CC: check if the user is looking at this session's Ghostty tab
+                    // Cursor: check if Cursor (or oc-claw) is the frontmost app.
+                    // If a terminal ID is missing (older hooks / non-Ghostty),
+                    // fall back to host-terminal checks where available.
+                    let frontmost = get_frontmost_app_name();
+                    let is_ghostty_session = matches!(
+                        session.host_terminal.as_deref(),
+                        Some("Ghostty" | "ghostty")
+                    );
+                    let is_tab_active = if session.source == "cursor" {
+                        is_cursor_frontmost_app(&frontmost)
+                    } else if session.source == "codex" {
+                        let ghostty_match = is_ghostty_session
+                            && session.terminal_id.as_ref()
+                                .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+                                .unwrap_or(false);
+                        ghostty_match || is_codex_frontmost_app(&frontmost)
+                    } else if is_ghostty_session {
+                        session.terminal_id.as_ref()
+                            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+                            .unwrap_or(false)
+                    } else if let Some(ht) = session.host_terminal.as_deref() {
+                        frontmost_matches_host_terminal(&frontmost, ht)
+                    } else {
+                        false
+                    };
+                    if is_tab_active || interrupted {
+                        session.last_response = None;
+                    } else {
+                        // Prefer lastResponse from the event itself (CC's Stop has it),
+                        // then fall back to any value pre-stored by afterAgentResponse,
+                        // then use a placeholder for Cursor/Codex so the popup
+                        // still triggers when stop payload omits assistant text.
+                        let resp_from_event = event.get("lastResponse")
+                            .or_else(|| event.get("last_assistant_message"))
+                            .or_else(|| event.get("codex_last_assistant_message"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        if resp_from_event.is_some() {
+                            session.last_response = resp_from_event;
+                        } else if session.last_response.is_none()
+                            && (session.source == "cursor" || session.source == "codex")
+                        {
+                            session.last_response = Some("✓".to_string());
+                        }
+                        // else: keep existing last_response from afterAgentResponse
+                    }
+                    stop_was_interrupted = interrupted;
+                } else if hook_event == "UserPromptSubmit" {
+                    session.last_response = None;
+                    stop_was_interrupted = false;
+                } else {
+                    stop_was_interrupted = false;
                 }
 
                 if hook_event == "PermissionRequest" {
@@ -6003,6 +7917,7 @@ fn process_claude_event(
                 }
 
                 pending_agents = session.pending_agents;
+                session_source = session.source.clone();
             }
         }
 
@@ -6014,24 +7929,36 @@ fn process_claude_event(
         // Also suppress sound while sub-agents are still running (pending_agents > 0).
         // Each PreToolUse(Agent) increments the counter, each SubagentStop decrements it.
         // Sound only plays when all sub-agents have completed.
+        let is_wait_event = hook_event == "PermissionRequest"
+            || (hook_event == "PreToolUse" && status == "waiting");
+        let is_completion_stop = hook_event == "Stop" && pending_agents == 0 && !stop_was_interrupted;
         if was_processing && !was_compacting
-            && ((hook_event == "Stop" && pending_agents == 0) || hook_event == "PermissionRequest") {
-            let is_waiting = hook_event == "PermissionRequest";
-            let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting}));
+            && (is_completion_stop || is_wait_event) {
+            let is_waiting = is_wait_event;
+            let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting, "source": session_source}));
         }
 
-        let cwd_str = event.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let cwd_str = event.get("cwd")
+            .or_else(|| event.get("workdir"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         log::info!("[claude_event] session={} event={} status={} cwd={}", session_id, hook_event, status, cwd_str);
-        if hook_event == "UserPromptSubmit" && !cwd_str.is_empty() {
-            let jsonl_path = claude_session_file_path(&session_id, &cwd_str);
-            log::info!("[claude_event] session file path: {} exists={}", jsonl_path.display(), jsonl_path.exists());
-            if jsonl_path.exists() {
-                start_session_file_watcher(
-                    session_id.clone(),
-                    jsonl_path,
-                    state.clone(),
-                    app.clone(),
+        if hook_event == "UserPromptSubmit" {
+            if let Some(jsonl_path) = resolve_session_jsonl_path(&session_id, Some(&cwd_str)) {
+                log::info!(
+                    "[claude_event] session file path: {} exists={}",
+                    jsonl_path.display(),
+                    jsonl_path.exists()
                 );
+                if jsonl_path.exists() {
+                    start_session_file_watcher(
+                        session_id.clone(),
+                        jsonl_path,
+                        state.clone(),
+                        app.clone(),
+                    );
+                }
             }
         } else if hook_event == "Stop" || hook_event == "SubagentStop" || hook_event == "SessionEnd" {
             stop_session_file_watcher(&session_id);
@@ -6043,6 +7970,420 @@ fn process_claude_event(
         log::warn!("[claude_event] JSON parse failed: err={}, len={}, tail=...{}", e, buf.len(), tail);
     }
     None
+}
+
+// ─── Cursor Integration ───────────────────────────────────────────────
+
+/// Install hooks for Cursor IDE.
+/// Creates ~/.cursor/hooks/occlaw-cursor-hook.sh and registers it in
+/// ~/.cursor/hooks.json for all Cursor hook events.
+#[tauri::command]
+async fn install_cursor_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let cursor_dir = home.join(".cursor");
+    let hooks_dir = cursor_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
+
+    // ── Write hook script (Unix) ──
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/occlaw-cursor.sock";
+        let hook_script = format!(r##"#!/bin/bash
+# occlaw Cursor hook — forwards events to {socket}
+SOCKET_PATH="{socket}"
+[ -S "$SOCKET_PATH" ] || {{ echo '{{}}'; exit 0; }}
+export CC_PID=$PPID
+
+/usr/bin/python3 -c "
+import json, os, socket, sys
+
+try:
+    input_data = json.load(sys.stdin)
+except:
+    print('{{}}')
+    sys.exit(0)
+
+hook_event = input_data.get('hook_event_name', '')
+if not hook_event:
+    print('{{}}')
+    sys.exit(0)
+
+session_id = input_data.get('session_id', '') or input_data.get('conversation_id', '') or 'default'
+cwd = input_data.get('cwd', '')
+if not cwd:
+    roots = input_data.get('workspace_roots', [])
+    if roots:
+        cwd = roots[0]
+
+output = {{}}
+output['sessionId'] = session_id
+output['event'] = hook_event
+output['source'] = 'cursor'
+if cwd:
+    output['cwd'] = cwd
+
+# Map tool info — Cursor events use different field names than CC:
+#   beforeShellExecution: command, cwd
+#   beforeMCPExecution: tool_name, tool_input
+#   afterFileEdit: file_path, edits
+#   beforeReadFile: file_path, content
+tool_name = input_data.get('tool_name', '')
+if hook_event == 'beforeShellExecution' or hook_event == 'afterShellExecution':
+    output['tool'] = 'Shell'
+    cmd = input_data.get('command', '')
+    if cmd:
+        output['toolInput'] = json.dumps({{'command': cmd[:500]}})
+elif hook_event in ('beforeMCPExecution', 'afterMCPExecution'):
+    output['tool'] = tool_name or 'MCP'
+    ti = input_data.get('tool_input', {{}})
+    if ti:
+        output['toolInput'] = json.dumps(ti)[:300]
+elif hook_event == 'afterFileEdit':
+    output['tool'] = 'Edit'
+    fp = input_data.get('file_path', '')
+    edits = input_data.get('edits', [])
+    slim = {{}}
+    if fp:
+        slim['file_path'] = fp
+    if edits:
+        combined = '\\n'.join(e.get('new_string', '')[:1000] for e in edits[:3])
+        slim['content'] = combined[:5000]
+    output['toolInput'] = json.dumps(slim)
+elif hook_event == 'beforeReadFile':
+    output['tool'] = 'Read'
+    fp = input_data.get('file_path', '')
+    if fp:
+        output['toolInput'] = json.dumps({{'file_path': fp}})
+elif tool_name:
+    output['tool'] = tool_name
+    ti = input_data.get('tool_input', {{}})
+    if ti:
+        output['toolInput'] = json.dumps(ti)[:300]
+
+# Stop event: extract status and last response
+if hook_event == 'stop':
+    status = input_data.get('status', '')
+    if status:
+        output['claudeStatus'] = status
+    transcript_path = input_data.get('transcript_path', '')
+    if transcript_path:
+        output['transcript_path'] = transcript_path
+    msg = input_data.get('last_assistant_message', '')
+    if msg:
+        output['lastResponse'] = msg[:2000]
+
+# afterAgentResponse: Cursor sends the AI's response text here
+# (stop event doesn't include it). Forward it so Rust can store it.
+if hook_event == 'afterAgentResponse':
+    text = input_data.get('text', '')
+    if text:
+        output['lastResponse'] = text[:2000]
+
+# UserPromptSubmit: extract prompt text
+if hook_event == 'beforeSubmitPrompt':
+    prompt = input_data.get('prompt', '')
+    if prompt:
+        output['userPrompt'] = prompt[:200]
+
+# PID for stale-session detection
+cc_pid = os.environ.get('CC_PID', '')
+if cc_pid:
+    try:
+        output['pid'] = int(cc_pid)
+    except:
+        pass
+
+# Send to socket
+try:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect('$SOCKET_PATH')
+    sock.sendall(json.dumps(output).encode())
+    sock.shutdown(socket.SHUT_WR)
+    sock.close()
+except:
+    pass
+
+# Required stdout for Cursor:
+#   beforeSubmitPrompt → gating hook, needs {{'continue': true}}
+#   beforeShellExecution, beforeMCPExecution → permission hooks, need {{'permission': 'allow'}}
+#   beforeReadFile → permission hook, needs {{'permission': 'allow'}}
+#   everything else → {{}}
+if hook_event == 'beforeSubmitPrompt':
+    print(json.dumps({{'continue': True}}))
+elif hook_event in ('beforeShellExecution', 'beforeMCPExecution', 'beforeReadFile'):
+    print(json.dumps({{'permission': 'allow'}}))
+else:
+    print('{{}}')
+"
+"##, socket = socket_path);
+
+        let hook_path = hooks_dir.join("occlaw-cursor-hook.sh");
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // ── Write hook script (Windows) ──
+    #[cfg(windows)]
+    {
+        let hook_script = r#"$ErrorActionPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$raw = [Console]::In.ReadToEnd()
+if (-not $raw) { Write-Output '{}'; exit 0 }
+$ccPid = (Get-Process -Id $PID).Parent.Parent.Id
+if ($ccPid -and $raw.StartsWith('{')) {
+    $raw = '{"pid":' + $ccPid + ',"source":"cursor",' + $raw.Substring(1)
+} else {
+    $raw = '{"source":"cursor",' + $raw.Substring(1)
+}
+try {
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19284)
+    $stream = $client.GetStream()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+    $hookName = ($raw | ConvertFrom-Json).hook_event_name
+    if ($hookName -eq 'beforeSubmitPrompt') {
+        Write-Output '{"continue":true}'
+    } elseif ($hookName -eq 'beforeShellExecution' -or $hookName -eq 'beforeMCPExecution' -or $hookName -eq 'beforeReadFile') {
+        Write-Output '{"permission":"allow"}'
+    } else {
+        Write-Output '{}'
+    }
+    $client.Close()
+} catch {
+    Write-Output '{}'
+}
+"#;
+        let hook_path = hooks_dir.join("occlaw-cursor-hook.ps1");
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
+    }
+
+    // ── Register hooks in ~/.cursor/hooks.json ──
+    let hooks_json_path = cursor_dir.join("hooks.json");
+    let mut config: serde_json::Value = if hooks_json_path.exists() {
+        let content = std::fs::read_to_string(&hooks_json_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    config["version"] = serde_json::json!(1);
+    if config.get("hooks").is_none() {
+        config["hooks"] = serde_json::json!({});
+    }
+
+    #[cfg(unix)]
+    let hook_command = hooks_dir.join("occlaw-cursor-hook.sh").to_string_lossy().to_string();
+    #[cfg(windows)]
+    let hook_command = format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+        hooks_dir.join("occlaw-cursor-hook.ps1").to_string_lossy());
+
+    // Cursor's actual supported hook events (as of 2026-04):
+    // - beforeShellExecution, beforeMCPExecution: permission hooks (need {"permission":"allow"})
+    // - afterFileEdit, beforeReadFile: notification hooks
+    // - beforeSubmitPrompt: gating hook (needs {"continue":true})
+    // - stop: notification hook
+    // NOTE: preToolUse/postToolUse/sessionStart/sessionEnd/subagentStart/subagentStop
+    // are NOT supported by Cursor — those are Claude Code events.
+    let cursor_events = [
+        "beforeSubmitPrompt", "stop",
+        "beforeShellExecution", "afterShellExecution",
+        "beforeMCPExecution", "afterMCPExecution",
+        "afterFileEdit", "beforeReadFile",
+        "afterAgentThought", "afterAgentResponse",
+    ];
+    let marker = "occlaw-cursor-hook";
+
+    let hooks = config["hooks"].as_object_mut().ok_or("hooks is not an object")?;
+
+    // Clean up our hook from old event names that Cursor doesn't actually support.
+    // Previous versions incorrectly registered CC-only events like preToolUse, sessionStart, etc.
+    let stale_events = [
+        "sessionStart", "sessionEnd", "preToolUse", "postToolUse",
+        "postToolUseFailure", "subagentStart", "subagentStop", "preCompact",
+    ];
+    for stale in &stale_events {
+        if let Some(arr) = hooks.get_mut(*stale).and_then(|v| v.as_array_mut()) {
+            arr.retain(|entry| {
+                !entry.get("command").and_then(|c| c.as_str())
+                    .map(|c| c.contains(marker))
+                    .unwrap_or(false)
+            });
+        }
+    }
+
+    for event_name in &cursor_events {
+        let arr = hooks.entry(event_name.to_string())
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or("hook event is not an array")?;
+
+        let existing_idx = arr.iter().position(|entry| {
+            entry.get("command").and_then(|c| c.as_str())
+                .map(|c| c.contains(marker))
+                .unwrap_or(false)
+        });
+
+        let entry = serde_json::json!({"command": hook_command});
+        if let Some(idx) = existing_idx {
+            arr[idx] = entry;
+        } else {
+            arr.push(entry);
+        }
+    }
+
+    let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&hooks_json_path, json_str).map_err(|e| e.to_string())?;
+
+    log::info!("[cursor_hooks] installed hooks to {:?}", hooks_json_path);
+
+    // ── Sync oc-claw terminal-focus extension for Cursor ──
+    // The extension exposes a tiny localhost API per Cursor window:
+    // - GET  /window-meta  → workspace roots + focus state + bound port
+    // - POST /focus-window → surface that specific Cursor window
+    // We intentionally overwrite the installed files on every startup so
+    // extension changes take effect after the user reloads Cursor windows.
+    let ext_id = "oc-claw.terminal-focus";
+    let ext_dir = home.join(".cursor").join("extensions").join(format!("{}-1.0.0", ext_id));
+    log::info!("[cursor_hooks] syncing terminal-focus extension...");
+
+    // Locate extension source: bundled in app resources or next to the binary
+    let ext_source = {
+        let mut candidates = Vec::new();
+
+        // In dev: extensions/cursor/ relative to project root
+        #[cfg(debug_assertions)]
+        {
+            // exe is typically at frontend/src-tauri/target/debug/ooclaw
+            if let Ok(exe) = std::env::current_exe() {
+                let mut dir = exe.parent();
+                for _ in 0..6 {
+                    if let Some(d) = dir {
+                        let candidate = d.join("extensions").join("cursor").join("extension.js");
+                        if candidate.exists() {
+                            candidates.push(d.join("extensions").join("cursor"));
+                            break;
+                        }
+                        dir = d.parent();
+                    }
+                }
+            }
+        }
+
+        // In production: bundled as a Tauri resource
+        #[cfg(not(debug_assertions))]
+        {
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(macos_dir) = exe.parent() {
+                    let res = macos_dir.parent().map(|p| p.join("Resources").join("extensions").join("cursor"));
+                    if let Some(ref r) = res {
+                        if r.join("extension.js").exists() {
+                            candidates.push(r.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        candidates.into_iter().next()
+    };
+
+    if let Some(src) = ext_source {
+        if let Err(e) = std::fs::create_dir_all(&ext_dir) {
+            log::warn!("[cursor_hooks] failed to create extension dir: {}", e);
+        } else {
+            let files = ["package.json", "extension.js"];
+            let mut ok = true;
+            for fname in &files {
+                let from = src.join(fname);
+                let to = ext_dir.join(fname);
+                if let Err(e) = std::fs::copy(&from, &to) {
+                    log::warn!("[cursor_hooks] failed to copy {}: {}", fname, e);
+                    ok = false;
+                }
+            }
+            if ok {
+                log::info!("[cursor_hooks] terminal-focus extension synced at {:?}", ext_dir);
+            }
+        }
+    } else {
+        log::warn!("[cursor_hooks] extension source not found, skipping sync");
+    }
+
+    Ok(())
+}
+
+/// Start the Cursor IPC server.
+/// On macOS/Linux: Unix domain socket at /tmp/occlaw-cursor.sock
+/// On Windows: TCP server on localhost:19284
+fn start_cursor_socket_server(
+    claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    app: tauri::AppHandle,
+) {
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/occlaw-cursor.sock";
+        let _ = std::fs::remove_file(socket_path);
+        let listener = match std::os::unix::net::UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[cursor_socket] bind failed: {}", e); return; }
+        };
+        log::info!("[cursor_socket] listening on {}", socket_path);
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            // Cursor events never block (no PermissionRequest)
+                            process_claude_event(&buf, &state, &app, Some("cursor"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:19284") {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[cursor_socket] TCP bind failed: {}", e); return; }
+        };
+        log::info!("[cursor_socket] listening on 127.0.0.1:19284");
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            process_claude_event(&buf, &state, &app, Some("cursor"));
+                        }
+                    });
+                }
+            }
+        });
+    }
 }
 
 /// Start the Claude IPC server.
@@ -6079,7 +8420,7 @@ fn start_claude_socket_server(
                             let mut s = s;
                             let mut buf = String::new();
                             let _ = s.read_to_string(&mut buf);
-                            if let Some((session_id, hook_event)) = process_claude_event(&buf, &state, &app) {
+                            if let Some((session_id, hook_event)) = process_claude_event(&buf, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
                                     {
@@ -6145,7 +8486,7 @@ fn start_claude_socket_server(
                                 }
                             }
                             let text = String::from_utf8_lossy(&buf);
-                            if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app) {
+                            if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
                                     {
@@ -6173,6 +8514,54 @@ fn start_claude_socket_server(
             }
         });
     }
+}
+
+#[cfg(target_os = "macos")]
+fn install_wry_webview_ime_fix() {
+    use std::ffi::CString;
+    use std::sync::Once;
+
+    use objc2::ffi;
+    use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Imp, Sel};
+    use objc2::{msg_send, sel};
+
+    static INSTALL_ONCE: Once = Once::new();
+
+    unsafe extern "C-unwind" fn window_level(this: &AnyObject, _cmd: Sel) -> isize {
+        let window: *mut AnyObject = unsafe { msg_send![this, window] };
+        if window.is_null() {
+            0
+        } else {
+            unsafe { msg_send![&*window, level] }
+        }
+    }
+
+    fn patch_class(class_name: &'static std::ffi::CStr, text_input_protocol: Option<&'static AnyProtocol>) {
+        let Some(cls) = AnyClass::get(class_name) else {
+            log::warn!("[ime] class not found: {}", class_name.to_string_lossy());
+            return;
+        };
+
+        let cls_ptr = cls as *const AnyClass as *mut AnyClass;
+        let type_encoding = CString::new("q@:").unwrap();
+        unsafe {
+            if let Some(protocol) = text_input_protocol {
+                let _ = ffi::class_addProtocol(cls_ptr, protocol);
+            }
+            let _ = ffi::class_addMethod(
+                cls_ptr,
+                sel!(windowLevel),
+                std::mem::transmute::<unsafe extern "C-unwind" fn(&AnyObject, Sel) -> isize, Imp>(window_level),
+                type_encoding.as_ptr(),
+            );
+        }
+    }
+
+    INSTALL_ONCE.call_once(|| {
+        let text_input_protocol = AnyProtocol::get(c"NSTextInputClient");
+        patch_class(c"WryWebView", text_input_protocol);
+        patch_class(c"WKWebView", text_input_protocol);
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -6234,8 +8623,10 @@ pub fn run() {
         .setup(|app| {
             // Fix PATH so openclaw (Node.js script) and node are both reachable
             fix_path();
+            #[cfg(target_os = "macos")]
+            install_wry_webview_ime_fix();
 
-            // Install Claude Code hooks on every startup (idempotent)
+            // Install Claude + Codex hooks on every startup (idempotent)
             if let Err(e) = tauri::async_runtime::block_on(install_claude_hooks()) {
                 log::warn!("Failed to install Claude hooks on startup: {}", e);
             }
@@ -6245,6 +8636,14 @@ pub fn run() {
                     .level(log::LevelFilter::Info)
                     .build(),
             )?;
+
+            // Request Accessibility permission on first launch (macOS).
+            // Prompts the user once; subsequent launches are silent.
+            #[cfg(target_os = "macos")]
+            if !check_accessibility_permission() {
+                log::info!("[setup] requesting accessibility permission");
+                let _ = tauri::async_runtime::block_on(request_ax_permission());
+            }
 
             // Hide from Dock, show only in menu bar (macOS only)
             #[cfg(target_os = "macos")]
@@ -6416,6 +8815,13 @@ pub fn run() {
                 start_claude_socket_server(sessions_arc, pending_arc, app.handle().clone());
             }
 
+            // Start Cursor socket server (shares ClaudeState for unified session tracking)
+            {
+                let claude_state = app.state::<ClaudeState>();
+                let sessions_arc = Arc::clone(&claude_state.sessions);
+                start_cursor_socket_server(sessions_arc, app.handle().clone());
+            }
+
             // System tray — use saved language, fallback to system language
             let initial_lang = {
                 let store_path = app.path().app_data_dir().ok().map(|p| p.join("settings.json"));
@@ -6484,7 +8890,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

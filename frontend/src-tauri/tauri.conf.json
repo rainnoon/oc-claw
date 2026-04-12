@@ -1,13 +1,13 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "oc-claw",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "identifier": "com.openclaw.ooclaw",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5222",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
   },
   "app": {
     "windows": [
@@ -60,7 +60,8 @@
       }
     },
     "resources": {
-      "../public/assets": "assets/"
+      "../public/assets": "assets/",
+      "../../extensions/cursor": "extensions/cursor/"
     }
   }
 }

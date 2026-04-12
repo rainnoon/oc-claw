@@ -4,6 +4,12 @@
   -webkit-user-select: none;
   user-select: none;
 }
+:root, body {
+  cursor: default;
+}
+button, [role="button"], a {
+  cursor: pointer;
+}
 input, textarea, pre, [contenteditable], .selectable-text, .selectable-text * {
   -webkit-user-select: text;
   user-select: text;

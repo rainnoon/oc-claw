@@ -37,9 +37,9 @@ export async function loadCharacters(): Promise<CharacterMeta[]> {
   const store = await getStore()
 
   let scanned: CharacterMeta[] = []
-  let configDefaults: Record<string, string> | null = null
+  let configDefaults: Record<string, unknown> | null = null
   try {
-    const result = (await invoke('scan_characters')) as { characters: CharacterMeta[]; defaults?: Record<string, string> }
+    const result = (await invoke('scan_characters')) as { characters: CharacterMeta[]; defaults?: Record<string, unknown> }
     scanned = result.characters
     configDefaults = result.defaults || null
   } catch (e) {
@@ -70,13 +70,34 @@ export async function loadCharacters(): Promise<CharacterMeta[]> {
   const miniChar = (await store.get('mini_character')) as string
   if (miniChar && !validNames.has(miniChar)) await store.set('mini_character', DEFAULT_CHAR_NAME)
 
+  // Clean up char_queue: remove entries referencing deleted characters
+  let existingQueue = (await store.get('char_queue')) as string[] | null
+  if (existingQueue) {
+    const cleaned = existingQueue.filter((n) => validNames.has(n))
+    if (cleaned.length !== existingQueue.length) {
+      existingQueue = cleaned.length ? cleaned : null
+      await store.set('char_queue', existingQueue ?? [DEFAULT_CHAR_NAME])
+    }
+  }
+
   // Apply defaults from characters.json for unset values
   if (configDefaults) {
-    if (!miniChar && configDefaults.mini_character && validNames.has(configDefaults.mini_character)) {
+    if (!miniChar && typeof configDefaults.mini_character === 'string' && validNames.has(configDefaults.mini_character)) {
       await store.set('mini_character', configDefaults.mini_character)
     }
-    if (!claudeChar && configDefaults.claude_char && validNames.has(configDefaults.claude_char)) {
+    if (!claudeChar && typeof configDefaults.claude_char === 'string' && validNames.has(configDefaults.claude_char)) {
       await store.set('claude_char', configDefaults.claude_char)
+    }
+    if (Array.isArray(configDefaults.char_queue)) {
+      const defaultQueue = (configDefaults.char_queue as string[]).filter((n) => validNames.has(n))
+      if (defaultQueue.length && (!existingQueue || existingQueue.length < defaultQueue.length)) {
+        // Merge: keep user's existing order, append missing defaults
+        const merged = [...(existingQueue || [])]
+        for (const name of defaultQueue) {
+          if (!merged.includes(name)) merged.push(name)
+        }
+        await store.set('char_queue', merged)
+      }
     }
   }
 
