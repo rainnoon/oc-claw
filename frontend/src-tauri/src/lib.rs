@@ -3282,30 +3282,10 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
     Ok(())
 }
 
-/// Temporarily lower the mini window level so the macOS IME candidate window
-/// (which defaults to level ~20) can appear above our level-27 panel.
-/// Call with `active = true` when an input is focused, `false` on blur.
+/// Kept as a compatibility no-op while macOS IME handling is fixed directly on
+/// the underlying Wry webview class.
 #[tauri::command]
-async fn set_ime_mode(app: tauri::AppHandle, active: bool) -> Result<(), String> {
-    let win = app.get_webview_window("mini").ok_or("mini not found")?;
-    #[cfg(target_os = "macos")]
-    {
-        let win_clone = win.clone();
-        app.run_on_main_thread(move || {
-            use objc2::runtime::AnyObject;
-            use objc2::msg_send;
-            if let Ok(ns_win) = win_clone.ns_window() {
-                let obj = unsafe { &*(ns_win as *mut AnyObject) };
-                // level 3 = NSFloatingWindowLevel, enough to stay above normal windows
-                // but below IME candidate window (~20)
-                let level: isize = if active { 3 } else { 27 };
-                unsafe {
-                    let _: () = msg_send![obj, setLevel: level];
-                }
-            }
-        }).map_err(|e| e.to_string())?;
-    }
-    let _ = win;
+async fn set_ime_mode(_app: tauri::AppHandle, _active: bool) -> Result<(), String> {
     Ok(())
 }
 
@@ -8536,6 +8516,54 @@ fn start_claude_socket_server(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn install_wry_webview_ime_fix() {
+    use std::ffi::CString;
+    use std::sync::Once;
+
+    use objc2::ffi;
+    use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Imp, Sel};
+    use objc2::{msg_send, sel};
+
+    static INSTALL_ONCE: Once = Once::new();
+
+    unsafe extern "C-unwind" fn window_level(this: &AnyObject, _cmd: Sel) -> isize {
+        let window: *mut AnyObject = unsafe { msg_send![this, window] };
+        if window.is_null() {
+            0
+        } else {
+            unsafe { msg_send![&*window, level] }
+        }
+    }
+
+    fn patch_class(class_name: &'static std::ffi::CStr, text_input_protocol: Option<&'static AnyProtocol>) {
+        let Some(cls) = AnyClass::get(class_name) else {
+            log::warn!("[ime] class not found: {}", class_name.to_string_lossy());
+            return;
+        };
+
+        let cls_ptr = cls as *const AnyClass as *mut AnyClass;
+        let type_encoding = CString::new("q@:").unwrap();
+        unsafe {
+            if let Some(protocol) = text_input_protocol {
+                let _ = ffi::class_addProtocol(cls_ptr, protocol);
+            }
+            let _ = ffi::class_addMethod(
+                cls_ptr,
+                sel!(windowLevel),
+                std::mem::transmute::<unsafe extern "C-unwind" fn(&AnyObject, Sel) -> isize, Imp>(window_level),
+                type_encoding.as_ptr(),
+            );
+        }
+    }
+
+    INSTALL_ONCE.call_once(|| {
+        let text_input_protocol = AnyProtocol::get(c"NSTextInputClient");
+        patch_class(c"WryWebView", text_input_protocol);
+        patch_class(c"WKWebView", text_input_protocol);
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -8595,6 +8623,8 @@ pub fn run() {
         .setup(|app| {
             // Fix PATH so openclaw (Node.js script) and node are both reachable
             fix_path();
+            #[cfg(target_os = "macos")]
+            install_wry_webview_ime_fix();
 
             // Install Claude + Codex hooks on every startup (idempotent)
             if let Err(e) = tauri::async_runtime::block_on(install_claude_hooks()) {

@@ -2455,9 +2455,7 @@ export default function Mini() {
                                           onChange={(e) => { editingTitleValueRef.current = e.target.value }}
                                           onCompositionStart={() => { composingRef.current = true }}
                                           onCompositionEnd={(e) => { composingRef.current = false; editingTitleValueRef.current = (e.target as HTMLInputElement).value }}
-                                          onFocus={() => { invoke('set_ime_mode', { active: true }) }}
                                           onBlur={() => {
-                                            invoke('set_ime_mode', { active: false })
                                             saveSessionNickname(`oc:${s.agentId}:${s.key}`, editingTitleValueRef.current, title)
                                             setEditingSessionTitle(null)
                                           }}
@@ -2609,9 +2607,7 @@ export default function Mini() {
                                             onChange={(e) => { editingTitleValueRef.current = e.target.value }}
                                             onCompositionStart={() => { composingRef.current = true }}
                                             onCompositionEnd={(e) => { composingRef.current = false; editingTitleValueRef.current = (e.target as HTMLInputElement).value }}
-                                            onFocus={() => { invoke('set_ime_mode', { active: true }) }}
                                             onBlur={() => {
-                                              invoke('set_ime_mode', { active: false })
                                               saveSessionNickname(cs.sessionId, editingTitleValueRef.current, defaultProjectName)
                                               setEditingSessionTitle(null)
                                             }}
