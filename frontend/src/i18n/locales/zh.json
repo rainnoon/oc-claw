@@ -125,6 +125,8 @@
     "manboSound": "曼波",
     "ccSound": "Claude Code 完成提示音",
     "ccSoundDesc": "Claude Code 任务完成时播放提示音",
+    "codexSound": "Codex 完成提示音",
+    "codexSoundDesc": "Codex 任务完成时播放提示音",
     "cursorSound": "Cursor 完成提示音",
     "cursorSoundDesc": "Cursor 任务完成时播放提示音",
     "waitingSound": "等待时提示音",

@@ -559,6 +559,7 @@ export default function Mini() {
   const [enableCodex, setEnableCodex] = useState(true)
   const [enableCursor, setEnableCursor] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
+  const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
@@ -1072,6 +1073,8 @@ export default function Mini() {
       if (cur !== false) invoke('install_cursor_hooks').catch(() => {})
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
+      const codsnd = await store.get('codex_sound_enabled')
+      if (typeof codsnd === 'boolean') setCodexSoundEnabled(codsnd)
       const csnd = await store.get('cursor_sound_enabled')
       if (typeof csnd === 'boolean') setCursorSoundEnabled(csnd)
       const ns = (await store.get('notify_sound')) as string
@@ -1155,6 +1158,8 @@ export default function Mini() {
   // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
   soundEnabledRef.current = soundEnabled
+  const codexSoundEnabledRef = useRef(codexSoundEnabled)
+  codexSoundEnabledRef.current = codexSoundEnabled
   const cursorSoundEnabledRef = useRef(cursorSoundEnabled)
   cursorSoundEnabledRef.current = cursorSoundEnabled
   const notifySoundRef = useRef(notifySound)
@@ -1175,7 +1180,12 @@ export default function Mini() {
       }
       const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
       const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
-      const shouldSound = isCursor ? cursorSoundEnabledRef.current : soundEnabledRef.current
+      const isCodex = ev.payload?.source === 'codex' || currentSession?.source === 'codex'
+      const shouldSound = isCursor
+        ? cursorSoundEnabledRef.current
+        : isCodex
+          ? codexSoundEnabledRef.current
+          : soundEnabledRef.current
       if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
       if (notifySoundRef.current === 'manbo') {
@@ -2153,12 +2163,14 @@ export default function Mini() {
                 data-no-drag
                 onClick={async (e) => {
                   e.stopPropagation()
-                  const allOn = soundEnabled || cursorSoundEnabled
+                  const allOn = soundEnabled || codexSoundEnabled || cursorSoundEnabled
                   const next = !allOn
                   setSoundEnabled(next)
+                  setCodexSoundEnabled(next)
                   setCursorSoundEnabled(next)
                   const store = await load('settings.json', { defaults: {}, autoSave: true })
                   await store.set('sound_enabled', next)
+                  await store.set('codex_sound_enabled', next)
                   await store.set('cursor_sound_enabled', next)
                   await store.save()
                   if (next) {
@@ -2166,10 +2178,10 @@ export default function Mini() {
                     else playDefaultSound()
                   }
                 }}
-                className={`transition-colors ${soundEnabled || cursorSoundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
-                title={soundEnabled || cursorSoundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
+                className={`transition-colors ${soundEnabled || codexSoundEnabled || cursorSoundEnabled ? 'text-slate-400 hover:text-[#F0D140]' : 'text-slate-600 hover:text-[#F0D140]'}`}
+                title={soundEnabled || codexSoundEnabled || cursorSoundEnabled ? t('mini.soundOn') : t('mini.soundOff')}
               >
-                {soundEnabled || cursorSoundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
+                {soundEnabled || codexSoundEnabled || cursorSoundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
               </button>
             </div>
             <div className="flex items-center gap-4">
@@ -2335,6 +2347,12 @@ export default function Mini() {
                                 const subtitle = s.lastUserMsg || ''
                                 const timeAgo = formatTimeAgo(s.updatedAt)
                                 const isWorking = s.active
+                                const openOcDetail = () => {
+                                  setSelectedClaudeSession(null)
+                                  setSelectedSessionKey(null)
+                                  setShowClaudeStats(false)
+                                  setSelectedAgentId(s.agentId)
+                                }
                                 return (
                                   <motion.div
                                     key={`list-oc-${s.agentId}-${s.key}`}
@@ -2366,7 +2384,14 @@ export default function Mini() {
                                     style={{ padding: '10px 16px' }}
                                   >
                                     {isWorking && (
-                                      <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
+                                      <div
+                                        data-no-drag
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          openOcDetail()
+                                        }}
+                                        className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
+                                      >
                                         {gif ? (
                                           <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
                                         ) : (
@@ -2387,7 +2412,14 @@ export default function Mini() {
                                       </div>
                                     )}
                                     {!isWorking && (
-                                      <div className="shrink-0 flex items-center justify-center w-10">
+                                      <div
+                                        data-no-drag
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          openOcDetail()
+                                        }}
+                                        className="shrink-0 flex items-center justify-center w-10 cursor-pointer"
+                                      >
                                         <span className="w-1 h-1 rounded-full bg-slate-600" />
                                       </div>
                                     )}
@@ -2440,6 +2472,12 @@ export default function Mini() {
                                   : isCodexSource
                                     ? 'bg-[#1d2f26] text-[#6dd29c]'
                                     : 'bg-[#3f211d] text-[#e87a65]'
+                                const openClaudeDetail = () => {
+                                  setSelectedAgentId(null)
+                                  setSelectedSessionKey(null)
+                                  setSelectedClaudeSession(null)
+                                  setShowClaudeStats(true)
+                                }
                                 return (
                                   <motion.div
                                     key={`list-claude-${cs.sessionId}`}
@@ -2463,7 +2501,14 @@ export default function Mini() {
                                   >
                                     <div className="flex items-center gap-3">
                                       {showCharGif && (
-                                        <div className="relative shrink-0 w-10 h-10 flex items-center justify-center">
+                                        <div
+                                          data-no-drag
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            openClaudeDetail()
+                                          }}
+                                          className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
+                                        >
                                           {gif ? (
                                             <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
                                           ) : (
@@ -2484,7 +2529,14 @@ export default function Mini() {
                                         </div>
                                       )}
                                       {!showCharGif && (
-                                        <div className="shrink-0 flex items-center justify-center w-10">
+                                        <div
+                                          data-no-drag
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            openClaudeDetail()
+                                          }}
+                                          className="shrink-0 flex items-center justify-center w-10 cursor-pointer"
+                                        >
                                           <span className="w-1 h-1 rounded-full bg-slate-600" />
                                         </div>
                                       )}
@@ -3226,7 +3278,7 @@ export default function Mini() {
                 /* ===== Claude Code stats ===== */
                 <motion.div
                   key="claude-stats"
-                  style={{ background: '#1a1a1a' }}
+                  style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
                   initial={{ opacity: 0, x: 30 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -30 }}
@@ -3238,7 +3290,7 @@ export default function Mini() {
                 /* ===== Agent detail panel (ui-2 style) ===== */
                 <motion.div
                   key="agent-detail"
-                  style={{ background: '#1a1a1a' }}
+                  style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
                   initial={{ opacity: 0, x: 30 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -30 }}
@@ -3569,6 +3621,13 @@ export default function Mini() {
                           setSoundEnabled(v)
                           const store = await getStore()
                           await store.set('sound_enabled', v)
+                          await store.save()
+                        }}
+                        codexSoundEnabled={codexSoundEnabled}
+                        onToggleCodexSoundEnabled={async (v) => {
+                          setCodexSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('codex_sound_enabled', v)
                           await store.save()
                         }}
                         cursorSoundEnabled={cursorSoundEnabled}

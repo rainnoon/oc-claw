@@ -226,7 +226,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void }) {
+export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
@@ -692,6 +692,13 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               <span className="text-xs text-white/40">{t('settings.ccSoundDesc', 'Play sound when Claude Code finishes a task')}</span>
             </div>
             <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.codexSound', 'Codex Completion Sound')}</span>
+              <span className="text-xs text-white/40">{t('settings.codexSoundDesc', 'Play sound when Codex finishes a task')}</span>
+            </div>
+            <Toggle checked={codexSoundEnabled} onChange={onToggleCodexSoundEnabled} />
           </div>
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">

@@ -116,7 +116,7 @@ export function ClaudeStatsView() {
 
   if (!stats) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 gap-3">
+      <div className="flex-1 min-h-0 flex flex-col items-center justify-center py-24 gap-3">
         <motion.div
           animate={{ rotate: 360 }}
           transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
@@ -133,7 +133,7 @@ export function ClaudeStatsView() {
   const totalTokens = stats.totalInputTokens + stats.totalOutputTokens + stats.totalCacheReadTokens + stats.totalCacheWriteTokens
 
   return (
-    <div className="px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin" style={{ maxHeight: 'calc(400px - 44px)' }}>
+    <div className="flex-1 min-h-0 px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex flex-col">

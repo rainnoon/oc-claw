@@ -125,6 +125,8 @@
     "manboSound": "Mambo",
     "ccSound": "Claude Code Completion Sound",
     "ccSoundDesc": "Play sound when Claude Code finishes a task",
+    "codexSound": "Codex Completion Sound",
+    "codexSoundDesc": "Play sound when Codex finishes a task",
     "cursorSound": "Cursor Completion Sound",
     "cursorSoundDesc": "Play sound when Cursor finishes a task",
     "waitingSound": "Waiting Sound",
