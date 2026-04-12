@@ -1938,6 +1938,7 @@ export default function Mini() {
 
   const inAgentDetail = selectedAgentId !== null
   const selectedAgent = agents.find((a) => a.id === selectedAgentId)
+  const inDetailPage = inAgentDetail || selectedClaudeSession !== null || selectedSessionKey !== null || showClaudeStats
 
   // Panel dimensions — CSS uses fixed base sizes; on Windows high-DPI screens
   // the panel root applies `zoom: uiScale` so all content scales uniformly.
@@ -1950,17 +1951,71 @@ export default function Mini() {
   const panelChromeTransition = 'opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
   const panelRef = useRef<HTMLDivElement>(null)
 
+  const lastResizeHeightRef = useRef(0)
+  const resizeTweenFrameRef = useRef<number | null>(null)
+  const resizeTweenTargetRef = useRef(0)
+  const stopResizeTween = useCallback(() => {
+    if (resizeTweenFrameRef.current !== null) {
+      cancelAnimationFrame(resizeTweenFrameRef.current)
+      resizeTweenFrameRef.current = null
+    }
+  }, [])
+  const pushMiniHeight = useCallback((height: number, maxHeight: number) => {
+    invoke('resize_mini_height', { height, maxHeight, animate: false }).catch(() => {})
+  }, [])
+  const tweenMiniHeight = useCallback(
+    (from: number, to: number, maxHeight: number) => {
+      stopResizeTween()
+      resizeTweenTargetRef.current = to
+      const start = performance.now()
+      const duration = 240
+      const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3)
+      const step = (now: number) => {
+        const progress = Math.min((now - start) / duration, 1)
+        const value = from + (to - from) * easeOutCubic(progress)
+        lastResizeHeightRef.current = value
+        pushMiniHeight(value, maxHeight)
+        if (progress < 1 && resizeTweenTargetRef.current === to) {
+          resizeTweenFrameRef.current = requestAnimationFrame(step)
+          return
+        }
+        resizeTweenFrameRef.current = null
+        lastResizeHeightRef.current = to
+        pushMiniHeight(to, maxHeight)
+      }
+      resizeTweenFrameRef.current = requestAnimationFrame(step)
+    },
+    [pushMiniHeight, stopResizeTween],
+  )
   useEffect(() => {
     if (!expanded || settingsMode || settingsTransitioning || !showPanel) return
     const el = panelRef.current
     if (!el) return
+    let first = true
     const ro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect.height
-      if (h && h > 0) invoke('resize_mini_height', { height: Math.min(h * uiScale, panelMaxHeight * uiScale), maxHeight: panelMaxHeight }).catch(() => {})
+      if (h && h > 0) {
+        const limit = inDetailPage ? 800 : panelMaxHeight
+        const clamped = Math.min(h * uiScale, limit * uiScale)
+        const prev = lastResizeHeightRef.current || clamped
+        const delta = Math.abs(clamped - prev)
+        const shouldAnimate = !first && inDetailPage && delta > 10
+        first = false
+        if (shouldAnimate) {
+          tweenMiniHeight(prev, clamped, limit)
+          return
+        }
+        stopResizeTween()
+        lastResizeHeightRef.current = clamped
+        pushMiniHeight(clamped, limit)
+      }
     })
     ro.observe(el)
-    return () => ro.disconnect()
-  }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale, panelMaxHeight])
+    return () => {
+      ro.disconnect()
+      stopResizeTween()
+    }
+  }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale, panelMaxHeight, inDetailPage, pushMiniHeight, stopResizeTween, tweenMiniHeight])
 
   useEffect(() => {
     if (!expanded || !showPanel || settingsMode || settingsTransitioning || updateModalOpen) return
@@ -2083,7 +2138,7 @@ export default function Mini() {
             zoom: uiScale !== 1 ? uiScale : undefined,
             width: panelW,
             height: 'auto',
-            maxHeight: panelMaxHeight,
+            maxHeight: inDetailPage ? undefined : panelMaxHeight,
             overflowY: 'hidden',
             overflowX: 'hidden',
             display: 'flex',
@@ -2407,6 +2462,7 @@ export default function Mini() {
                                         }}
                                         className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
                                       >
+                                        <div className="absolute inset-0" style={{ left: -16 }} />
                                         {gif ? (
                                           <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
                                         ) : (
@@ -2433,8 +2489,9 @@ export default function Mini() {
                                           e.stopPropagation()
                                           openOcDetail()
                                         }}
-                                        className="shrink-0 flex items-center justify-center w-10 cursor-pointer"
+                                        className="relative shrink-0 flex items-center justify-center w-10 cursor-pointer"
                                       >
+                                        <div className="absolute inset-0" style={{ left: -16 }} />
                                         <span className="w-1 h-1 rounded-full bg-slate-600" />
                                       </div>
                                     )}
@@ -2559,6 +2616,7 @@ export default function Mini() {
                                           }}
                                           className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
                                         >
+                                          <div className="absolute inset-0" style={{ left: -16 }} />
                                           {gif ? (
                                             <img src={gif} alt="" className="w-10 h-10 object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
                                           ) : (
@@ -2585,8 +2643,9 @@ export default function Mini() {
                                             e.stopPropagation()
                                             openClaudeDetail()
                                           }}
-                                          className="shrink-0 flex items-center justify-center w-10 cursor-pointer"
+                                          className="relative shrink-0 flex items-center justify-center w-10 cursor-pointer"
                                         >
+                                          <div className="absolute inset-0" style={{ left: -16 }} />
                                           <span className="w-1 h-1 rounded-full bg-slate-600" />
                                         </div>
                                       )}
@@ -3280,10 +3339,10 @@ export default function Mini() {
                 <motion.div
                   key="oc-chat"
                   style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-                  initial={{ opacity: 0, x: 30 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -30 }}
-                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                  initial={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
+                  exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  transition={{ duration: 0.25, delay: 0.05 }}
                 >
                   {sessionMessages.length === 0 ? (
                     <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>{t('common.loading')}</div>
@@ -3296,10 +3355,10 @@ export default function Mini() {
                 <motion.div
                   key="claude-chat"
                   style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-                  initial={{ opacity: 0, x: 30 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -30 }}
-                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                  initial={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
+                  exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  transition={{ duration: 0.25, delay: 0.05 }}
                 >
                   {claudeConversation.length === 0 ? (
                     <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, textAlign: 'center', padding: '30px 0' }}>{t('common.loading')}</div>
@@ -3312,10 +3371,10 @@ export default function Mini() {
                 <motion.div
                   key="claude-stats"
                   style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-                  initial={{ opacity: 0, x: 30 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -30 }}
-                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                  initial={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
+                  exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  transition={{ duration: 0.25, delay: 0.05 }}
                 >
                   <ClaudeStatsView source={claudeStatsSource} />
                 </motion.div>
@@ -3324,10 +3383,10 @@ export default function Mini() {
                 <motion.div
                   key="agent-detail"
                   style={{ background: '#1a1a1a', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
-                  initial={{ opacity: 0, x: 30 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -30 }}
-                  transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                  initial={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
+                  exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
+                  transition={{ duration: 0.25, delay: 0.05 }}
                 >
                   <AgentDetailView agent={selectedAgent} metrics={metrics} extraInfo={extraInfo} />
                 </motion.div>

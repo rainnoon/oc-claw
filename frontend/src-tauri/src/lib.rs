@@ -3503,9 +3503,9 @@ fn macos_cursor_position() -> (f64, f64) {
 /// macOS: bottom-left origin, so adjust y to keep bottom aligned.
 /// Windows: top-left origin, so just resize height.
 #[tauri::command]
-async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Option<f64>) -> Result<(), String> {
+async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Option<f64>, animate: Option<bool>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
-    let limit = max_height.unwrap_or(350.0).max(200.0).min(500.0);
+    let limit = max_height.unwrap_or(350.0).max(200.0).min(800.0);
     // Scale height limits on Windows to match DPI-aware window sizes
     #[cfg(target_os = "windows")]
     let h = {
@@ -3540,10 +3540,9 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Opti
                     NSSize::new(cur.size.width, h),
                 );
                 unsafe {
-                    let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: false];
+                    let do_animate: bool = animate.unwrap_or(false);
+                    let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: do_animate];
                 }
-                // Keep the hover poll's cached frame in sync with the
-                // actual window size after a dynamic height resize.
                 if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
                     *f = Some((cur.origin.x, new_y, cur.size.width, h));
                 }
