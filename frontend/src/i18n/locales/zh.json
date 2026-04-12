@@ -289,6 +289,8 @@
 
   "claudeStats": {
     "title": "Claude Code 统计",
+    "titleCodex": "Codex 统计",
+    "titleCursor": "Cursor 统计",
     "last14Days": "近 14 天",
     "totalTokens": "总 Token",
     "sessionsCount": "个会话",

@@ -80,6 +80,7 @@ interface UpdateProgressPayload {
 const MAX_SLOTS = 10
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
+type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
 
 function ChatList({ messages, accentColor }: { messages: { role: string; text: string }[]; accentColor: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -522,10 +523,12 @@ export default function Mini() {
   const [selectedClaudeSession, setSelectedClaudeSession] = useState<string | null>(null)
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
   const [showClaudeStats, setShowClaudeStats] = useState(false)
+  const [claudeStatsSource, setClaudeStatsSource] = useState<ClaudeStatsSource>('cc')
   const [sessionNicknames, setSessionNicknames] = useState<Record<string, string>>({})
   const [editingSessionTitle, setEditingSessionTitle] = useState<string | null>(null)
   const editingTitleValueRef = useRef('')
   const editingTitleDefaultRef = useRef('')
+  const composingRef = useRef(false)
   const saveSessionNickname = useCallback(async (sessionId: string, val: string, defaultName: string) => {
     const trimmed = val.trim()
     setSessionNicknames((prev) => {
@@ -553,6 +556,19 @@ export default function Mini() {
   const agentConnMapRef = useRef<Map<string, OcParams>>(new Map())
   const agentRealIdMapRef = useRef<Map<string, string>>(new Map())
   const [agentSourceLabels, setAgentSourceLabels] = useState<Record<string, string>>({})
+
+  const resolveClaudeStatsSource = useCallback((source?: string): ClaudeStatsSource => {
+    if (source === 'cursor') return 'cursor'
+    if (source === 'codex') return 'codex'
+    return 'cc'
+  }, [])
+  const resolveClaudeStatsSourceBySession = useCallback(
+    (sessionId: string): ClaudeStatsSource => {
+      const session = claudeSessionsRef.current.find((s) => s.sessionId === sessionId)
+      return resolveClaudeStatsSource(session?.source)
+    },
+    [resolveClaudeStatsSource],
+  )
 
   // Feature toggles
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
@@ -1125,14 +1141,7 @@ export default function Mini() {
           if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId)) {
             seenCompletions.add(s.sessionId)
             // Only auto-expand if tab not active and panel is collapsed
-            if (
-              !updateModalOpenRef.current &&
-              !s.isActiveTab &&
-              viewModeRef.current === 'efficiency' &&
-              !expandedRef.current &&
-              !expandingRef.current &&
-              !collapsingRef.current
-            ) {
+            if (!updateModalOpenRef.current && !s.isActiveTab && viewModeRef.current === 'efficiency' && !expandedRef.current && !expandingRef.current && !collapsingRef.current) {
               hoverExpandedRef.current = true
               setCompletionSessionId(s.sessionId)
               expandFnRef.current?.()
@@ -1181,11 +1190,7 @@ export default function Mini() {
       const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
       const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
       const isCodex = ev.payload?.source === 'codex' || currentSession?.source === 'codex'
-      const shouldSound = isCursor
-        ? cursorSoundEnabledRef.current
-        : isCodex
-          ? codexSoundEnabledRef.current
-          : soundEnabledRef.current
+      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : soundEnabledRef.current
       if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
       if (notifySoundRef.current === 'manbo') {
@@ -1418,25 +1423,28 @@ export default function Mini() {
     } catch {}
   }, [restoreCollapsedMascotPosition, syncExpandedWindowLayout])
 
-  const openAvailableUpdateModal = useCallback(async (info: UpdateModalInfo) => {
-    if (settingsModeRef.current || settingsTransitioningRef.current || isCreateModalOpenRef.current) {
-      pendingUpdateInfoRef.current = info
-      return
-    }
-    setUpdateModalInfo(info)
-    setUpdateModalPhase('available')
-    setUpdateModalProgress(null)
-    setUpdateModalProgressStage('preparing')
-    hoverExpandedRef.current = false
-    if (hoverCloseTimerRef.current) {
-      clearTimeout(hoverCloseTimerRef.current)
-      hoverCloseTimerRef.current = null
-    }
-    setEffListCollapsed(true)
-    await ensureUpdateModalWindow()
-    updateModalOpenRef.current = true
-    setUpdateModalOpen(true)
-  }, [ensureUpdateModalWindow])
+  const openAvailableUpdateModal = useCallback(
+    async (info: UpdateModalInfo) => {
+      if (settingsModeRef.current || settingsTransitioningRef.current || isCreateModalOpenRef.current) {
+        pendingUpdateInfoRef.current = info
+        return
+      }
+      setUpdateModalInfo(info)
+      setUpdateModalPhase('available')
+      setUpdateModalProgress(null)
+      setUpdateModalProgressStage('preparing')
+      hoverExpandedRef.current = false
+      if (hoverCloseTimerRef.current) {
+        clearTimeout(hoverCloseTimerRef.current)
+        hoverCloseTimerRef.current = null
+      }
+      setEffListCollapsed(true)
+      await ensureUpdateModalWindow()
+      updateModalOpenRef.current = true
+      setUpdateModalOpen(true)
+    },
+    [ensureUpdateModalWindow],
+  )
 
   const closeUpdateModal = useCallback(() => {
     updateModalRunOwnedRef.current = false
@@ -1674,6 +1682,7 @@ export default function Mini() {
     setSelectedAgentId(null)
     setSelectedClaudeSession(null)
     setSelectedSessionKey(null)
+    setShowClaudeStats(false)
     const wasSettings = settingsModeRef.current
     if (wasSettings) {
       setShowSettingsOverlay(false)
@@ -2294,11 +2303,7 @@ export default function Mini() {
                               ]
                               return (
                                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
-                                  {trackingTargets.length > 0 && (
-                                    <p className="text-slate-500 text-sm font-medium">
-                                      {t('mini.startTracking', { targets: trackingTargets.join(' / ') })}
-                                    </p>
-                                  )}
+                                  {trackingTargets.length > 0 && <p className="text-slate-500 text-sm font-medium">{t('mini.startTracking', { targets: trackingTargets.join(' / ') })}</p>}
                                 </motion.div>
                               )
                             }
@@ -2313,6 +2318,18 @@ export default function Mini() {
                               const hrs = Math.floor(mins / 60)
                               if (hrs < 24) return `${hrs}h`
                               return `${Math.floor(hrs / 24)}d`
+                            }
+                            const formatChannelLabel = (channel?: string) => {
+                              const raw = (channel || '').trim()
+                              if (!raw) return ''
+                              const lower = raw.toLowerCase()
+                              if (lower.includes('feishu')) return 'Feishu'
+                              if (lower.includes('lark')) return 'Lark'
+                              if (lower.includes('telegram')) return 'Telegram'
+                              if (lower.includes('discord')) return 'Discord'
+                              if (lower.includes('slack')) return 'Slack'
+                              if (lower.includes('wechat') || lower.includes('weixin')) return 'WeChat'
+                              return raw.charAt(0).toUpperCase() + raw.slice(1)
                             }
                             const hasImportant = allItems.some((item) => {
                               if (item.type !== 'claude') return false
@@ -2330,9 +2347,7 @@ export default function Mini() {
                               if (cs.lastResponse && completionSessionId === cs.sessionId) return true
                               return false
                             }
-                            const visibleItems = (effListCollapsed && hasImportant)
-                              ? allItems.filter((item) => isImportant(item))
-                              : allItems
+                            const visibleItems = effListCollapsed && hasImportant ? allItems.filter((item) => isImportant(item)) : allItems
                             const hiddenCount = allItems.length - visibleItems.length
                             const elements: React.ReactNode[] = visibleItems.map((item, index) => {
                               if (item.type === 'oc') {
@@ -2423,13 +2438,53 @@ export default function Mini() {
                                         <span className="w-1 h-1 rounded-full bg-slate-600" />
                                       </div>
                                     )}
-                                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                                      <span className={`text-[13px] font-bold shrink-0 ${isWorking ? 'text-white' : 'text-slate-300'}`}>{title}</span>
+                                    <div className="flex min-w-0 flex-1 items-center gap-1.5" data-no-drag>
+                                      {editingSessionTitle === `oc:${s.agentId}:${s.key}` ? (
+                                        <input
+                                          autoFocus
+                                          data-no-drag
+                                          className="text-[13px] font-bold bg-transparent border-b border-slate-500 outline-none text-white w-24"
+                                          style={{ WebkitUserSelect: 'text', userSelect: 'text' }}
+                                          defaultValue={sessionNicknames[`oc:${s.agentId}:${s.key}`] || title}
+                                          ref={(el) => {
+                                            if (el) {
+                                              editingTitleValueRef.current = el.value
+                                              editingTitleDefaultRef.current = title
+                                            }
+                                          }}
+                                          onChange={(e) => { editingTitleValueRef.current = e.target.value }}
+                                          onCompositionStart={() => { composingRef.current = true }}
+                                          onCompositionEnd={(e) => { composingRef.current = false; editingTitleValueRef.current = (e.target as HTMLInputElement).value }}
+                                          onFocus={() => { invoke('set_ime_mode', { active: true }) }}
+                                          onBlur={() => {
+                                            invoke('set_ime_mode', { active: false })
+                                            saveSessionNickname(`oc:${s.agentId}:${s.key}`, editingTitleValueRef.current, title)
+                                            setEditingSessionTitle(null)
+                                          }}
+                                          onKeyDown={(e) => {
+                                            if (composingRef.current) return
+                                            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                                            if (e.key === 'Escape') setEditingSessionTitle(null)
+                                          }}
+                                          onClick={(e) => e.stopPropagation()}
+                                        />
+                                      ) : (
+                                        <span
+                                          className={`text-[13px] font-bold shrink-0 cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                          onClick={(e) => e.stopPropagation()}
+                                          onDoubleClick={(e) => {
+                                            e.stopPropagation()
+                                            setEditingSessionTitle(`oc:${s.agentId}:${s.key}`)
+                                          }}
+                                        >
+                                          {sessionNicknames[`oc:${s.agentId}:${s.key}`] || title}
+                                        </span>
+                                      )}
                                       {subtitle && <span className="text-[13px] font-normal text-slate-500 shrink-0">· {subtitle}</span>}
                                       {s.lastAssistantMsg && <span className="text-[11px] text-white/40 truncate">· {s.lastAssistantMsg}</span>}
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0">
-                                      {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300">{s.channel}</span>}
+                                      {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300">{formatChannelLabel(s.channel)}</span>}
                                       <div className="w-8 flex items-center justify-center">
                                         <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
                                         <button
@@ -2456,7 +2511,7 @@ export default function Mini() {
                                 const isWaiting = cs.status === 'waiting'
                                 const isCompacting = cs.status === 'compacting'
                                 const isWorking = isActive || isWaiting || isCompacting
-                                const recentlyDone = !isWorking && cs.status === 'stopped' && cs.updatedAt && (Date.now() - cs.updatedAt < 5 * 60 * 1000)
+                                const recentlyDone = !isWorking && cs.status === 'stopped' && cs.updatedAt && Date.now() - cs.updatedAt < 5 * 60 * 1000
                                 const showCharGif = isWorking || recentlyDone
                                 const ci = 'claudeIdx' in item ? (item as { claudeIdx: number }).claudeIdx : 0
                                 const charMeta = characters.find((c) => c.name === charQueue[ci % charQueue.length])
@@ -2467,15 +2522,12 @@ export default function Mini() {
                                 const isCursorSource = cs.source === 'cursor'
                                 const isCodexSource = cs.source === 'codex'
                                 const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : 'Claude'
-                                const sourceBadgeClass = isCursorSource
-                                  ? 'bg-[#1a2f3f] text-[#5eb5f7]'
-                                  : isCodexSource
-                                    ? 'bg-[#1d2f26] text-[#6dd29c]'
-                                    : 'bg-[#3f211d] text-[#e87a65]'
+                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : 'bg-[#3f211d] text-[#e87a65]'
                                 const openClaudeDetail = () => {
                                   setSelectedAgentId(null)
                                   setSelectedSessionKey(null)
                                   setSelectedClaudeSession(null)
+                                  setClaudeStatsSource(resolveClaudeStatsSource(cs.source))
                                   setShowClaudeStats(true)
                                 }
                                 return (
@@ -2540,15 +2592,13 @@ export default function Mini() {
                                           <span className="w-1 h-1 rounded-full bg-slate-600" />
                                         </div>
                                       )}
-                                      <div
-                                        className="flex min-w-0 flex-1 items-center gap-1.5"
-                                        data-no-drag
-                                      >
+                                      <div className="flex min-w-0 flex-1 items-center gap-1.5" data-no-drag>
                                         {editingSessionTitle === cs.sessionId ? (
                                           <input
                                             autoFocus
                                             data-no-drag
                                             className="text-[13px] font-bold bg-transparent border-b border-slate-500 outline-none text-white w-24"
+                                            style={{ WebkitUserSelect: 'text', userSelect: 'text' }}
                                             defaultValue={projectName}
                                             ref={(el) => {
                                               if (el) {
@@ -2557,11 +2607,16 @@ export default function Mini() {
                                               }
                                             }}
                                             onChange={(e) => { editingTitleValueRef.current = e.target.value }}
+                                            onCompositionStart={() => { composingRef.current = true }}
+                                            onCompositionEnd={(e) => { composingRef.current = false; editingTitleValueRef.current = (e.target as HTMLInputElement).value }}
+                                            onFocus={() => { invoke('set_ime_mode', { active: true }) }}
                                             onBlur={() => {
+                                              invoke('set_ime_mode', { active: false })
                                               saveSessionNickname(cs.sessionId, editingTitleValueRef.current, defaultProjectName)
                                               setEditingSessionTitle(null)
                                             }}
                                             onKeyDown={(e) => {
+                                              if (composingRef.current) return
                                               if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
                                               if (e.key === 'Escape') setEditingSessionTitle(null)
                                             }}
@@ -2586,9 +2641,7 @@ export default function Mini() {
                                         {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
                                       </div>
                                       <div className="flex items-center gap-2 shrink-0">
-                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal ${sourceBadgeClass}`}>
-                                          {sourceLabel}
-                                        </span>
+                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal ${sourceBadgeClass}`}>{sourceLabel}</span>
                                         <div className="w-8 flex items-center justify-center">
                                           <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
                                           <button
@@ -2775,10 +2828,7 @@ export default function Mini() {
                                        点击跳转到对应终端。
                                        只有刚完成的 session 才展开弹窗，其余已完成的只显示标题行。 */}
                                     {!isWaiting && !isWorking && cs.lastResponse && completionSessionId === cs.sessionId && (
-                                      <div
-                                        data-no-drag
-                                        className="mt-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-hidden"
-                                      >
+                                      <div data-no-drag className="mt-2 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-hidden">
                                         <div
                                           className="flex items-center justify-between px-3 py-2 border-b border-[#2a2a2e] cursor-pointer hover:bg-[#222226] transition-colors"
                                           onClick={(e) => {
@@ -2793,7 +2843,10 @@ export default function Mini() {
                                         >
                                           <span className="text-[12px] text-slate-300 truncate">
                                             {cs.userPrompt ? (
-                                              <><span className="text-slate-500">{t('mini.you', '你')}：</span>{cs.userPrompt}</>
+                                              <>
+                                                <span className="text-slate-500">{t('mini.you', '你')}：</span>
+                                                {cs.userPrompt}
+                                              </>
                                             ) : (
                                               <span className="text-slate-500">{t('mini.taskCompleted', 'Task completed')}</span>
                                             )}
@@ -2819,14 +2872,7 @@ export default function Mini() {
                             })
                             if (hiddenCount > 0) {
                               elements.push(
-                                <motion.div
-                                  key="expand-list-btn"
-                                  layout
-                                  initial={{ opacity: 0 }}
-                                  animate={{ opacity: 1 }}
-                                  exit={{ opacity: 0 }}
-                                  className="flex justify-center py-2"
-                                >
+                                <motion.div key="expand-list-btn" layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex justify-center py-2">
                                   <button
                                     data-no-drag
                                     onClick={(e) => {
@@ -2837,18 +2883,11 @@ export default function Mini() {
                                   >
                                     {t('mini.showMore', 'Show {{count}} more', { count: hiddenCount })}
                                   </button>
-                                </motion.div>
+                                </motion.div>,
                               )
                             } else if (!effListCollapsed && hasImportant && allItems.length > 1) {
                               elements.push(
-                                <motion.div
-                                  key="collapse-list-btn"
-                                  layout
-                                  initial={{ opacity: 0 }}
-                                  animate={{ opacity: 1 }}
-                                  exit={{ opacity: 0 }}
-                                  className="flex justify-center py-2"
-                                >
+                                <motion.div key="collapse-list-btn" layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex justify-center py-2">
                                   <button
                                     data-no-drag
                                     onClick={(e) => {
@@ -2859,7 +2898,7 @@ export default function Mini() {
                                   >
                                     {t('mini.collapse', 'Collapse')}
                                   </button>
-                                </motion.div>
+                                </motion.div>,
                               )
                             }
                             return elements
@@ -3012,9 +3051,11 @@ export default function Mini() {
                               data-no-drag
                               onClick={() => {
                                 if (slot.agentId.startsWith('claude:')) {
+                                  const sessionId = slot.agentId.slice('claude:'.length)
                                   setSelectedAgentId(null)
                                   setSelectedSessionKey(null)
                                   setSelectedClaudeSession(null)
+                                  setClaudeStatsSource(resolveClaudeStatsSourceBySession(sessionId))
                                   setShowClaudeStats(true)
                                 } else {
                                   setSelectedClaudeSession(null)
@@ -3073,11 +3114,7 @@ export default function Mini() {
                               ...(enableCodex ? ['Codex'] : []),
                               ...(enableCursor ? ['Cursor'] : []),
                             ]
-                            return targets.length > 0 ? (
-                              <p className="text-slate-500 text-sm font-medium">
-                                {t('mini.startTracking', { targets: targets.join(' / ') })}
-                              </p>
-                            ) : null
+                            return targets.length > 0 ? <p className="text-slate-500 text-sm font-medium">{t('mini.startTracking', { targets: targets.join(' / ') })}</p> : null
                           })()}
                           <button
                             data-no-drag
@@ -3284,7 +3321,7 @@ export default function Mini() {
                   exit={{ opacity: 0, x: -30 }}
                   transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
                 >
-                  <ClaudeStatsView />
+                  <ClaudeStatsView source={claudeStatsSource} />
                 </motion.div>
               ) : (
                 /* ===== Agent detail panel (ui-2 style) ===== */
@@ -3534,7 +3571,11 @@ export default function Mini() {
                                     <div className="pt-2 border-t border-white/5">
                                       <div className="flex items-center justify-between mb-2">
                                         <span className="text-[11px] text-white/30">{t('mini.selectToAdd', 'Select a character to add')}</span>
-                                        <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center justify-center w-6 h-6 rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors" title={t('mini.createChar')}>
+                                        <button
+                                          onClick={() => setIsCreateModalOpen(true)}
+                                          className="flex items-center justify-center w-6 h-6 rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+                                          title={t('mini.createChar')}
+                                        >
                                           <Plus className="w-3.5 h-3.5" />
                                         </button>
                                       </div>
@@ -3548,14 +3589,30 @@ export default function Mini() {
                                             if (!ipOrder.includes(ip)) ipOrder.push(ip)
                                           }
                                           const customIdx = ipOrder.indexOf('自定义')
-                                          if (customIdx > 0) { ipOrder.splice(customIdx, 1); ipOrder.unshift('自定义') }
+                                          if (customIdx > 0) {
+                                            ipOrder.splice(customIdx, 1)
+                                            ipOrder.unshift('自定义')
+                                          }
                                           const otherIdx = ipOrder.indexOf('其他')
-                                          if (otherIdx >= 0 && otherIdx < ipOrder.length - 1) { ipOrder.splice(otherIdx, 1); ipOrder.push('其他') }
-                                          for (const ip of ipOrder) { groups.push({ ip, chars: charsWithMini.filter((c) => (c.ip || '自定义') === ip) }) }
+                                          if (otherIdx >= 0 && otherIdx < ipOrder.length - 1) {
+                                            ipOrder.splice(otherIdx, 1)
+                                            ipOrder.push('其他')
+                                          }
+                                          for (const ip of ipOrder) {
+                                            groups.push({ ip, chars: charsWithMini.filter((c) => (c.ip || '自定义') === ip) })
+                                          }
                                           return groups.map(({ ip, chars }) => (
                                             <div key={ip} className="mb-3 last:mb-0">
                                               <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">
-                                                {ip === '自定义' ? t('mini.custom') : ip === '其他' ? t('mini.other') : ip === '原神' ? t('mini.ipGenshin') : ip === '赛马娘' ? t('mini.ipUmaMusume') : ip}
+                                                {ip === '自定义'
+                                                  ? t('mini.custom')
+                                                  : ip === '其他'
+                                                    ? t('mini.other')
+                                                    : ip === '原神'
+                                                      ? t('mini.ipGenshin')
+                                                      : ip === '赛马娘'
+                                                        ? t('mini.ipUmaMusume')
+                                                        : ip}
                                               </div>
                                               <div className="grid grid-cols-3 gap-2">
                                                 {chars.map((c) => {
@@ -3571,7 +3628,13 @@ export default function Mini() {
                                                     >
                                                       <div className="w-8 h-8 shrink-0 rounded-md overflow-hidden bg-black/50 border border-white/10">
                                                         {cPreview ? (
-                                                          <img src={cPreview} alt={c.name} className="w-full h-full object-contain opacity-90" style={{ imageRendering: 'pixelated' }} draggable={false} />
+                                                          <img
+                                                            src={cPreview}
+                                                            alt={c.name}
+                                                            className="w-full h-full object-contain opacity-90"
+                                                            style={{ imageRendering: 'pixelated' }}
+                                                            draggable={false}
+                                                          />
                                                         ) : (
                                                           <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
                                                         )}

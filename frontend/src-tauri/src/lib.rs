@@ -3282,6 +3282,33 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
     Ok(())
 }
 
+/// Temporarily lower the mini window level so the macOS IME candidate window
+/// (which defaults to level ~20) can appear above our level-27 panel.
+/// Call with `active = true` when an input is focused, `false` on blur.
+#[tauri::command]
+async fn set_ime_mode(app: tauri::AppHandle, active: bool) -> Result<(), String> {
+    let win = app.get_webview_window("mini").ok_or("mini not found")?;
+    #[cfg(target_os = "macos")]
+    {
+        let win_clone = win.clone();
+        app.run_on_main_thread(move || {
+            use objc2::runtime::AnyObject;
+            use objc2::msg_send;
+            if let Ok(ns_win) = win_clone.ns_window() {
+                let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                // level 3 = NSFloatingWindowLevel, enough to stay above normal windows
+                // but below IME candidate window (~20)
+                let level: isize = if active { 3 } else { 27 };
+                unsafe {
+                    let _: () = msg_send![obj, setLevel: level];
+                }
+            }
+        }).map_err(|e| e.to_string())?;
+    }
+    let _ = win;
+    Ok(())
+}
+
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
@@ -5223,9 +5250,20 @@ struct ClaudeStats {
 }
 
 #[tauri::command]
-async fn get_claude_stats() -> Result<ClaudeStats, String> {
-    let mut jsonl_files = collect_claude_project_jsonl_files();
-    jsonl_files.extend(collect_codex_session_jsonl_files());
+async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String> {
+    let source = source.unwrap_or_default().to_ascii_lowercase();
+    let jsonl_files = match source.as_str() {
+        "codex" => collect_codex_session_jsonl_files(),
+        // Cursor hook transcripts are currently parsed through Claude-style JSONL.
+        // Keep Cursor aligned with the Claude parser until a dedicated Cursor
+        // transcript index is introduced.
+        "cursor" | "cc" | "claude" => collect_claude_project_jsonl_files(),
+        _ => {
+            let mut files = collect_claude_project_jsonl_files();
+            files.extend(collect_codex_session_jsonl_files());
+            files
+        }
+    };
     if jsonl_files.is_empty() {
         return Ok(ClaudeStats {
             total_input_tokens: 0, total_output_tokens: 0,
@@ -8822,7 +8860,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
