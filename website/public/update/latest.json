@@ -1,15 +1,15 @@
 {
   "platforms": {
     "macos": {
-      "version": "1.7.0",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.7.0/oc-claw_1.7.0_aarch64.dmg",
+      "version": "1.7.2",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.7.2/oc-claw_1.7.2_aarch64.dmg",
       "notes_i18n": {
-        "zh": "- 重做效率模式详情页，支持更顺滑的展开与滚动\n- 修复 macOS 中文输入法在会话重命名时的候选窗与位置问题\n- 优化 OpenClaw / Codex / Cursor 会话展示与提示音设置",
-        "en": "- Refined efficiency-mode detail pages with smoother expansion and scrolling\n- Fixed macOS Chinese IME candidate window and positioning issues when renaming sessions\n- Improved OpenClaw / Codex / Cursor session presentation and sound settings",
-        "ja": "- 効率モードの詳細ページを刷新し、より滑らかな展開とスクロールに対応\n- セッション名変更時の macOS 中国語 IME の候補表示と位置ずれを修正\n- OpenClaw / Codex / Cursor のセッション表示と通知サウンド設定を改善",
-        "ko": "- 효율 모드 상세 페이지를 개선해 더 부드러운 확장과 스크롤을 지원\n- 세션 이름 변경 시 macOS 중국어 IME 후보창 및 위치 문제를 수정\n- OpenClaw / Codex / Cursor 세션 표시와 알림 사운드 설정을 개선",
-        "es": "- Se mejoraron las páginas de detalle del modo eficiente con una expansión y un desplazamiento más fluidos\n- Se corrigieron los problemas de la ventana candidata y la posición del IME chino en macOS al renombrar sesiones\n- Se mejoró la presentación de sesiones y los ajustes de sonido para OpenClaw / Codex / Cursor",
-        "fr": "- Refonte des pages de détail du mode efficacité avec une ouverture et un défilement plus fluides\n- Correction des problèmes de fenêtre de saisie IME chinois et de position sur macOS lors du renommage des sessions\n- Amélioration de l'affichage des sessions et des réglages sonores pour OpenClaw / Codex / Cursor"
+        "zh": "- 恢复正式版的一天一次自动检查更新频率\n- 延续 1.7.x 的效率模式详情页、IME 与会话体验修复",
+        "en": "- Restore the standard once-per-day automatic update check interval\n- Keep the 1.7.x efficiency-mode detail, IME, and session UX improvements",
+        "ja": "- 自動更新チェック頻度を正式版向けの1日1回に戻しました\n- 1.7.x の効率モード詳細、IME、セッション体験の改善を引き続き含みます",
+        "ko": "- 자동 업데이트 확인 주기를 정식 빌드 기준인 하루 한 번으로 되돌렸습니다\n- 1.7.x의 효율 모드 상세, IME, 세션 UX 개선을 계속 포함합니다",
+        "es": "- Se restableció la comprobación automática de actualizaciones a la frecuencia normal de una vez al día\n- Se mantienen las mejoras de la serie 1.7.x en detalles del modo eficiente, IME y experiencia de sesiones",
+        "fr": "- La vérification automatique des mises à jour revient au rythme normal d'une fois par jour\n- Les améliorations 1.7.x du mode efficacité, de l'IME et de l'expérience des sessions sont conservées"
       }
     },
     "windows": {
