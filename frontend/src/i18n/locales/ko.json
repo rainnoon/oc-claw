@@ -122,6 +122,8 @@
     "manboSound": "맘보",
     "ccSound": "Claude Code 완료 소리",
     "ccSoundDesc": "Claude Code 작업 완료 시 소리 재생",
+    "enableCursor": "Cursor 활성화",
+    "enableCursorDesc": "Hooks를 통해 로컬 Cursor agent 세션을 모니터링",
     "cursorSound": "Cursor 완료 소리",
     "cursorSoundDesc": "Cursor 작업 완료 시 소리 재생",
     "waitingSound": "대기 소리",

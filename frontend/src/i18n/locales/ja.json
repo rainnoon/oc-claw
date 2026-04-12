@@ -122,6 +122,8 @@
     "manboSound": "マンボ",
     "ccSound": "Claude Code 完了サウンド",
     "ccSoundDesc": "Claude Codeのタスク完了時にサウンドを再生",
+    "enableCursor": "Cursor を有効化",
+    "enableCursorDesc": "Hooks を使ってローカルの Cursor agent セッションを監視",
     "cursorSound": "Cursor 完了サウンド",
     "cursorSoundDesc": "Cursorのタスク完了時にサウンドを再生",
     "waitingSound": "待機サウンド",

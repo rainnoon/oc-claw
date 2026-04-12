@@ -122,6 +122,8 @@
     "manboSound": "Mambo",
     "ccSound": "Son de fin Claude Code",
     "ccSoundDesc": "Jouer un son quand Claude Code termine une tâche",
+    "enableCursor": "Activer Cursor",
+    "enableCursorDesc": "Surveiller les sessions d'agent Cursor locales via Hooks",
     "cursorSound": "Son de fin Cursor",
     "cursorSoundDesc": "Jouer un son quand Cursor termine une tâche",
     "waitingSound": "Son d'attente",

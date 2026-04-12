@@ -140,7 +140,7 @@ export function ClaudeStatsView({ source = 'cc' }: { source?: ClaudeStatsSource 
       : 'claudeStats.title'
 
   return (
-    <div className="flex-1 min-h-0 px-5 py-5 flex flex-col gap-6">
+    <div className="flex-1 min-h-0 px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex flex-col">

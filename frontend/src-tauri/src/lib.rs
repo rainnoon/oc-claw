@@ -3505,7 +3505,7 @@ fn macos_cursor_position() -> (f64, f64) {
 #[tauri::command]
 async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Option<f64>, animate: Option<bool>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
-    let limit = max_height.unwrap_or(350.0).max(200.0).min(800.0);
+    let limit = max_height.unwrap_or(350.0).max(200.0).min(2000.0);
     // Scale height limits on Windows to match DPI-aware window sizes
     #[cfg(target_os = "windows")]
     let h = {
@@ -3534,17 +3534,18 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Opti
                 } else { screen };
                 let sf: NSRect = unsafe { msg_send![&*screen_ptr, frame] };
                 let cur: NSRect = unsafe { msg_send![obj, frame] };
-                let new_y = sf.origin.y + sf.size.height - h;
+                let capped_h = h.min((sf.size.height * 0.75).max(200.0));
+                let new_y = sf.origin.y + sf.size.height - capped_h;
                 let new_frame = NSRect::new(
                     NSPoint::new(cur.origin.x, new_y),
-                    NSSize::new(cur.size.width, h),
+                    NSSize::new(cur.size.width, capped_h),
                 );
                 unsafe {
                     let do_animate: bool = animate.unwrap_or(false);
                     let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: do_animate];
                 }
                 if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
-                    *f = Some((cur.origin.x, new_y, cur.size.width, h));
+                    *f = Some((cur.origin.x, new_y, cur.size.width, capped_h));
                 }
             }
         }).map_err(|e| e.to_string())?;

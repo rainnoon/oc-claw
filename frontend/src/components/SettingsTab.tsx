@@ -249,6 +249,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
   const [bgNaturalSize, setBgNaturalSize] = useState<{ w: number; h: number } | null>(null)
   const cropContainerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+  const showIslandBackgroundSettings = false
   const resolveUpdateProgressText = useCallback((stage?: string, fallbackMessage?: string) => {
     if (stage) {
       const key = `updateModal.progress.${stage}`
@@ -294,7 +295,9 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
       if (typeof cur === 'boolean') setEnableCursor(cur)
     })()
     void checkForUpdate()
-    invoke('list_backgrounds').then((list: any) => setBackgrounds(list as string[])).catch(() => {})
+    if (showIslandBackgroundSettings) {
+      invoke('list_backgrounds').then((list: any) => setBackgrounds(list as string[])).catch(() => {})
+    }
   }, [checkForUpdate])
 
   useEffect(() => {
@@ -308,7 +311,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
 
   // Load preview image for current background
   useEffect(() => {
-    if (!islandBg) return
+    if (!showIslandBackgroundSettings || !islandBg) return
     // Try public path first (bundled), fallback to Rust command (custom)
     const img = new Image()
     img.onload = () => { setBgPreviewUrl(img.src); setBgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight }) }
@@ -549,7 +552,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
             </div>
             <Toggle checked={disableSleepAnim} onChange={onToggleSleepAnim} />
           </div>
-          <div className="p-4 border-b border-white/5">
+          <div className={`p-4 ${showIslandBackgroundSettings ? 'border-b border-white/5' : ''}`}>
             <div className="flex items-center justify-between mb-2">
               <div className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-white/90">{t('settings.panelMaxHeight', 'Panel Height')}</span>
@@ -567,101 +570,89 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               className="w-full accent-white/60 h-1"
             />
           </div>
-          {/* Background picker with crop preview */}
-          <div className="p-4">
-            <div className="flex flex-col gap-1 mb-3">
-              <span className="text-sm font-medium text-white/90">{t('settings.islandBg')}</span>
-              <span className="text-xs text-white/40">{t('settings.islandBgDesc')}</span>
-            </div>
-
-            {/* Background thumbnails */}
-            <div className="flex gap-2 flex-wrap mb-3">
-              {/* Anime grid background */}
-              <button
-                onClick={() => onChangeIslandBg('__anime__')}
-                className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === '__anime__' ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
-              >
-                <div style={{ width: '100%', height: '100%', background: '#F0D140' }}>
-                  <div style={{ width: '100%', height: '100%', backgroundImage: 'linear-gradient(to right, #00000015 1px, transparent 1px), linear-gradient(to bottom, #00000015 1px, transparent 1px)', backgroundSize: '8px 8px' }} />
-                </div>
-              </button>
-              {backgrounds.map((bg) => (
-                <button
-                  key={bg}
-                  onClick={() => onChangeIslandBg(bg)}
-                  className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === bg ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
-                >
-                  <div style={{ width: '100%', height: '100%', backgroundImage: `url(/assets/backgrounds/${bg})`, backgroundSize: 'cover' }} />
-                </button>
-              ))}
-              {/* Upload button */}
-              <label className="relative w-14 h-9 rounded-lg overflow-hidden border-2 border-dashed border-white/20 hover:border-white/40 transition-all cursor-pointer flex items-center justify-center">
-                <Plus className="w-4 h-4 text-white/40" />
-                <input type="file" accept="image/*" onChange={handleBgUpload} className="hidden" />
-              </label>
-            </div>
-
-            {/* Crop preview — hidden for anime grid background */}
-            {islandBg !== '__anime__' && bgPreviewUrl && bgNaturalSize && (
-              <div className="flex flex-col items-center gap-2">
-                {/* Full image with crop overlay */}
-                <div
-                  ref={cropContainerRef}
-                  className="relative rounded-lg overflow-hidden cursor-crosshair select-none"
-                  style={{ width: '100%', maxWidth: 360, aspectRatio: `${bgNaturalSize.w} / ${bgNaturalSize.h}` }}
-                  onMouseDown={handleCropDrag}
-                  onTouchStart={handleCropDrag}
-                >
-                  {/* Full image dimmed */}
-                  <img src={bgPreviewUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.4 }} />
-                  {/* Crop rectangle — aspect ratio ~7:1 matching the island strip */}
-                  {(() => {
-                    // The crop rect represents what background-position + cover would show
-                    // Island area is roughly 7:1 aspect ratio
-                    const cropAspect = 7
-                    const imgAspect = bgNaturalSize.w / bgNaturalSize.h
-                    // With cover, the image fills the island. Determine crop rect size relative to full image.
-                    let cropW: number, cropH: number
-                    if (imgAspect > cropAspect) {
-                      // Image is wider than crop — full height used, crop width = subset
-                      cropH = 100
-                      cropW = (cropAspect / imgAspect) * 100
-                    } else {
-                      // Image is taller — full width used, crop height = subset
-                      cropW = 100
-                      cropH = (imgAspect / cropAspect) * 100
-                    }
-                    const maxX = 100 - cropW
-                    const maxY = 100 - cropH
-                    const left = (bgPos.x / 100) * maxX
-                    const top = (bgPos.y / 100) * maxY
-                    return (
-                      <div
-                        style={{
-                          position: 'absolute',
-                          left: `${left}%`, top: `${top}%`,
-                          width: `${cropW}%`, height: `${cropH}%`,
-                          border: '2px solid white',
-                          borderRadius: 4,
-                          boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
-                          pointerEvents: 'none',
-                        }}
-                      />
-                    )
-                  })()}
-                </div>
-                {/* Live preview strip */}
-                <div className="rounded-lg overflow-hidden border border-white/10" style={{ width: '100%', maxWidth: 360, height: 50 }}>
-                  <div style={{
-                    width: '100%', height: '100%',
-                    backgroundImage: `url(${bgPreviewUrl})`,
-                    backgroundSize: 'cover',
-                    backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
-                  }} />
-                </div>
+          {showIslandBackgroundSettings && (
+            <div className="p-4">
+              <div className="flex flex-col gap-1 mb-3">
+                <span className="text-sm font-medium text-white/90">{t('settings.islandBg')}</span>
+                <span className="text-xs text-white/40">{t('settings.islandBgDesc')}</span>
               </div>
-            )}
-          </div>
+
+              <div className="flex gap-2 flex-wrap mb-3">
+                <button
+                  onClick={() => onChangeIslandBg('__anime__')}
+                  className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === '__anime__' ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
+                >
+                  <div style={{ width: '100%', height: '100%', background: '#F0D140' }}>
+                    <div style={{ width: '100%', height: '100%', backgroundImage: 'linear-gradient(to right, #00000015 1px, transparent 1px), linear-gradient(to bottom, #00000015 1px, transparent 1px)', backgroundSize: '8px 8px' }} />
+                  </div>
+                </button>
+                {backgrounds.map((bg) => (
+                  <button
+                    key={bg}
+                    onClick={() => onChangeIslandBg(bg)}
+                    className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === bg ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
+                  >
+                    <div style={{ width: '100%', height: '100%', backgroundImage: `url(/assets/backgrounds/${bg})`, backgroundSize: 'cover' }} />
+                  </button>
+                ))}
+                <label className="relative w-14 h-9 rounded-lg overflow-hidden border-2 border-dashed border-white/20 hover:border-white/40 transition-all cursor-pointer flex items-center justify-center">
+                  <Plus className="w-4 h-4 text-white/40" />
+                  <input type="file" accept="image/*" onChange={handleBgUpload} className="hidden" />
+                </label>
+              </div>
+
+              {islandBg !== '__anime__' && bgPreviewUrl && bgNaturalSize && (
+                <div className="flex flex-col items-center gap-2">
+                  <div
+                    ref={cropContainerRef}
+                    className="relative rounded-lg overflow-hidden cursor-crosshair select-none"
+                    style={{ width: '100%', maxWidth: 360, aspectRatio: `${bgNaturalSize.w} / ${bgNaturalSize.h}` }}
+                    onMouseDown={handleCropDrag}
+                    onTouchStart={handleCropDrag}
+                  >
+                    <img src={bgPreviewUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.4 }} />
+                    {(() => {
+                      const cropAspect = 7
+                      const imgAspect = bgNaturalSize.w / bgNaturalSize.h
+                      let cropW: number, cropH: number
+                      if (imgAspect > cropAspect) {
+                        cropH = 100
+                        cropW = (cropAspect / imgAspect) * 100
+                      } else {
+                        cropW = 100
+                        cropH = (imgAspect / cropAspect) * 100
+                      }
+                      const maxX = 100 - cropW
+                      const maxY = 100 - cropH
+                      const left = (bgPos.x / 100) * maxX
+                      const top = (bgPos.y / 100) * maxY
+                      return (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: `${left}%`, top: `${top}%`,
+                            width: `${cropW}%`, height: `${cropH}%`,
+                            border: '2px solid white',
+                            borderRadius: 4,
+                            boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
+                            pointerEvents: 'none',
+                          }}
+                        />
+                      )
+                    })()}
+                  </div>
+                  <div className="rounded-lg overflow-hidden border border-white/10" style={{ width: '100%', maxWidth: 360, height: 50 }}>
+                    <div style={{
+                      width: '100%', height: '100%',
+                      backgroundImage: `url(${bgPreviewUrl})`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
+                    }} />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </section>
 

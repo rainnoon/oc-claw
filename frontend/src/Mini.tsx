@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, ChevronUp, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud, PanelLeft, Rows } from 'lucide-react'
+import { ChevronDown, ChevronUp, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
@@ -612,17 +612,6 @@ export default function Mini() {
   const viewModeRef = useRef<'island' | 'efficiency'>('efficiency')
   const expandedRef = useRef(false)
   const expandedWindowModeRef = useRef<'island' | 'efficiency' | null>(null)
-  const setViewMode = useCallback(async (v: 'island' | 'efficiency' | ((prev: 'island' | 'efficiency') => 'island' | 'efficiency')) => {
-    _setViewMode((prev) => {
-      const next = typeof v === 'function' ? v(prev) : v
-      viewModeRef.current = next
-      load('settings.json', { defaults: {}, autoSave: true }).then((store) => {
-        store.set('view_mode', next)
-        store.save()
-      })
-      return next
-    })
-  }, [])
   // showIdleSessions removed — all sessions visible, important ones sorted to top
   const collapsingRef = useRef(false)
   const customPosRef = useRef<{ x: number; y: number } | null>(null)
@@ -1939,6 +1928,10 @@ export default function Mini() {
   const inAgentDetail = selectedAgentId !== null
   const selectedAgent = agents.find((a) => a.id === selectedAgentId)
   const inDetailPage = inAgentDetail || selectedClaudeSession !== null || selectedSessionKey !== null || showClaudeStats
+  const detailPageMaxHeight =
+    typeof window !== 'undefined'
+      ? Math.max(240, Math.floor(((window.screen?.availHeight || 800) * 0.75) / Math.max(uiScale, 0.01)))
+      : 600
 
   // Panel dimensions — CSS uses fixed base sizes; on Windows high-DPI screens
   // the panel root applies `zoom: uiScale` so all content scales uniformly.
@@ -1995,7 +1988,7 @@ export default function Mini() {
     const ro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect.height
       if (h && h > 0) {
-        const limit = inDetailPage ? 800 : panelMaxHeight
+        const limit = inDetailPage ? detailPageMaxHeight : panelMaxHeight
         const clamped = Math.min(h * uiScale, limit * uiScale)
         const prev = lastResizeHeightRef.current || clamped
         const delta = Math.abs(clamped - prev)
@@ -2015,7 +2008,7 @@ export default function Mini() {
       ro.disconnect()
       stopResizeTween()
     }
-  }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale, panelMaxHeight, inDetailPage, pushMiniHeight, stopResizeTween, tweenMiniHeight])
+  }, [expanded, settingsMode, settingsTransitioning, showPanel, uiScale, panelMaxHeight, inDetailPage, detailPageMaxHeight, pushMiniHeight, stopResizeTween, tweenMiniHeight])
 
   useEffect(() => {
     if (!expanded || !showPanel || settingsMode || settingsTransitioning || updateModalOpen) return
@@ -2138,7 +2131,7 @@ export default function Mini() {
             zoom: uiScale !== 1 ? uiScale : undefined,
             width: panelW,
             height: 'auto',
-            maxHeight: inDetailPage ? undefined : panelMaxHeight,
+            maxHeight: inDetailPage ? detailPageMaxHeight : panelMaxHeight,
             overflowY: 'hidden',
             overflowX: 'hidden',
             display: 'flex',
@@ -2212,17 +2205,6 @@ export default function Mini() {
                   <Pin className="w-4 h-4" strokeWidth={2.5} />
                 </button>
               )}
-              <button
-                data-no-drag
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setViewMode((v) => (v === 'island' ? 'efficiency' : 'island'))
-                }}
-                className="text-slate-400 hover:text-[#F0D140] transition-colors"
-                title={viewMode === 'island' ? t('mini.efficiencyMode') || 'Efficiency Mode' : t('mini.islandMode') || 'Island Mode'}
-              >
-                {viewMode === 'island' ? <Rows className="w-4 h-4" strokeWidth={2.5} /> : <PanelLeft className="w-4 h-4" strokeWidth={2.5} />}
-              </button>
               <button
                 data-no-drag
                 onClick={async (e) => {
@@ -2412,7 +2394,10 @@ export default function Mini() {
                                 const agentName = `${agent?.identityEmoji || ''} ${agent?.identityName || s.agentId}`.trim()
                                 const charName = agentCharMap[s.agentId]
                                 const charMeta = characters.find((c) => c.name === charName)
-                                const gif = charMeta ? getMiniGif(charMeta, s.active ? 'working' : 'idle') : undefined
+                                const recentlyDone = !s.active && s.updatedAt && Date.now() - s.updatedAt < 5 * 60 * 1000
+                                const showCharGif = s.active || recentlyDone
+                                const petState: PetState = s.active ? 'working' : 'idle'
+                                const gif = charMeta ? getMiniGif(charMeta, petState) : undefined
                                 const title = `${agentName} #${seq}`
                                 const subtitle = s.lastUserMsg || ''
                                 const timeAgo = formatTimeAgo(s.updatedAt)
@@ -2453,7 +2438,7 @@ export default function Mini() {
                                     className="group flex items-center gap-3 px-4 hover:bg-white/[0.04] transition-colors cursor-pointer"
                                     style={{ padding: '10px 16px' }}
                                   >
-                                    {isWorking && (
+                                    {showCharGif && (
                                       <div
                                         data-no-drag
                                         onClick={(e) => {
@@ -2476,20 +2461,20 @@ export default function Mini() {
                                             width: 8,
                                             height: 8,
                                             borderRadius: '50%',
-                                            background: '#2ecc71',
+                                            background: recentlyDone ? '#94a3b8' : '#2ecc71',
                                             border: '1.5px solid rgba(0,0,0,0.3)',
                                           }}
                                         />
                                       </div>
                                     )}
-                                    {!isWorking && (
+                                    {!showCharGif && (
                                       <div
                                         data-no-drag
                                         onClick={(e) => {
                                           e.stopPropagation()
                                           openOcDetail()
                                         }}
-                                        className="relative shrink-0 flex items-center justify-center w-10 cursor-pointer"
+                                        className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
                                       >
                                         <div className="absolute inset-0" style={{ left: -16 }} />
                                         <span className="w-1 h-1 rounded-full bg-slate-600" />
@@ -2643,7 +2628,7 @@ export default function Mini() {
                                             e.stopPropagation()
                                             openClaudeDetail()
                                           }}
-                                          className="relative shrink-0 flex items-center justify-center w-10 cursor-pointer"
+                                          className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
                                         >
                                           <div className="absolute inset-0" style={{ left: -16 }} />
                                           <span className="w-1 h-1 rounded-full bg-slate-600" />

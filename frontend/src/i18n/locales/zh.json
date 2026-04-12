@@ -127,6 +127,8 @@
     "ccSoundDesc": "Claude Code 任务完成时播放提示音",
     "codexSound": "Codex 完成提示音",
     "codexSoundDesc": "Codex 任务完成时播放提示音",
+    "enableCursor": "启用 Cursor",
+    "enableCursorDesc": "通过 Hooks 监控本地 Cursor Agent 会话",
     "cursorSound": "Cursor 完成提示音",
     "cursorSoundDesc": "Cursor 任务完成时播放提示音",
     "waitingSound": "等待时提示音",
