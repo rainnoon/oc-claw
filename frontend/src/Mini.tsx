@@ -2480,7 +2480,7 @@ export default function Mini() {
                                         <span className="w-1 h-1 rounded-full bg-slate-600" />
                                       </div>
                                     )}
-                                    <div className="flex min-w-0 flex-1 items-center gap-1.5" data-no-drag>
+                                    <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden" data-no-drag>
                                       {editingSessionTitle === `oc:${s.agentId}:${s.key}` ? (
                                         <input
                                           autoFocus
@@ -2510,7 +2510,7 @@ export default function Mini() {
                                         />
                                       ) : (
                                         <span
-                                          className={`text-[13px] font-bold shrink-0 cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                          className={`min-w-0 max-w-[40%] truncate text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
                                           onClick={(e) => e.stopPropagation()}
                                           onDoubleClick={(e) => {
                                             e.stopPropagation()
@@ -2520,8 +2520,8 @@ export default function Mini() {
                                           {sessionNicknames[`oc:${s.agentId}:${s.key}`] || title}
                                         </span>
                                       )}
-                                      {subtitle && <span className="text-[13px] font-normal text-slate-500 shrink-0">· {subtitle}</span>}
-                                      {s.lastAssistantMsg && <span className="text-[11px] text-white/40 truncate">· {s.lastAssistantMsg}</span>}
+                                      {subtitle && <span className="min-w-0 max-w-[45%] truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
+                                      {s.lastAssistantMsg && <span className="min-w-0 flex-1 truncate text-[11px] text-white/40">· {s.lastAssistantMsg}</span>}
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0">
                                       {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300">{formatChannelLabel(s.channel)}</span>}
@@ -2591,7 +2591,7 @@ export default function Mini() {
                                     className={`group hover:bg-white/[0.04] transition-colors ${isWaiting ? '' : 'cursor-pointer'}`}
                                     style={{ padding: '10px 16px' }}
                                   >
-                                    <div className="flex items-center gap-3">
+                                    <div className="flex min-w-0 w-full items-center gap-3">
                                       {showCharGif && (
                                         <div
                                           data-no-drag
@@ -2634,7 +2634,7 @@ export default function Mini() {
                                           <span className="w-1 h-1 rounded-full bg-slate-600" />
                                         </div>
                                       )}
-                                      <div className="flex min-w-0 flex-1 items-center gap-1.5" data-no-drag>
+                                      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden" data-no-drag>
                                         {editingSessionTitle === cs.sessionId ? (
                                           <input
                                             autoFocus
@@ -2664,7 +2664,7 @@ export default function Mini() {
                                           />
                                         ) : (
                                           <span
-                                            className={`text-[13px] font-bold shrink-0 cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                            className={`min-w-0 max-w-[42%] truncate text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
                                             onClick={(e) => {
                                               // Keep title area reserved for rename interaction.
                                               // Clicking title should not trigger jump.
@@ -2678,7 +2678,7 @@ export default function Mini() {
                                             {projectName}
                                           </span>
                                         )}
-                                        {subtitle && <span className="text-[13px] font-normal text-slate-500 truncate">· {subtitle}</span>}
+                                        {subtitle && <span className="min-w-0 flex-1 truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
                                       </div>
                                       <div className="flex items-center gap-2 shrink-0">
                                         <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal ${sourceBadgeClass}`}>{sourceLabel}</span>
