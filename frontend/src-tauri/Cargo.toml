@@ -1,6 +1,6 @@
 [package]
 name = "oc_claw"
-version = "1.5.3"
+version = "1.7.0"
 description = "OpenClaw Desktop Pet"
 authors = ["you"]
 license = "MIT"
