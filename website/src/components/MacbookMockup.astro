@@ -5,9 +5,7 @@
     <div class="v6-screen" id="v6-screen">
       <div class="v6-menubar">
         <div class="v6-menubar-l">
-          <svg class="v6-apple" width="14" height="14" viewBox="0 0 170 170" fill="currentColor">
-            <path d="M102.6 30.6c7.7-9.4 12.8-21.6 11.4-30.6-8.7.4-21.1 5.8-29.2 15.2-6.5 7.6-12.4 20-10.7 29.2 9.6.7 20.8-4.4 28.5-13.8zm-29 119.5c-8.5-8.7-18.4-8.8-27.9-8.8-10.2 0-21.6.4-30.2 9.6C3.9 162.7 0 143.1 0 119.8c0-30.2 20.1-46.1 36.3-46.1 9.5 0 18.2 6.5 23.3 6.5 5.5 0 15.5-7.7 26.6-7.7 14.1 0 26.6 6.8 33.7 18.6-28.5 17.2-24 55.4 3.7 67.5-6.5 18.4-18.5 35.8-29.6 35.8-10.1 0-14.8-6.1-26.6-6.1-11.8 0-17 5.8-27 6.1-4.8.1-10.5-3.3-14.8-7.9z"/>
-          </svg>
+          <span class="v6-apple" aria-hidden="true"></span>
           <span class="v6-app-name">OC-Claw</span>
           <span>File</span><span>Edit</span><span>Window</span><span>Help</span>
         </div>
@@ -77,6 +75,10 @@
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
     <span>Details</span>
   </button>
+  <button class="oc-action-btn" data-target="monitor">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><rect x="14" y="14" width="7" height="7" rx="1.2"/></svg>
+    <span>Monitor</span>
+  </button>
 </div>
 
 <style is:global>
@@ -85,7 +87,7 @@
 .v6-screen { position: relative; background: radial-gradient(circle at center 20%, #4c1d95 0%, #1e1b4b 60%, #000 100%); border-radius: 12px; overflow: hidden; aspect-ratio: 16 / 10; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #fff; border: 1px solid rgba(255,255,255,0.05); }
 .v6-menubar { position: absolute; top: 0; left: 0; right: 0; height: 28px; display: flex; justify-content: space-between; align-items: center; padding: 0 16px; font-size: 13px; font-weight: 500; z-index: 10; background: #000; color: rgba(255,255,255,0.9); }
 .v6-menubar-l { display: flex; align-items: center; gap: 16px; }
-.v6-apple { margin-right: 4px; }
+.v6-apple { margin-right: 4px; font-size: 15px; line-height: 1; font-weight: 500; }
 .v6-app-name { font-weight: 700; margin-right: 8px; }
 .v6-menubar-r { display: flex; align-items: center; }
 
@@ -169,6 +171,52 @@
 .oc-details-list .oc-time { width: 28px; font-size: 10px; }
 .oc-detail-entry-target { transition: transform 0.18s ease, background 0.18s ease; }
 .oc-detail-entry-target.oc-item-clicked { background: rgba(59,130,246,0.12); transform: scale(0.985); }
+.oc-monitor-rename-input {
+  display: none;
+  width: 138px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid rgba(71,85,105,0.7);
+  background: rgba(2,6,23,0.75);
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+}
+.oc-monitor-rename-row.oc-monitor-hover { background: rgba(255,255,255,0.04); }
+.oc-monitor-rename-row.oc-monitor-editing .oc-monitor-rename-title { display: none; }
+.oc-monitor-rename-row.oc-monitor-editing .oc-monitor-rename-input { display: inline-flex; }
+.oc-monitor-rename-row.oc-monitor-renamed .oc-monitor-rename-title { color: #bbf7d0; }
+.oc-monitor-time-wrap {
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.oc-monitor-delete-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #475569;
+  transition: color 0.18s ease, transform 0.14s ease;
+  padding: 0;
+}
+.oc-monitor-delete-btn svg { width: 14px; height: 14px; }
+.oc-monitor-delete-row.oc-monitor-hover .oc-monitor-delete-time { display: none; }
+.oc-monitor-delete-row.oc-monitor-hover .oc-monitor-delete-btn { display: inline-flex; }
+.oc-monitor-delete-row.oc-monitor-delete-armed .oc-monitor-delete-btn { color: #fb7185; }
+.oc-monitor-delete-btn.oc-monitor-delete-clicked {
+  transform: scale(0.92);
+  filter: brightness(1.12);
+}
+.oc-item.oc-item-deleting {
+  opacity: 0;
+  transform: translateX(24px);
+  transition: opacity 0.32s ease, transform 0.32s ease;
+}
 
 /* Completion popup */
 .oc-completion { margin: 0 16px 8px; border-radius: 8px; background: #1a1a1e; border: 1px solid #2a2a2e; overflow: hidden; }
@@ -271,9 +319,49 @@
 .oc-cursor { position: absolute; z-index: 50; opacity: 0; pointer-events: none; transition: top 0.8s cubic-bezier(0.16, 1, 0.3, 1), left 0.8s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s; }
 
 .oc-actions { display: flex; justify-content: center; gap: 12px; margin-top: 24px; }
-.oc-action-btn { display: flex; align-items: center; gap: 8px; padding: 10px 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #94a3b8; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-.oc-action-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); color: #e2e8f0; }
-.oc-action-btn.oc-action-active { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.25); color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+.oc-action-btn {
+  --progress: 0;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(15,23,42,0.36);
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.oc-action-btn svg, .oc-action-btn span {
+  position: relative;
+  z-index: 1;
+}
+.oc-action-btn::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: calc(var(--progress) * 100%);
+  background: rgba(34, 211, 238, 0.15);
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: width 0.08s linear, opacity 0.2s ease;
+}
+.oc-action-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.24); color: #e2e8f0; }
+.oc-action-btn.oc-action-active {
+  background: rgba(8,47,73,0.34);
+  border-color: rgba(34,211,238,0.62);
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(34,211,238,0.25) inset, 0 4px 12px rgba(0,0,0,0.25);
+}
+.oc-action-btn.oc-action-active::after { opacity: 1; }
 
 @media (max-width: 768px) { .v6-macbook { transform: scale(0.8); margin-top: 1rem; margin-bottom: -2rem; } }
 @media (max-width: 500px) { .v6-macbook { transform: scale(0.5) translateY(-20%); margin-top: -2rem; margin-bottom: -6rem; } }
@@ -293,6 +381,15 @@ function setupMockup() {
   const topbarLeft = document.querySelector('.oc-topbar-l');
   const topbarRight = document.querySelector('.oc-topbar-r');
   let timers = [];
+  let progressFrame = 0;
+  let carouselRun = 0;
+  const MODE_ORDER = ['jump', 'approve', 'details', 'monitor'];
+  const MODE_DURATION = {
+    jump: 4600,
+    approve: 2800,
+    details: 3400,
+    monitor: 4300,
+  };
   const defaultTopbarLeft = topbarLeft ? topbarLeft.innerHTML : '';
   const defaultTopbarRight = topbarRight ? topbarRight.innerHTML : '';
   const detailTopbarLeft = `
@@ -330,6 +427,8 @@ function setupMockup() {
   function clearTimers() {
     timers.forEach(t => clearTimeout(t));
     timers = [];
+    if (progressFrame) cancelAnimationFrame(progressFrame);
+    progressFrame = 0;
     cursor.style.opacity = '0';
     ccTerminal.classList.remove('cc-visible');
   }
@@ -400,14 +499,16 @@ function setupMockup() {
     cursor.style.opacity = '1';
     await wait(500);
 
-    // Step 4: Click → panel collapses, mascot switches to sleep
+    // Step 4: Click → panel collapses, mascot and terminal appear together
     notch.classList.remove('oc-notch-open');
     cursor.style.opacity = '0';
-    await wait(450);
+    await wait(320);
     setMascotMode('sleep');
     mascot.style.opacity = '1';
-    await wait(1200);
-    playJump();
+    ccTerminal.classList.add('cc-visible');
+    await wait(980);
+    ccTerminal.classList.remove('cc-visible');
+    await wait(960);
   }
 
   // ══════ APPROVE ══════
@@ -616,20 +717,158 @@ function setupMockup() {
     await wait(bars.length * 40 + 180);
   }
 
-  const handlers = { jump: playJump, approve: playApprove, details: playDetails };
+  async function playMonitor() {
+    clearTimers();
+    setMascotMode('working');
+    setDetailsLayout(false);
+    setTopbar('default');
+    mascot.style.display = '';
+    mascot.style.opacity = '1';
+    ccTerminal.classList.remove('cc-visible');
+    notch.classList.remove('oc-notch-open');
 
-  document.querySelectorAll('.oc-action-btn').forEach(btn => {
+    content.innerHTML = `
+      <div class="oc-step oc-details-list" data-s="1">
+        <div class="oc-item oc-monitor-rename-row">
+          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white oc-monitor-rename-title">codex-agent-01</span><input class="oc-monitor-rename-input" value="codex-agent-01" readonly /><span class="oc-subtitle oc-monitor-rename-subtitle">· monitor watches tool activity</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#2a1f45;color:#c4b5fd;">Codex</span><span class="oc-time"><1m</span></div>
+        </div>
+        <div class="oc-item oc-monitor-delete-row">
+          <div class="oc-avatar"><img src="/images/pets/paimon_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">cursor-review</span><span class="oc-subtitle">· summarize ui diff for pr</span></div>
+          <div class="oc-item-right">
+            <span class="oc-badge" style="background:#1a2f3f;color:#5eb5f7;">Cursor</span>
+            <div class="oc-monitor-time-wrap">
+              <span class="oc-time oc-monitor-delete-time"><1m</span>
+              <button class="oc-monitor-delete-btn oc-monitor-delete-target" aria-label="Delete session">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="oc-item">
+          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">· waiting approval for middleware edit</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
+        </div>
+        <div class="oc-item">
+          <div class="oc-avatar"><img src="/images/pets/qiqi_sleeping.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#94a3b8;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">api-retry</span><span class="oc-subtitle">· idle after timeout investigation</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#334155;color:#e2e8f0;">Feishu</span><span class="oc-time">18h</span></div>
+        </div>
+      </div>`;
+
+    await wait(600);
+    mascot.style.opacity = '0';
+    notch.classList.add('oc-notch-open');
+    const listStep = content.querySelector('[data-s="1"]');
+    const renameRow = content.querySelector('.oc-monitor-rename-row');
+    const renameTitle = content.querySelector('.oc-monitor-rename-title');
+    const renameInput = content.querySelector('.oc-monitor-rename-input');
+    const renameSubtitle = content.querySelector('.oc-monitor-rename-subtitle');
+    const deleteBtn = content.querySelector('.oc-monitor-delete-target');
+    const deleteRow = content.querySelector('.oc-monitor-delete-row');
+    const renamedTitle = 'codex-prod-monitor';
+
+    await wait(200);
+    if (listStep) showStep(listStep);
+
+    await wait(420);
+    cursor.style.top = '20%';
+    cursor.style.left = '34%';
+    cursor.style.opacity = '1';
+    renameRow?.classList.add('oc-monitor-hover');
+
+    await wait(260);
+    renameRow?.classList.add('oc-monitor-editing');
+    if (renameInput) renameInput.value = 'codex-agent-01';
+    for (let i = 1; i <= renamedTitle.length; i++) {
+      await wait(28);
+      if (renameInput) renameInput.value = renamedTitle.slice(0, i);
+    }
+    await wait(80);
+    if (renameTitle) renameTitle.textContent = renamedTitle;
+    if (renameSubtitle) renameSubtitle.textContent = '· title updated by monitor automation';
+    renameRow?.classList.remove('oc-monitor-editing');
+    renameRow?.classList.add('oc-monitor-renamed');
+
+    await wait(360);
+    cursor.style.top = '35%';
+    cursor.style.left = '84%';
+    deleteRow?.classList.add('oc-monitor-hover');
+
+    await wait(320);
+    deleteRow?.classList.add('oc-monitor-delete-armed');
+    deleteBtn?.classList.add('oc-monitor-delete-clicked');
+
+    await wait(140);
+    deleteRow?.classList.add('oc-item-deleting');
+    cursor.style.opacity = '0';
+
+    await wait(360);
+    deleteRow?.remove();
+
+    await wait(950);
+  }
+
+  function setActiveActionButton(target) {
+    document.querySelectorAll('.oc-action-btn').forEach((btn) => {
+      btn.style.setProperty('--progress', '0');
+      btn.classList.toggle('oc-action-active', btn.dataset.target === target);
+    });
+  }
+
+  function animateButtonProgress(target, duration, runId) {
+    const activeBtn = document.querySelector(`.oc-action-btn[data-target="${target}"]`);
+    if (!activeBtn) return;
+    const startedAt = performance.now();
+    const tick = (now) => {
+      if (runId !== carouselRun) return;
+      const progress = Math.min((now - startedAt) / duration, 1);
+      activeBtn.style.setProperty('--progress', String(progress));
+      if (progress < 1) {
+        progressFrame = requestAnimationFrame(tick);
+      }
+    };
+    progressFrame = requestAnimationFrame(tick);
+  }
+
+  const handlers = {
+    jump: playJump,
+    approve: playApprove,
+    details: playDetails,
+    monitor: playMonitor,
+  };
+
+  function runMode(target) {
+    const handler = handlers[target];
+    const duration = MODE_DURATION[target];
+    if (!handler || !duration) return;
+    carouselRun += 1;
+    const runId = carouselRun;
+    handler();
+    setActiveActionButton(target);
+    animateButtonProgress(target, duration, runId);
+    const idx = MODE_ORDER.indexOf(target);
+    const nextTarget = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
+    const t = setTimeout(() => {
+      if (runId !== carouselRun) return;
+      runMode(nextTarget);
+    }, duration);
+    timers.push(t);
+  }
+
+  document.querySelectorAll('.oc-action-btn').forEach((btn) => {
     const clone = btn.cloneNode(true);
     btn.parentNode.replaceChild(clone, btn);
     clone.addEventListener('click', () => {
-      document.querySelectorAll('.oc-action-btn').forEach(b => b.classList.remove('oc-action-active'));
-      clone.classList.add('oc-action-active');
       const target = clone.dataset.target;
-      if (handlers[target]) handlers[target]();
+      if (target) runMode(target);
     });
   });
 
-  playJump();
+  runMode('jump');
 }
 
 setupMockup();
