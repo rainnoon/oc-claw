@@ -8252,41 +8252,44 @@ try {
     let ext_dir = home.join(".cursor").join("extensions").join(format!("{}-1.0.0", ext_id));
     log::info!("[cursor_hooks] syncing terminal-focus extension...");
 
-    // Locate extension source: bundled in app resources or next to the binary
+    // Locate extension source with multiple fallbacks:
+    // - repo/dev layout
+    // - unpacked release binary layout
+    // - macOS app bundle Resources
     let ext_source = {
         let mut candidates = Vec::new();
 
-        // In dev: extensions/cursor/ relative to project root
-        #[cfg(debug_assertions)]
-        {
-            // exe is typically at frontend/src-tauri/target/debug/ooclaw
-            if let Ok(exe) = std::env::current_exe() {
-                let mut dir = exe.parent();
-                for _ in 0..6 {
-                    if let Some(d) = dir {
-                        let candidate = d.join("extensions").join("cursor").join("extension.js");
-                        if candidate.exists() {
-                            candidates.push(d.join("extensions").join("cursor"));
-                            break;
-                        }
-                        dir = d.parent();
+        if let Ok(exe) = std::env::current_exe() {
+            let mut dir = exe.parent();
+            for _ in 0..10 {
+                if let Some(d) = dir {
+                    let repo_candidate = d.join("extensions").join("cursor");
+                    if repo_candidate.join("extension.js").exists() {
+                        candidates.push(repo_candidate);
+                        break;
                     }
+
+                    let bundled_candidate = d.join("Resources").join("extensions").join("cursor");
+                    if bundled_candidate.join("extension.js").exists() {
+                        candidates.push(bundled_candidate);
+                        break;
+                    }
+
+                    dir = d.parent();
+                } else {
+                    break;
                 }
             }
         }
 
-        // In production: bundled as a Tauri resource
-        #[cfg(not(debug_assertions))]
-        {
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(macos_dir) = exe.parent() {
-                    let res = macos_dir.parent().map(|p| p.join("Resources").join("extensions").join("cursor"));
-                    if let Some(ref r) = res {
-                        if r.join("extension.js").exists() {
-                            candidates.push(r.clone());
-                        }
-                    }
-                }
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            let repo_candidate = PathBuf::from(manifest_dir)
+                .join("..")
+                .join("..")
+                .join("extensions")
+                .join("cursor");
+            if repo_candidate.join("extension.js").exists() {
+                candidates.push(repo_candidate);
             }
         }
 
@@ -8297,7 +8300,7 @@ try {
         if let Err(e) = std::fs::create_dir_all(&ext_dir) {
             log::warn!("[cursor_hooks] failed to create extension dir: {}", e);
         } else {
-            let files = ["package.json", "extension.js"];
+            let files = ["package.json", "extension.js", "icon.png", "README.md"];
             let mut ok = true;
             for fname in &files {
                 let from = src.join(fname);
@@ -8308,6 +8311,105 @@ try {
                 }
             }
             if ok {
+                // If the user previously uninstalled this extension in Cursor,
+                // Cursor records it in ~/.cursor/extensions/.obsolete and keeps
+                // hiding it even when files are copied back. Clear that flag.
+                let obsolete_path = home.join(".cursor").join("extensions").join(".obsolete");
+                let ext_folder_name = format!("{}-1.0.0", ext_id);
+                if obsolete_path.exists() {
+                    match std::fs::read_to_string(&obsolete_path) {
+                        Ok(content) => {
+                            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&content) {
+                                if let Some(obj) = v.as_object_mut() {
+                                    if obj.remove(&ext_folder_name).is_some() {
+                                        match serde_json::to_string(obj) {
+                                            Ok(s) => {
+                                                if let Err(e) = std::fs::write(&obsolete_path, s) {
+                                                    log::warn!("[cursor_hooks] failed to update .obsolete: {}", e);
+                                                } else {
+                                                    log::info!("[cursor_hooks] removed obsolete flag for {}", ext_folder_name);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::warn!("[cursor_hooks] failed to serialize .obsolete: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("[cursor_hooks] failed to read .obsolete: {}", e);
+                        }
+                    }
+                }
+
+                // Ensure Cursor extension registry includes this local extension.
+                // Some Cursor builds rely on extensions.json for listing/loading.
+                let extensions_json_path = home.join(".cursor").join("extensions").join("extensions.json");
+                let ext_version = "1.0.0";
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let registry_entry = serde_json::json!({
+                    "identifier": { "id": ext_id },
+                    "version": ext_version,
+                    "location": {
+                        "$mid": 1,
+                        "path": ext_dir.to_string_lossy().to_string(),
+                        "scheme": "file"
+                    },
+                    "relativeLocation": format!("{}-{}", ext_id, ext_version),
+                    "metadata": {
+                        "installedTimestamp": now_ms,
+                        "pinned": false,
+                        "source": "vsix"
+                    }
+                });
+                let mut updated_registry = false;
+                let mut registry_val: serde_json::Value = if extensions_json_path.exists() {
+                    match std::fs::read_to_string(&extensions_json_path) {
+                        Ok(content) => serde_json::from_str(&content).unwrap_or(serde_json::json!([])),
+                        Err(_) => serde_json::json!([]),
+                    }
+                } else {
+                    serde_json::json!([])
+                };
+                if !registry_val.is_array() {
+                    registry_val = serde_json::json!([]);
+                }
+                if let Some(arr) = registry_val.as_array_mut() {
+                    let mut found = false;
+                    for item in arr.iter_mut() {
+                        let item_id = item.get("identifier")
+                            .and_then(|v| v.get("id"))
+                            .and_then(|v| v.as_str());
+                        if item_id == Some(ext_id) {
+                            *item = registry_entry.clone();
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        arr.push(registry_entry);
+                    }
+                    updated_registry = true;
+                }
+                if updated_registry {
+                    match serde_json::to_string(&registry_val) {
+                        Ok(s) => {
+                            if let Err(e) = std::fs::write(&extensions_json_path, s) {
+                                log::warn!("[cursor_hooks] failed to update extensions.json: {}", e);
+                            } else {
+                                log::info!("[cursor_hooks] registered extension {} in extensions.json", ext_id);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("[cursor_hooks] failed to serialize extensions.json: {}", e);
+                        }
+                    }
+                }
                 log::info!("[cursor_hooks] terminal-focus extension synced at {:?}", ext_dir);
             }
         }
@@ -8629,6 +8731,10 @@ pub fn run() {
             // Install Claude + Codex hooks on every startup (idempotent)
             if let Err(e) = tauri::async_runtime::block_on(install_claude_hooks()) {
                 log::warn!("Failed to install Claude hooks on startup: {}", e);
+            }
+            // Install Cursor hooks + terminal-focus extension on startup (idempotent)
+            if let Err(e) = tauri::async_runtime::block_on(install_cursor_hooks()) {
+                log::warn!("Failed to install Cursor hooks on startup: {}", e);
             }
 
             app.handle().plugin(
