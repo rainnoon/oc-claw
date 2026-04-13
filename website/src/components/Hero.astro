@@ -1,5 +1,6 @@
 ---
 import { t as tr, type Lang } from '../i18n/index';
+import MacbookMockup from './MacbookMockup.astro';
 
 interface Props {
   lang?: Lang;
@@ -25,6 +26,7 @@ const { lang = 'en' } = Astro.props;
     </a>
   </div>
   <p class="badge"><span class="badge-label">{tr(lang, 'hero.badge')}</span><span>Tauri v2 · React · Rust</span></p>
+  <MacbookMockup />
 </section>
 
 <section class="features">

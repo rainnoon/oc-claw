@@ -1,0 +1,637 @@
+---
+---
+<div class="v6-macbook">
+  <div class="v6-frame">
+    <div class="v6-screen" id="v6-screen">
+      <div class="v6-menubar">
+        <div class="v6-menubar-l">
+          <svg class="v6-apple" width="14" height="14" viewBox="0 0 170 170" fill="currentColor">
+            <path d="M102.6 30.6c7.7-9.4 12.8-21.6 11.4-30.6-8.7.4-21.1 5.8-29.2 15.2-6.5 7.6-12.4 20-10.7 29.2 9.6.7 20.8-4.4 28.5-13.8zm-29 119.5c-8.5-8.7-18.4-8.8-27.9-8.8-10.2 0-21.6.4-30.2 9.6C3.9 162.7 0 143.1 0 119.8c0-30.2 20.1-46.1 36.3-46.1 9.5 0 18.2 6.5 23.3 6.5 5.5 0 15.5-7.7 26.6-7.7 14.1 0 26.6 6.8 33.7 18.6-28.5 17.2-24 55.4 3.7 67.5-6.5 18.4-18.5 35.8-29.6 35.8-10.1 0-14.8-6.1-26.6-6.1-11.8 0-17 5.8-27 6.1-4.8.1-10.5-3.3-14.8-7.9z"/>
+          </svg>
+          <span class="v6-app-name">OC-Claw</span>
+          <span>File</span><span>Edit</span><span>Window</span><span>Help</span>
+        </div>
+        <div class="v6-menubar-r"><span>Sun 4:50 PM</span></div>
+      </div>
+
+      <!-- Collapsed mascot (visible when panel is hidden) -->
+      <div class="oc-mascot" id="oc-mascot">
+        <img src="/images/pets/xiangqie_working.gif" alt="" class="oc-mascot-img" />
+        <div class="oc-mascot-dot" id="oc-mascot-dot" style="background:#2ecc71;"></div>
+      </div>
+
+      <!-- Notch panel (hidden initially for Jump) -->
+      <div class="oc-notch-wrap" id="oc-notch-wrap">
+        <div class="oc-notch" id="oc-notch">
+          <div class="oc-topbar">
+            <div class="oc-topbar-l">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="oc-icon-pin"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.89A2 2 0 0 0 5 15.24V17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.89A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 1 1 0 0 0 1-1V4a2 2 0 0 0-2-2H9a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1 1 1 0 0 1 1 1z"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="oc-icon-muted"><path d="M8.7 3A6 6 0 0 1 18 8a21.3 21.3 0 0 0 .6 5"/><path d="M17 17H3s3-2 3-9a4.67 4.67 0 0 1 .3-1.7"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><line x1="1" x2="23" y1="1" y2="23"/></svg>
+            </div>
+            <div class="oc-topbar-r">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="oc-icon"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" x2="22" y1="12" y2="12"/><line x1="12" x2="12" y1="2" y2="22"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="oc-icon"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="oc-icon-close"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </div>
+          </div>
+          <div id="oc-content"></div>
+        </div>
+      </div>
+
+      <!-- Desktop -->
+      <div class="v6-desktop" id="v6-desktop">
+        <div class="cc-terminal" id="cc-terminal">
+          <div class="cc-titlebar">
+            <span class="cc-dot cc-dot-r"></span>
+            <span class="cc-dot cc-dot-y"></span>
+            <span class="cc-dot cc-dot-g"></span>
+            <span class="cc-titlebar-text">claude — fix-auth-bug</span>
+          </div>
+          <div class="cc-body">
+            <div class="cc-ai-msg"><span class="cc-bullet">●</span> Let me look at the auth module.</div>
+            <div class="cc-tool">Searching for 6 patterns… <span class="cc-hint">(ctrl+o to expand)</span></div>
+            <div class="cc-tool">Read 2 files <span class="cc-hint">(ctrl+o to expand)</span></div>
+            <div class="cc-ai-msg"><span class="cc-bullet">●</span> Found the issue — token validation skips expiry check.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Animated mouse cursor -->
+      <div class="oc-cursor" id="oc-cursor">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="#fff" stroke="#000" stroke-width="1"><path d="M5 3l14 8-6 2-4 6z"/></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="oc-actions">
+  <button class="oc-action-btn oc-action-active" data-target="jump">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+    <span>Jump</span>
+  </button>
+  <button class="oc-action-btn" data-target="approve">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    <span>Approve</span>
+  </button>
+  <button class="oc-action-btn" data-target="details">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+    <span>Details</span>
+  </button>
+</div>
+
+<style is:global>
+.v6-macbook { position: relative; width: 100%; max-width: 900px; margin: 3rem auto 0; perspective: 1000px; }
+.v6-frame { background: #111; padding: 12px; border-radius: 24px; box-shadow: 0 24px 48px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.1); }
+.v6-screen { position: relative; background: radial-gradient(circle at center 20%, #4c1d95 0%, #1e1b4b 60%, #000 100%); border-radius: 12px; overflow: hidden; aspect-ratio: 16 / 10; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #fff; border: 1px solid rgba(255,255,255,0.05); }
+.v6-menubar { position: absolute; top: 0; left: 0; right: 0; height: 28px; display: flex; justify-content: space-between; align-items: center; padding: 0 16px; font-size: 13px; font-weight: 500; z-index: 10; background: #000; color: rgba(255,255,255,0.9); }
+.v6-menubar-l { display: flex; align-items: center; gap: 16px; }
+.v6-apple { margin-right: 4px; }
+.v6-app-name { font-weight: 700; margin-right: 8px; }
+.v6-menubar-r { display: flex; align-items: center; }
+
+/* Collapsed mascot to the right of notch */
+.oc-mascot {
+  position: absolute; top: -2px; left: calc(50% + 20px);
+  z-index: 60; cursor: pointer;
+  transition: opacity 0.3s;
+}
+.oc-mascot-img { width: 43px; height: 43px; object-fit: contain; image-rendering: pixelated; display: block; }
+.oc-mascot-dot {
+  position: absolute; bottom: 2px; right: 2px;
+  width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.3);
+}
+
+/* Notch panel */
+.oc-notch-wrap {
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  z-index: 40; display: flex; justify-content: center;
+}
+.oc-notch {
+  width: 475px; background: #010101;
+  border-radius: 0 0 24px 24px; overflow: hidden;
+  display: flex; flex-direction: column;
+  clip-path: inset(0 calc(50% - 22px) calc(100% - 10px) calc(50% - 22px) round 0 0 8px 8px);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+  transition: clip-path 0.42s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+.oc-notch.oc-notch-open {
+  clip-path: inset(0 0 0 0 round 0 0 24px 24px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.8);
+  pointer-events: auto;
+}
+.oc-notch.oc-notch-details {
+  height: var(--details-height, 75%);
+  max-height: var(--details-height, 75%);
+}
+#oc-content {
+  flex: 1;
+  min-height: 0;
+}
+.oc-notch.oc-notch-details #oc-content {
+  overflow-y: auto;
+}
+
+.oc-topbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: #000; color: #fff; }
+.oc-topbar-l { display: flex; align-items: center; gap: 16px; }
+.oc-topbar-r { display: flex; align-items: center; gap: 16px; }
+.oc-topbar-back { display: flex; align-items: center; gap: 4px; color: #cbd5e1; font-size: 13px; font-weight: 500; }
+.oc-topbar-back-arrow { color: #94a3b8; font-size: 15px; line-height: 1; }
+.oc-icon-pin { color: #F0D140; } .oc-icon-muted { color: #475569; } .oc-icon { color: #94a3b8; } .oc-icon-close { color: #94a3b8; margin-left: 4px; }
+
+/* Animated steps */
+.oc-step { opacity: 0; transform: translateY(8px); transition: opacity 0.4s ease, transform 0.4s ease; }
+.oc-step.oc-visible { opacity: 1; transform: translateY(0); }
+
+/* List items */
+.oc-item { display: flex; align-items: center; gap: 12px; padding: 10px 16px; cursor: pointer; transition: background 0.2s; }
+.oc-item:hover { background: rgba(255,255,255,0.04); }
+.oc-avatar { position: relative; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.oc-pet-img { width: 40px; height: 40px; object-fit: contain; image-rendering: pixelated; user-select: none; }
+.oc-dot { position: absolute; bottom: 0; right: 0; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.3); }
+.oc-avatar-small-dot { width: 4px; height: 4px; border-radius: 50%; background: #475569; }
+.oc-item-main { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow: hidden; }
+.oc-title { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.oc-subtitle { font-size: 13px; font-weight: 400; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.text-white { color: #fff; } .text-slate-300 { color: #cbd5e1; }
+.oc-item-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.oc-badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 400; }
+.oc-time { font-size: 11px; color: #64748b; width: 32px; text-align: center; }
+.oc-details-list { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 6px; }
+.oc-details-list .oc-item { margin: 0 10px; padding: 8px 12px; gap: 10px; border-radius: 9px; }
+.oc-details-list .oc-avatar { width: 34px; height: 34px; }
+.oc-details-list .oc-pet-img { width: 34px; height: 34px; }
+.oc-details-list .oc-dot { width: 7px; height: 7px; }
+.oc-details-list .oc-item-main { gap: 5px; }
+.oc-details-list .oc-title { max-width: none; font-size: 12px; }
+.oc-details-list .oc-subtitle { font-size: 12px; }
+.oc-details-list .oc-badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; }
+.oc-details-list .oc-time { width: 28px; font-size: 10px; }
+.oc-detail-entry-target { transition: transform 0.18s ease, background 0.18s ease; }
+.oc-detail-entry-target.oc-item-clicked { background: rgba(59,130,246,0.12); transform: scale(0.985); }
+
+/* Completion popup */
+.oc-completion { margin: 0 16px 8px; border-radius: 8px; background: #1a1a1e; border: 1px solid #2a2a2e; overflow: hidden; }
+.oc-completion-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #2a2a2e; cursor: pointer; }
+.oc-completion-header:hover { background: #222226; }
+.oc-completion-prompt { font-size: 12px; color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-completion-done { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: rgba(16,185,129,0.2); color: #34d399; flex-shrink: 0; margin-left: 8px; }
+.oc-completion-body { padding: 8px 12px; font-size: 12px; color: #94a3b8; line-height: 1.5; }
+
+/* Expand rest link */
+.oc-expand-rest {
+  text-align: center; padding: 8px 0; font-size: 12px; color: #3b82f6;
+  cursor: pointer; user-select: none;
+}
+
+/* Approve */
+.oc-approve-tool { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; padding: 0 16px; }
+.oc-approve-code { margin: 0 16px 8px; border-radius: 8px; background: #1a1a1e; border: 1px solid #2a2a2e; overflow: hidden; }
+.oc-code-header { padding: 6px 12px; border-bottom: 1px solid #2a2a2e; }
+.oc-code-filename { font-size: 12px; color: #cbd5e1; font-family: monospace; }
+.oc-code-body { padding: 8px 12px; font-family: monospace; font-size: 11px; line-height: 1.5; }
+.oc-code-line { display: flex; gap: 12px; }
+.oc-ln { width: 20px; color: #555; text-align: right; flex-shrink: 0; user-select: none; }
+.oc-approve-btns { display: flex; gap: 6px; padding: 0 16px 12px; }
+.oc-abtn { flex: 1; padding: 6px 0; border-radius: 6px; border: none; font-size: 12px; cursor: pointer; text-align: center; font-family: -apple-system, sans-serif; transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease; }
+.oc-abtn-default { background: #27272a; color: #cbd5e1; } .oc-abtn-green { background: rgba(16,185,129,0.2); color: #6ee7b7; } .oc-abtn-red { background: rgba(225,29,72,0.2); color: #fda4af; }
+.oc-abtn-clicked { transform: scale(0.96); box-shadow: inset 0 0 0 1px rgba(110,231,183,0.4); filter: brightness(1.1); }
+
+/* Details */
+.oc-detail-page { min-height: 100%; padding: 12px; display: flex; flex-direction: column; gap: 8px; background: #1a1a1a; }
+.oc-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.oc-detail-heading { font-size: 15px; font-weight: 600; color: #fff; letter-spacing: -0.02em; }
+.oc-detail-range { font-size: 11px; color: rgba(255,255,255,0.4); }
+.oc-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.oc-detail-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); border-radius: 16px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.oc-detail-kicker { font-size: 9px; font-weight: 600; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.06em; }
+.oc-detail-metric { font-size: 22px; line-height: 1; font-weight: 700; color: #fff; margin-top: 1px; letter-spacing: -0.03em; }
+.oc-detail-submetric { font-size: 11px; color: rgba(255,255,255,0.4); }
+.oc-detail-breakdown { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 1px; }
+.oc-detail-breakdown-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.oc-detail-breakdown-label { font-size: 9px; color: rgba(255,255,255,0.4); }
+.oc-detail-breakdown-value { font-size: 11px; color: rgba(255,255,255,0.9); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.oc-detail-chart-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); border-radius: 16px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.oc-detail-chart-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.oc-detail-toggle { display: flex; background: rgba(255,255,255,0.08); border-radius: 8px; padding: 2px; gap: 2px; }
+.oc-detail-toggle-pill { font-size: 9px; padding: 3px 8px; border-radius: 6px; color: rgba(255,255,255,0.4); }
+.oc-detail-toggle-pill.is-active { background: rgba(255,255,255,0.15); color: #fff; font-weight: 600; }
+.oc-detail-today { display: flex; justify-content: flex-end; }
+.oc-detail-today-badge { font-size: 10px; padding: 3px 8px; border-radius: 999px; background: rgba(59,130,246,0.16); color: #60a5fa; font-weight: 600; }
+.oc-detail-chart-surface { background: rgba(255,255,255,0.04); border-radius: 12px; padding: 8px 10px 6px; }
+.oc-detail-chart-unit { font-size: 7px; color: rgba(255,255,255,0.3); margin-bottom: 1px; }
+.oc-detail-chart-grid { display: flex; }
+.oc-detail-axis { width: 22px; height: 58px; padding-right: 3px; display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; }
+.oc-detail-axis span { font-size: 7px; line-height: 1; color: rgba(255,255,255,0.3); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.oc-detail-bars { flex: 1; height: 58px; display: flex; align-items: flex-end; gap: 1px; border-left: 1px solid rgba(255,255,255,0.1); border-bottom: 1px solid rgba(255,255,255,0.1); padding-left: 1px; }
+.oc-bar { flex: 1; border-radius: 4px 4px 0 0; background: rgba(96,165,250,0.45); transition: height 0.5s cubic-bezier(0.16, 1, 0.3, 1); }
+.oc-bar-today { background: #3b82f6; }
+.oc-bar-anim { height: 0 !important; }
+.oc-detail-dates { padding-left: 25px; display: flex; justify-content: space-between; margin-top: 1px; }
+.oc-detail-dates span { font-size: 7px; color: rgba(255,255,255,0.3); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+
+/* Desktop */
+.v6-desktop { position: absolute; inset: 28px 0 0 0; }
+
+/* Full-screen Claude Code terminal */
+.cc-terminal {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  width: 80%; max-width: 520px;
+  background: rgba(28,28,30,0.92);
+  backdrop-filter: blur(20px);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.1);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px; color: #d4d4d4;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  text-align: left;
+}
+.cc-terminal.cc-visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.cc-titlebar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; background: rgba(255,255,255,0.05);
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.cc-dot { width: 12px; height: 12px; border-radius: 50%; }
+.cc-dot-r { background: #ff5f56; }
+.cc-dot-y { background: #ffbd2e; }
+.cc-dot-g { background: #27c93f; }
+.cc-titlebar-text { flex: 1; text-align: center; font-size: 13px; color: #999; margin-right: 36px; }
+.cc-body { padding: 16px; line-height: 1.7; }
+.cc-ai-msg { padding: 4px 0; font-size: 13px; color: #e2e8f0; }
+.cc-bullet { color: #4ade80; margin-right: 8px; }
+.cc-tool { padding: 2px 0 2px 22px; font-size: 13px; color: #94a3b8; }
+.cc-hint { color: #555; }
+
+.oc-cursor { position: absolute; z-index: 50; opacity: 0; pointer-events: none; transition: top 0.8s cubic-bezier(0.16, 1, 0.3, 1), left 0.8s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s; }
+
+.oc-actions { display: flex; justify-content: center; gap: 12px; margin-top: 24px; }
+.oc-action-btn { display: flex; align-items: center; gap: 8px; padding: 10px 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #94a3b8; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.oc-action-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); color: #e2e8f0; }
+.oc-action-btn.oc-action-active { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.25); color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+
+@media (max-width: 768px) { .v6-macbook { transform: scale(0.8); margin-top: 1rem; margin-bottom: -2rem; } }
+@media (max-width: 500px) { .v6-macbook { transform: scale(0.5) translateY(-20%); margin-top: -2rem; margin-bottom: -6rem; } }
+</style>
+
+<script>
+function setupMockup() {
+  const content = document.getElementById('oc-content');
+  const cursor = document.getElementById('oc-cursor');
+  const ccTerminal = document.getElementById('cc-terminal');
+  const mascot = document.getElementById('oc-mascot');
+  const notchWrap = document.getElementById('oc-notch-wrap');
+  const notch = document.getElementById('oc-notch');
+  const screen = document.getElementById('v6-screen');
+  const mascotImg = document.querySelector('.oc-mascot-img');
+  const mascotDot = document.getElementById('oc-mascot-dot');
+  const topbarLeft = document.querySelector('.oc-topbar-l');
+  const topbarRight = document.querySelector('.oc-topbar-r');
+  let timers = [];
+  const defaultTopbarLeft = topbarLeft ? topbarLeft.innerHTML : '';
+  const defaultTopbarRight = topbarRight ? topbarRight.innerHTML : '';
+  const detailTopbarLeft = `
+    <div class="oc-topbar-back"><span class="oc-topbar-back-arrow">&lsaquo;</span><span>返回</span></div>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="oc-icon"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg>
+  `;
+
+  function setDetailsHeight() {
+    if (!screen || !notch) return;
+    const { height } = screen.getBoundingClientRect();
+    notch.style.setProperty('--details-height', `${Math.round(height * 0.75)}px`);
+  }
+
+  function setDetailsLayout(enabled) {
+    if (!notch) return;
+    if (enabled) {
+      setDetailsHeight();
+      notch.classList.add('oc-notch-details');
+      return;
+    }
+    notch.classList.remove('oc-notch-details');
+  }
+
+  function setTopbar(mode) {
+    if (!topbarLeft || !topbarRight) return;
+    if (mode === 'details') {
+      topbarLeft.innerHTML = detailTopbarLeft;
+      topbarRight.innerHTML = defaultTopbarRight;
+      return;
+    }
+    topbarLeft.innerHTML = defaultTopbarLeft;
+    topbarRight.innerHTML = defaultTopbarRight;
+  }
+
+  function clearTimers() {
+    timers.forEach(t => clearTimeout(t));
+    timers = [];
+    cursor.style.opacity = '0';
+    ccTerminal.classList.remove('cc-visible');
+  }
+
+  function wait(ms) {
+    return new Promise(r => { const t = setTimeout(r, ms); timers.push(t); });
+  }
+
+  function showStep(el) { el.classList.add('oc-visible'); }
+
+  function setMascotMode(mode) {
+    if (!mascotImg || !mascotDot) return;
+    const isSleep = mode === 'sleep';
+    mascotImg.src = isSleep
+      ? '/images/pets/xiangqie_sleeping.gif'
+      : '/images/pets/xiangqie_working.gif';
+    mascotDot.style.background = isSleep ? '#94a3b8' : '#2ecc71';
+  }
+
+  async function playJump() {
+    clearTimers();
+    setMascotMode('working');
+    setDetailsLayout(false);
+    setTopbar('default');
+    mascot.style.display = '';
+    mascot.style.opacity = '1';
+    notch.classList.remove('oc-notch-open');
+    ccTerminal.classList.remove('cc-visible');
+
+    content.innerHTML = `
+      <div class="oc-step" data-s="1">
+        <div class="oc-item">
+          <div class="oc-avatar"><img src="/images/pets/paimon_sleeping.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">code2026</span><span class="oc-subtitle">· hi</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#1a2f3f;color:#5eb5f7;">Cursor</span><span class="oc-time"><1m</span></div>
+        </div>
+      </div>
+      <div class="oc-step" data-s="2">
+        <div class="oc-completion">
+          <div class="oc-completion-header">
+            <span class="oc-completion-prompt"><span style="color:#64748b;">你: </span>hi</span>
+            <span class="oc-completion-done">完成</span>
+          </div>
+          <div class="oc-completion-body">你好，又见面了。今天想聊点什么，还是需要我帮你看 oc-claw 或别的代码？</div>
+        </div>
+      </div>
+      <div class="oc-step" data-s="3">
+        <div class="oc-expand-rest">展开其余 2 个会话</div>
+      </div>
+      <div style="padding-bottom:8px;"></div>`;
+
+    // Step 1: Just mascot visible (notch is collapsed via clip-path)
+    await wait(800);
+
+    // Step 2: Panel opens via clip-path animation
+    mascot.style.opacity = '0';
+    notch.classList.add('oc-notch-open');
+
+    const steps = content.querySelectorAll('.oc-step');
+    await wait(200);  showStep(steps[0]);
+    await wait(150);  showStep(steps[1]);
+    await wait(150);  showStep(steps[2]);
+
+    // Step 3: Mouse cursor moves to completion popup
+    await wait(400);
+    cursor.style.top = '24%';
+    cursor.style.left = '55%';
+    cursor.style.opacity = '1';
+    await wait(500);
+
+    // Step 4: Click → panel collapses, mascot switches to sleep
+    notch.classList.remove('oc-notch-open');
+    cursor.style.opacity = '0';
+    await wait(450);
+    setMascotMode('sleep');
+    mascot.style.opacity = '1';
+    await wait(1200);
+    playJump();
+  }
+
+  // ══════ APPROVE ══════
+  async function playApprove() {
+    clearTimers();
+    setMascotMode('working');
+    setDetailsLayout(false);
+    setTopbar('default');
+    mascot.style.display = '';
+    mascot.style.opacity = '1';
+    ccTerminal.classList.remove('cc-visible');
+    notch.classList.remove('oc-notch-open');
+
+    content.innerHTML = `
+      <div class="oc-step" data-s="1">
+        <div class="oc-item" style="align-items:flex-start;">
+          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
+          <div style="flex:1;min-width:0;">
+            <div class="oc-item-main"><span class="oc-title text-white">fix-auth-bug</span><span class="oc-subtitle">· Waiting for approval</span></div>
+            <div class="oc-item-right" style="margin-top:2px;"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="oc-step" data-s="2">
+        <div class="oc-approve-tool"><span style="color:#fbbf24;font-size:12px;">⚠</span><span style="color:#fbbf24;font-size:12px;font-weight:700;">Edit</span></div>
+      </div>
+      <div class="oc-step" data-s="3">
+        <div class="oc-approve-code">
+          <div class="oc-code-header"><span class="oc-code-filename">middleware.ts</span></div>
+          <div class="oc-code-body">
+            <div class="oc-code-line"><span class="oc-ln">12</span><span style="color:#888;">const verify = (token) =&gt;</span></div>
+            <div class="oc-code-line"><span class="oc-ln">13</span><span style="color:#f87171;">- jwt.verify(token);</span></div>
+            <div class="oc-code-line"><span class="oc-ln">13</span><span style="color:#4ade80;">+ if (!token) throw new</span></div>
+            <div class="oc-code-line"><span class="oc-ln">14</span><span style="color:#4ade80;">+   AuthError('missing');</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="oc-step" data-s="4">
+        <div class="oc-approve-btns">
+          <button class="oc-abtn oc-abtn-default">Deny</button>
+          <button class="oc-abtn oc-abtn-default">Allow Once</button>
+          <button class="oc-abtn oc-abtn-green oc-approve-all">Approve All</button>
+          <button class="oc-abtn oc-abtn-red">Auto</button>
+        </div>
+      </div>
+      <div style="padding-bottom:8px;"></div>`;
+
+    await wait(600);
+    mascot.style.opacity = '0';
+    notch.classList.add('oc-notch-open');
+    const steps = content.querySelectorAll('.oc-step');
+    await wait(200);  showStep(steps[0]);
+    await wait(250);  showStep(steps[1]);
+    await wait(250);  showStep(steps[2]);
+    await wait(250);  showStep(steps[3]);
+    const approveAllBtn = content.querySelector('.oc-approve-all');
+    await wait(350);
+    cursor.style.top = '47%';
+    cursor.style.left = '57%';
+    cursor.style.opacity = '1';
+    await wait(260);
+    approveAllBtn?.classList.add('oc-abtn-clicked');
+    cursor.style.opacity = '0';
+    await wait(180);
+    notch.classList.remove('oc-notch-open');
+    await wait(420);
+    mascot.style.opacity = '1';
+  }
+
+  // ══════ DETAILS ══════
+  async function playDetails() {
+    clearTimers();
+    setMascotMode('working');
+    setDetailsLayout(false);
+    setTopbar('default');
+    mascot.style.display = '';
+    mascot.style.opacity = '1';
+    ccTerminal.classList.remove('cc-visible');
+    notch.classList.remove('oc-notch-open');
+
+    const barHeights = [72, 34, 16, 35, 2, 1, 3, 78, 14, 53, 52, 1, 0, 2];
+    content.innerHTML = `
+      <div class="oc-step oc-details-list" data-s="1">
+        <div class="oc-item oc-detail-entry-target">
+          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">code2026</span><span class="oc-subtitle">· tune panel ratio and list animation</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#1a2f3f;color:#5eb5f7;">Cursor</span><span class="oc-time"><1m</span></div>
+        </div>
+        <div class="oc-item">
+          <div class="oc-avatar"><img src="/images/pets/paimon_sleeping.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#94a3b8;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">api-retry</span><span class="oc-subtitle">· inspect request timeout strategy</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#334155;color:#e2e8f0;">Feishu</span><span class="oc-time">18h</span></div>
+        </div>
+        <div class="oc-item">
+          <div class="oc-avatar"><img src="/images/pets/paimon_sleeping.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">codex-task</span><span class="oc-subtitle">· batch search and patch complete</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#2a1f45;color:#c4b5fd;">Codex</span><span class="oc-time"><1m</span></div>
+        </div>
+        <div class="oc-item">
+          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">· waiting approval for middleware edit</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
+        </div>
+      </div>
+      <div class="oc-step" data-s="2" style="display:none;">
+        <div class="oc-detail-page">
+          <div class="oc-detail-head">
+            <div class="oc-detail-heading">Cursor 统计</div>
+            <div class="oc-detail-range">近 14 天</div>
+          </div>
+          <div class="oc-step" data-s="3">
+            <div class="oc-detail-grid">
+              <div class="oc-detail-card">
+                <span class="oc-detail-kicker">总 TOKEN</span>
+                <span class="oc-detail-metric">750.2M</span>
+                <span class="oc-detail-submetric">92 个会话</span>
+              </div>
+              <div class="oc-detail-card">
+                <span class="oc-detail-kicker">消息数</span>
+                <span class="oc-detail-metric">6600</span>
+                <span class="oc-detail-submetric">AI 回复</span>
+              </div>
+            </div>
+          </div>
+          <div class="oc-step" data-s="4">
+            <div class="oc-detail-card">
+              <span class="oc-detail-kicker">TOKEN 明细</span>
+              <div class="oc-detail-breakdown">
+                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">输入</span><span class="oc-detail-breakdown-value">357.1K</span></div>
+                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">输出</span><span class="oc-detail-breakdown-value">1.5M</span></div>
+                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">缓存读</span><span class="oc-detail-breakdown-value">687.4M</span></div>
+                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">缓存写</span><span class="oc-detail-breakdown-value">60.8M</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="oc-step" data-s="5">
+            <div class="oc-detail-chart-card">
+              <div class="oc-detail-chart-top">
+                <span class="oc-detail-kicker">每日 TOKEN (近 14 天)</span>
+                <div class="oc-detail-toggle">
+                  <span class="oc-detail-toggle-pill is-active">Token</span>
+                  <span class="oc-detail-toggle-pill">消息</span>
+                </div>
+              </div>
+              <div class="oc-detail-today"><span class="oc-detail-today-badge">今天 203.9K</span></div>
+              <div class="oc-detail-chart-surface">
+                <div class="oc-detail-chart-unit">M tokens</div>
+                <div class="oc-detail-chart-grid">
+                  <div class="oc-detail-axis"><span>162.8</span><span>81.4</span><span>0</span></div>
+                  <div class="oc-detail-bars">${barHeights.map((h, i) => `<div class="oc-bar oc-bar-anim${i===barHeights.length-1?' oc-bar-today':''}" data-h="${h}"></div>`).join('')}</div>
+                </div>
+                <div class="oc-detail-dates"><span>03-30</span><span>04-06</span><span>04-12</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    await wait(600);
+    mascot.style.opacity = '0';
+    notch.classList.add('oc-notch-open');
+    const listStep = content.querySelector('[data-s="1"]');
+    const detailStep = content.querySelector('[data-s="2"]');
+    const detailMetricStep = content.querySelector('[data-s="3"]');
+    const detailBreakdownStep = content.querySelector('[data-s="4"]');
+    const detailChartStep = content.querySelector('[data-s="5"]');
+    const targetSession = content.querySelector('.oc-detail-entry-target');
+
+    await wait(200);
+    if (listStep) showStep(listStep);
+    await wait(360);
+    cursor.style.top = '23%';
+    cursor.style.left = '23%';
+    cursor.style.opacity = '1';
+    await wait(340);
+    targetSession?.classList.add('oc-item-clicked');
+    await wait(180);
+    cursor.style.opacity = '0';
+
+    if (listStep) {
+      listStep.style.transition = 'opacity 0.26s ease, transform 0.26s ease';
+      listStep.style.opacity = '0';
+      listStep.style.transform = 'translateY(-6px)';
+    }
+    await wait(280);
+    if (listStep) listStep.style.display = 'none';
+    await wait(220);
+    setTopbar('details');
+    setDetailsLayout(true);
+    if (detailStep) {
+      detailStep.style.display = '';
+      showStep(detailStep);
+    }
+    await wait(160);
+    if (detailMetricStep) showStep(detailMetricStep);
+    await wait(140);
+    if (detailBreakdownStep) showStep(detailBreakdownStep);
+    await wait(140);
+    if (detailChartStep) showStep(detailChartStep);
+
+    const bars = content.querySelectorAll('.oc-bar-anim');
+    bars.forEach((bar, i) => {
+      const t = setTimeout(() => { bar.style.height = bar.dataset.h + '%'; bar.classList.remove('oc-bar-anim'); }, i * 40);
+      timers.push(t);
+    });
+    await wait(bars.length * 40 + 180);
+  }
+
+  const handlers = { jump: playJump, approve: playApprove, details: playDetails };
+
+  document.querySelectorAll('.oc-action-btn').forEach(btn => {
+    const clone = btn.cloneNode(true);
+    btn.parentNode.replaceChild(clone, btn);
+    clone.addEventListener('click', () => {
+      document.querySelectorAll('.oc-action-btn').forEach(b => b.classList.remove('oc-action-active'));
+      clone.classList.add('oc-action-active');
+      const target = clone.dataset.target;
+      if (handlers[target]) handlers[target]();
+    });
+  });
+
+  playJump();
+}
+
+setupMockup();
+document.addEventListener('astro:page-load', setupMockup);
+</script>
