@@ -6,9 +6,6 @@
   <a href="https://www.oc-claw.ai"><img src="https://img.shields.io/badge/공식_웹사이트에서_다운로드-oc--claw.ai-8A2BE2?style=for-the-badge" alt="Download" /></a>
 </p>
 <p align="center">
-  <img src="assets/powered-by-kaon.png" height="28" />
-</p>
-<p align="center">
   <a href="./README.md">English</a> | <a href="./README.zh.md">中文</a> | <a href="./README.ja.md">日本語</a> | <b>한국어</b> | <a href="./README.es.md">Español</a> | <a href="./README.fr.md">Français</a>
 </p>
 <p align="center">
@@ -75,6 +72,9 @@ MIT
 
 ---
 
+<p align="center">
+  <img src="assets/powered-by-kaon.png" height="28" />
+</p>
 <p align="center">
   <sub>KAON Hackathon에서 탄생</sub>
 </p>
