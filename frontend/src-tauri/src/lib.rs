@@ -5650,12 +5650,18 @@ fn resolve_cursor_window_binding(
         handle_match: bool,
     }
 
+    log::info!("[cursor_bind_resolve] cwd={} existing_port={:?} existing_handle={:?}",
+        cwd, existing_port, existing_native_handle);
+
     let mut candidates: Vec<Candidate> = Vec::new();
     for port in 23456..=23460u16 {
         let meta = match get_cursor_window_meta(port) {
             Some(meta) => meta,
             None => continue,
         };
+
+        log::info!("[cursor_bind_resolve] port={} meta: focused={} workspace_name={} roots={:?} nativeHandle={:?}",
+            meta.port, meta.focused, meta.workspace_name, meta.workspace_roots, meta.native_handle);
 
         let mut best_root: Option<String> = None;
         let mut best_score: usize = 0;
@@ -5691,10 +5697,14 @@ fn resolve_cursor_window_binding(
         }
     }
 
-    // If we have a native handle match, that wins unconditionally —
-    // it means we previously bound to this exact window.
+    log::info!("[cursor_bind_resolve] {} candidates: {:?}",
+        candidates.len(), candidates.iter().map(|c| format!("port={} score={} focused={} handle_match={} keep_existing={} handle={:?}",
+            c.port, c.score, c.focused, c.handle_match, c.keep_existing, c.native_handle)).collect::<Vec<_>>());
+
+    // If we have a native handle match, that wins unconditionally.
     if let Some(idx) = candidates.iter().position(|c| c.handle_match) {
         let c = &candidates[idx];
+        log::info!("[cursor_bind_resolve] → native handle match: port={}", c.port);
         return Some(CursorWindowBinding {
             port: c.port,
             workspace_root: c.workspace_root.clone(),
@@ -5703,22 +5713,27 @@ fn resolve_cursor_window_binding(
         });
     }
 
+    // Stick with existing bound port if still valid.
+    if let Some(ep) = existing_port {
+        if let Some(c) = candidates.iter().find(|c| c.port == ep) {
+            log::info!("[cursor_bind_resolve] → keeping existing port={}", ep);
+            return Some(CursorWindowBinding {
+                port: c.port,
+                workspace_root: c.workspace_root.clone(),
+                workspace_name: c.workspace_name.clone(),
+                native_handle: c.native_handle.clone(),
+            });
+        }
+    }
+
     candidates.sort_by(|a, b| {
         b.score.cmp(&a.score)
-            .then_with(|| b.keep_existing.cmp(&a.keep_existing))
             .then_with(|| b.focused.cmp(&a.focused))
             .then_with(|| a.port.cmp(&b.port))
     });
 
     let best = candidates.first()?;
-    if let Some(second) = candidates.get(1) {
-        let ambiguous = best.score == second.score
-            && best.keep_existing == second.keep_existing
-            && best.focused == second.focused;
-        if ambiguous {
-            return None;
-        }
-    }
+    log::info!("[cursor_bind_resolve] → best candidate: port={} score={} focused={}", best.port, best.score, best.focused);
 
     Some(CursorWindowBinding {
         port: best.port,
@@ -5795,12 +5810,9 @@ fn activate_cursor_workspace_window(workspace_name: &str) {
     let ax_ok = check_accessibility_permission();
     let escaped_workspace = workspace_name.replace('\\', "\\\\").replace('"', "\\\"");
 
-    let script = if !ax_ok || escaped_workspace.is_empty() {
-        // No AX permission or no workspace name — just activate Cursor.
-        // This brings *some* Cursor window to front but can't target a
-        // specific one. Still useful as a fallback.
+    let script = if escaped_workspace.is_empty() {
         r#"tell application "Cursor" to activate"#.to_string()
-    } else {
+    } else if ax_ok {
         format!(
             r#"tell application "System Events"
     set cursorProcs to every process whose name is "Cursor"
@@ -5823,6 +5835,24 @@ fn activate_cursor_workspace_window(workspace_name: &str) {
     if not matched then
         set frontmost of cursorProc to true
     end if
+end tell"#,
+            workspace = escaped_workspace,
+        )
+    } else {
+        // No AX permission — use Cursor's own AppleScript dictionary
+        // to find and raise the matching window by index, which does
+        // not require System Events / Accessibility permission.
+        format!(
+            r#"tell application "Cursor"
+    activate
+    set matched to false
+    repeat with i from 1 to count of windows
+        if name of window i contains "{workspace}" then
+            set index of window i to 1
+            set matched to true
+            exit repeat
+        end if
+    end repeat
 end tell"#,
             workspace = escaped_workspace,
         )
@@ -8751,13 +8781,11 @@ pub fn run() {
                     .build(),
             )?;
 
-            // Request Accessibility permission on first launch (macOS).
-            // Prompts the user once; subsequent launches are silent.
-            #[cfg(target_os = "macos")]
-            if !check_accessibility_permission() {
-                log::info!("[setup] requesting accessibility permission");
-                let _ = tauri::async_runtime::block_on(request_ax_permission());
-            }
+            // Accessibility permission is no longer requested automatically on
+            // startup. Cursor window raising is handled by the extension running
+            // inside the Cursor process itself, which doesn't need AX permission.
+            // The check_ax_permission / request_ax_permission commands remain
+            // available for the frontend to invoke if needed.
 
             // Hide from Dock, show only in menu bar (macOS only)
             #[cfg(target_os = "macos")]

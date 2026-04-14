@@ -48,16 +48,42 @@ function getWindowMeta() {
 }
 
 async function focusWindow() {
-    // Prefer the active terminal in this Cursor window because the jump
-    // action conceptually returns the user to the agent's terminal context.
+    // Use multiple strategies to bring this Cursor window to front.
+    // Strategy 1: VSCode command (may not work in Cursor fork)
+    try {
+        await vscode.commands.executeCommand('workbench.action.focusWindow');
+    } catch {}
+
+    // Strategy 2: Use osascript from within the Cursor process to raise
+    // the window matching this workspace name. Since the script runs as
+    // a child of Cursor (which owns the windows), it works without AX
+    // permission from the calling app.
+    try {
+        const name = getWorkspaceName();
+        if (name && process.platform === 'darwin') {
+            const { execFile } = require('child_process');
+            const script = `tell application "System Events"
+    set cursorProc to first process whose name is "Cursor"
+    repeat with w in windows of cursorProc
+        try
+            if name of w contains "${name.replace(/"/g, '\\"')}" then
+                perform action "AXRaise" of w
+                set frontmost of cursorProc to true
+                exit repeat
+            end if
+        end try
+    end repeat
+end tell`;
+            execFile('osascript', ['-e', script], () => {});
+        }
+    } catch {}
+
     const terminal = vscode.window.activeTerminal || vscode.window.terminals[0];
     if (terminal) {
         terminal.show(false);
         return true;
     }
 
-    // If there is no terminal, fall back to the active editor so the
-    // correct Cursor window is still surfaced to the user.
     const editor = vscode.window.activeTextEditor;
     if (editor) {
         await vscode.window.showTextDocument(editor.document, {
