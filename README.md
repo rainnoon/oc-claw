@@ -18,7 +18,9 @@
 
 ## Install
 
-Download the latest version from the official website: **[oc-claw.ai](https://www.oc-claw.ai)**
+[![Download OC-Claw](https://img.shields.io/badge/Download_OC--Claw-oc--claw.ai-8A2BE2?style=for-the-badge)](https://www.oc-claw.ai)
+
+Download the latest version for macOS and Windows from the official website.
 
 ## What it does
 

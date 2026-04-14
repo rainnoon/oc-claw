@@ -18,7 +18,9 @@
 
 ## インストール
 
-**[oc-claw.ai](https://www.oc-claw.ai)** からダウンロードしてください。
+[![ダウンロード](https://img.shields.io/badge/公式サイトからダウンロード-oc--claw.ai-8A2BE2?style=for-the-badge)](https://www.oc-claw.ai)
+
+macOS および Windows の最新バージョンを公式サイトからダウンロードしてください。
 
 ## 機能
 

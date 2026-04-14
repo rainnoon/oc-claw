@@ -18,7 +18,9 @@
 
 ## Instalación
 
-Descárgalo desde **[oc-claw.ai](https://www.oc-claw.ai)**.
+[![Descargar](https://img.shields.io/badge/Descargar_desde-oc--claw.ai-8A2BE2?style=for-the-badge)](https://www.oc-claw.ai)
+
+Descarga la última versión para macOS y Windows desde el sitio web oficial.
 
 ## Funciones
 

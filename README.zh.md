@@ -18,7 +18,9 @@
 
 ## 安装
 
-从官网下载最新版本：**[oc-claw.ai](https://www.oc-claw.ai)**
+[![下载 OC-Claw](https://img.shields.io/badge/前往官网下载-oc--claw.ai-8A2BE2?style=for-the-badge)](https://www.oc-claw.ai)
+
+支持 macOS 和 Windows，请从官网下载最新版本。
 
 ## 功能
 
