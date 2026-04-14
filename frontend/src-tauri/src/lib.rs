@@ -3461,8 +3461,8 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
                 // the top-center of the screen — NOT the mascot window position.
                 // The strip is centered on screen and sized to cover the notch
                 // area generously so the user can approach from either side.
-                let rw = (notch_off * 2.0 + 200.0).max(220.0);
-                let rh = 50.0;
+                let rw = (notch_off * 2.0 + 140.0).max(154.0);
+                let rh = 35.0;
                 let rx = sx + (sw - rw) / 2.0;
                 let ry = sy + sh - rh;
                 cursor.0 >= rx && cursor.0 <= rx + rw

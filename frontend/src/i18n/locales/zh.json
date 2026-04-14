@@ -115,6 +115,8 @@
     "disableSleepAnimDesc": "看板娘空闲时显示静态画面",
     "panelMaxHeight": "面板高度",
     "panelMaxHeightDesc": "展开面板的最大高度",
+    "hoverDelay": "弹窗触发延迟",
+    "hoverDelayDesc": "鼠标悬停到刘海后延迟多久展开面板",
     "islandBg": "岛屿背景",
     "islandBgDesc": "选择或上传背景图片，拖动选择裁剪区域",
 
