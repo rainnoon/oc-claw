@@ -1,4 +1,107 @@
 ---
+import type { Lang } from '../i18n/index';
+
+interface Props {
+  lang?: Lang;
+}
+
+const { lang = 'en' } = Astro.props;
+const isZh = lang === 'zh';
+const mockupI18n = isZh
+  ? {
+      menuFile: '文件',
+      menuEdit: '编辑',
+      menuWindow: '窗口',
+      menuHelp: '帮助',
+      terminalMsg1: '让我先看下 auth 模块。',
+      terminalSearch: '正在搜索 6 个模式…',
+      terminalRead: '读取了 2 个文件',
+      terminalFound: '找到问题了——token 校验跳过了过期检查。',
+      actionJump: '跳转',
+      actionApprove: '审批',
+      actionDetails: '详情',
+      actionMonitor: '监控',
+      topbarBack: '返回',
+      completionYou: '你: ',
+      completionDone: '完成',
+      completionBody: '你好，又见面了。今天想聊点什么，还是需要我帮你看 oc-claw 或别的代码？',
+      expandRest: '展开其余 2 个会话',
+      subtitleTune: '· 调整面板比例与列表动画',
+      subtitleInspect: '· 排查请求超时策略',
+      subtitleBatchComplete: '· 批量搜索与补丁已完成',
+      subtitleWaitingApproval: '· 等待中间件修改审批',
+      subtitleMonitorWatch: '· 监控工具调用活动',
+      subtitleSummarizeUiDiff: '· 汇总 PR 的 UI 差异',
+      subtitleIdle: '· 超时排查后空闲',
+      subtitleTitleUpdated: '· 标题已由监控自动更新',
+      detailsHeading: 'Cursor 统计',
+      detailsRange: '近 14 天',
+      detailsTotalToken: '总 TOKEN',
+      detailsSessions: '92 个会话',
+      detailsMessages: '消息数',
+      detailsAiReplies: 'AI 回复',
+      detailsTokenBreakdown: 'TOKEN 明细',
+      detailsInput: '输入',
+      detailsOutput: '输出',
+      detailsCacheRead: '缓存读',
+      detailsCacheWrite: '缓存写',
+      detailsDailyToken: '每日 TOKEN (近 14 天)',
+      detailsMessagesTab: '消息',
+      detailsToday: '今天 203.9K',
+      approveWaiting: '· 等待审批',
+      approveDeny: '拒绝',
+      approveAllowOnce: '仅本次允许',
+      approveAll: '全部批准',
+      approveAuto: '自动',
+      deleteSessionAria: '删除会话',
+    }
+  : {
+      menuFile: 'File',
+      menuEdit: 'Edit',
+      menuWindow: 'Window',
+      menuHelp: 'Help',
+      terminalMsg1: 'Let me look at the auth module.',
+      terminalSearch: 'Searching for 6 patterns…',
+      terminalRead: 'Read 2 files',
+      terminalFound: 'Found the issue — token validation skips expiry check.',
+      actionJump: 'Jump',
+      actionApprove: 'Approve',
+      actionDetails: 'Details',
+      actionMonitor: 'Monitor',
+      topbarBack: 'Back',
+      completionYou: 'You: ',
+      completionDone: 'Done',
+      completionBody: 'Hi again. Want to chat, or should I help check oc-claw or other code?',
+      expandRest: 'Expand 2 more sessions',
+      subtitleTune: '· tune panel ratio and list animation',
+      subtitleInspect: '· inspect request timeout strategy',
+      subtitleBatchComplete: '· batch search and patch complete',
+      subtitleWaitingApproval: '· waiting approval for middleware edit',
+      subtitleMonitorWatch: '· monitor watches tool activity',
+      subtitleSummarizeUiDiff: '· summarize ui diff for pr',
+      subtitleIdle: '· idle after timeout investigation',
+      subtitleTitleUpdated: '· title updated by monitor automation',
+      detailsHeading: 'Cursor Stats',
+      detailsRange: 'Last 14 days',
+      detailsTotalToken: 'TOTAL TOKENS',
+      detailsSessions: '92 sessions',
+      detailsMessages: 'Messages',
+      detailsAiReplies: 'AI replies',
+      detailsTokenBreakdown: 'Token breakdown',
+      detailsInput: 'Input',
+      detailsOutput: 'Output',
+      detailsCacheRead: 'Cache read',
+      detailsCacheWrite: 'Cache write',
+      detailsDailyToken: 'Daily tokens (last 14 days)',
+      detailsMessagesTab: 'Messages',
+      detailsToday: 'Today 203.9K',
+      approveWaiting: '· Waiting for approval',
+      approveDeny: 'Deny',
+      approveAllowOnce: 'Allow Once',
+      approveAll: 'Approve All',
+      approveAuto: 'Auto',
+      deleteSessionAria: 'Delete session',
+    };
 ---
 <div class="v6-macbook">
   <div class="v6-frame">
@@ -7,7 +110,7 @@
         <div class="v6-menubar-l">
           <span class="v6-apple" aria-hidden="true"></span>
           <span class="v6-app-name">OC-Claw</span>
-          <span>File</span><span>Edit</span><span>Window</span><span>Help</span>
+          <span>{mockupI18n.menuFile}</span><span>{mockupI18n.menuEdit}</span><span>{mockupI18n.menuWindow}</span><span>{mockupI18n.menuHelp}</span>
         </div>
         <div class="v6-menubar-r"><span>Sun 4:50 PM</span></div>
       </div>
@@ -46,10 +149,10 @@
             <span class="cc-titlebar-text">claude — fix-auth-bug</span>
           </div>
           <div class="cc-body">
-            <div class="cc-ai-msg"><span class="cc-bullet">●</span> Let me look at the auth module.</div>
-            <div class="cc-tool">Searching for 6 patterns… <span class="cc-hint">(ctrl+o to expand)</span></div>
-            <div class="cc-tool">Read 2 files <span class="cc-hint">(ctrl+o to expand)</span></div>
-            <div class="cc-ai-msg"><span class="cc-bullet">●</span> Found the issue — token validation skips expiry check.</div>
+            <div class="cc-ai-msg"><span class="cc-bullet">●</span> {mockupI18n.terminalMsg1}</div>
+            <div class="cc-tool">{mockupI18n.terminalSearch} <span class="cc-hint">(ctrl+o to expand)</span></div>
+            <div class="cc-tool">{mockupI18n.terminalRead} <span class="cc-hint">(ctrl+o to expand)</span></div>
+            <div class="cc-ai-msg"><span class="cc-bullet">●</span> {mockupI18n.terminalFound}</div>
           </div>
         </div>
       </div>
@@ -65,19 +168,19 @@
 <div class="oc-actions">
   <button class="oc-action-btn oc-action-active" data-target="jump">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-    <span>Jump</span>
+    <span>{mockupI18n.actionJump}</span>
   </button>
   <button class="oc-action-btn" data-target="approve">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-    <span>Approve</span>
+    <span>{mockupI18n.actionApprove}</span>
   </button>
   <button class="oc-action-btn" data-target="details">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-    <span>Details</span>
+    <span>{mockupI18n.actionDetails}</span>
   </button>
   <button class="oc-action-btn" data-target="monitor">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><rect x="14" y="14" width="7" height="7" rx="1.2"/></svg>
-    <span>Monitor</span>
+    <span>{mockupI18n.actionMonitor}</span>
   </button>
 </div>
 
@@ -367,8 +470,9 @@
 @media (max-width: 500px) { .v6-macbook { transform: scale(0.5) translateY(-20%); margin-top: -2rem; margin-bottom: -6rem; } }
 </style>
 
-<script>
+<script define:vars={{ mockupI18n }}>
 function setupMockup() {
+  const T = mockupI18n;
   const content = document.getElementById('oc-content');
   const cursor = document.getElementById('oc-cursor');
   const ccTerminal = document.getElementById('cc-terminal');
@@ -393,7 +497,7 @@ function setupMockup() {
   const defaultTopbarLeft = topbarLeft ? topbarLeft.innerHTML : '';
   const defaultTopbarRight = topbarRight ? topbarRight.innerHTML : '';
   const detailTopbarLeft = `
-    <div class="oc-topbar-back"><span class="oc-topbar-back-arrow">&lsaquo;</span><span>返回</span></div>
+    <div class="oc-topbar-back"><span class="oc-topbar-back-arrow">&lsaquo;</span><span>${T.topbarBack}</span></div>
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="oc-icon"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg>
   `;
 
@@ -469,14 +573,14 @@ function setupMockup() {
       <div class="oc-step" data-s="2">
         <div class="oc-completion">
           <div class="oc-completion-header">
-            <span class="oc-completion-prompt"><span style="color:#64748b;">你: </span>hi</span>
-            <span class="oc-completion-done">完成</span>
+            <span class="oc-completion-prompt"><span style="color:#64748b;">${T.completionYou}</span>hi</span>
+            <span class="oc-completion-done">${T.completionDone}</span>
           </div>
-          <div class="oc-completion-body">你好，又见面了。今天想聊点什么，还是需要我帮你看 oc-claw 或别的代码？</div>
+          <div class="oc-completion-body">${T.completionBody}</div>
         </div>
       </div>
       <div class="oc-step" data-s="3">
-        <div class="oc-expand-rest">展开其余 2 个会话</div>
+        <div class="oc-expand-rest">${T.expandRest}</div>
       </div>
       <div style="padding-bottom:8px;"></div>`;
 
@@ -527,7 +631,7 @@ function setupMockup() {
         <div class="oc-item" style="align-items:flex-start;">
           <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
           <div style="flex:1;min-width:0;">
-            <div class="oc-item-main"><span class="oc-title text-white">fix-auth-bug</span><span class="oc-subtitle">· Waiting for approval</span></div>
+            <div class="oc-item-main"><span class="oc-title text-white">fix-auth-bug</span><span class="oc-subtitle">${T.approveWaiting}</span></div>
             <div class="oc-item-right" style="margin-top:2px;"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
           </div>
         </div>
@@ -548,10 +652,10 @@ function setupMockup() {
       </div>
       <div class="oc-step" data-s="4">
         <div class="oc-approve-btns">
-          <button class="oc-abtn oc-abtn-default">Deny</button>
-          <button class="oc-abtn oc-abtn-default">Allow Once</button>
-          <button class="oc-abtn oc-abtn-green oc-approve-all">Approve All</button>
-          <button class="oc-abtn oc-abtn-red">Auto</button>
+          <button class="oc-abtn oc-abtn-default">${T.approveDeny}</button>
+          <button class="oc-abtn oc-abtn-default">${T.approveAllowOnce}</button>
+          <button class="oc-abtn oc-abtn-green oc-approve-all">${T.approveAll}</button>
+          <button class="oc-abtn oc-abtn-red">${T.approveAuto}</button>
         </div>
       </div>
       <div style="padding-bottom:8px;"></div>`;
@@ -594,66 +698,66 @@ function setupMockup() {
       <div class="oc-step oc-details-list" data-s="1">
         <div class="oc-item oc-detail-entry-target">
           <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
-          <div class="oc-item-main"><span class="oc-title text-white">code2026</span><span class="oc-subtitle">· tune panel ratio and list animation</span></div>
+          <div class="oc-item-main"><span class="oc-title text-white">code2026</span><span class="oc-subtitle">${T.subtitleTune}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#1a2f3f;color:#5eb5f7;">Cursor</span><span class="oc-time"><1m</span></div>
         </div>
         <div class="oc-item">
           <div class="oc-avatar"><img src="/images/pets/paimon_sleeping.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#94a3b8;"></div></div>
-          <div class="oc-item-main"><span class="oc-title text-white">api-retry</span><span class="oc-subtitle">· inspect request timeout strategy</span></div>
+          <div class="oc-item-main"><span class="oc-title text-white">api-retry</span><span class="oc-subtitle">${T.subtitleInspect}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#334155;color:#e2e8f0;">Feishu</span><span class="oc-time">18h</span></div>
         </div>
         <div class="oc-item">
           <div class="oc-avatar"><img src="/images/pets/paimon_sleeping.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
-          <div class="oc-item-main"><span class="oc-title text-white">codex-task</span><span class="oc-subtitle">· batch search and patch complete</span></div>
+          <div class="oc-item-main"><span class="oc-title text-white">codex-task</span><span class="oc-subtitle">${T.subtitleBatchComplete}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#2a1f45;color:#c4b5fd;">Codex</span><span class="oc-time"><1m</span></div>
         </div>
         <div class="oc-item">
           <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
-          <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">· waiting approval for middleware edit</span></div>
+          <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">${T.subtitleWaitingApproval}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
         </div>
       </div>
       <div class="oc-step" data-s="2" style="display:none;">
         <div class="oc-detail-page">
           <div class="oc-detail-head">
-            <div class="oc-detail-heading">Cursor 统计</div>
-            <div class="oc-detail-range">近 14 天</div>
+            <div class="oc-detail-heading">${T.detailsHeading}</div>
+            <div class="oc-detail-range">${T.detailsRange}</div>
           </div>
           <div class="oc-step" data-s="3">
             <div class="oc-detail-grid">
               <div class="oc-detail-card">
-                <span class="oc-detail-kicker">总 TOKEN</span>
+                <span class="oc-detail-kicker">${T.detailsTotalToken}</span>
                 <span class="oc-detail-metric">750.2M</span>
-                <span class="oc-detail-submetric">92 个会话</span>
+                <span class="oc-detail-submetric">${T.detailsSessions}</span>
               </div>
               <div class="oc-detail-card">
-                <span class="oc-detail-kicker">消息数</span>
+                <span class="oc-detail-kicker">${T.detailsMessages}</span>
                 <span class="oc-detail-metric">6600</span>
-                <span class="oc-detail-submetric">AI 回复</span>
+                <span class="oc-detail-submetric">${T.detailsAiReplies}</span>
               </div>
             </div>
           </div>
           <div class="oc-step" data-s="4">
             <div class="oc-detail-card">
-              <span class="oc-detail-kicker">TOKEN 明细</span>
+              <span class="oc-detail-kicker">${T.detailsTokenBreakdown}</span>
               <div class="oc-detail-breakdown">
-                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">输入</span><span class="oc-detail-breakdown-value">357.1K</span></div>
-                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">输出</span><span class="oc-detail-breakdown-value">1.5M</span></div>
-                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">缓存读</span><span class="oc-detail-breakdown-value">687.4M</span></div>
-                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">缓存写</span><span class="oc-detail-breakdown-value">60.8M</span></div>
+                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">${T.detailsInput}</span><span class="oc-detail-breakdown-value">357.1K</span></div>
+                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">${T.detailsOutput}</span><span class="oc-detail-breakdown-value">1.5M</span></div>
+                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">${T.detailsCacheRead}</span><span class="oc-detail-breakdown-value">687.4M</span></div>
+                <div class="oc-detail-breakdown-item"><span class="oc-detail-breakdown-label">${T.detailsCacheWrite}</span><span class="oc-detail-breakdown-value">60.8M</span></div>
               </div>
             </div>
           </div>
           <div class="oc-step" data-s="5">
             <div class="oc-detail-chart-card">
               <div class="oc-detail-chart-top">
-                <span class="oc-detail-kicker">每日 TOKEN (近 14 天)</span>
+                <span class="oc-detail-kicker">${T.detailsDailyToken}</span>
                 <div class="oc-detail-toggle">
                   <span class="oc-detail-toggle-pill is-active">Token</span>
-                  <span class="oc-detail-toggle-pill">消息</span>
+                  <span class="oc-detail-toggle-pill">${T.detailsMessagesTab}</span>
                 </div>
               </div>
-              <div class="oc-detail-today"><span class="oc-detail-today-badge">今天 203.9K</span></div>
+              <div class="oc-detail-today"><span class="oc-detail-today-badge">${T.detailsToday}</span></div>
               <div class="oc-detail-chart-surface">
                 <div class="oc-detail-chart-unit">M tokens</div>
                 <div class="oc-detail-chart-grid">
@@ -731,17 +835,17 @@ function setupMockup() {
       <div class="oc-step oc-details-list" data-s="1">
         <div class="oc-item oc-monitor-rename-row">
           <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
-          <div class="oc-item-main"><span class="oc-title text-white oc-monitor-rename-title">codex-agent-01</span><input class="oc-monitor-rename-input" value="codex-agent-01" readonly /><span class="oc-subtitle oc-monitor-rename-subtitle">· monitor watches tool activity</span></div>
+          <div class="oc-item-main"><span class="oc-title text-white oc-monitor-rename-title">codex-agent-01</span><input class="oc-monitor-rename-input" value="codex-agent-01" readonly /><span class="oc-subtitle oc-monitor-rename-subtitle">${T.subtitleMonitorWatch}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#2a1f45;color:#c4b5fd;">Codex</span><span class="oc-time"><1m</span></div>
         </div>
         <div class="oc-item oc-monitor-delete-row">
           <div class="oc-avatar"><img src="/images/pets/paimon_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
-          <div class="oc-item-main"><span class="oc-title text-white">cursor-review</span><span class="oc-subtitle">· summarize ui diff for pr</span></div>
+          <div class="oc-item-main"><span class="oc-title text-white">cursor-review</span><span class="oc-subtitle">${T.subtitleSummarizeUiDiff}</span></div>
           <div class="oc-item-right">
             <span class="oc-badge" style="background:#1a2f3f;color:#5eb5f7;">Cursor</span>
             <div class="oc-monitor-time-wrap">
               <span class="oc-time oc-monitor-delete-time"><1m</span>
-              <button class="oc-monitor-delete-btn oc-monitor-delete-target" aria-label="Delete session">
+              <button class="oc-monitor-delete-btn oc-monitor-delete-target" aria-label="${T.deleteSessionAria}">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
               </button>
             </div>
@@ -749,12 +853,12 @@ function setupMockup() {
         </div>
         <div class="oc-item">
           <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
-          <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">· waiting approval for middleware edit</span></div>
+          <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">${T.subtitleWaitingApproval}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
         </div>
         <div class="oc-item">
           <div class="oc-avatar"><img src="/images/pets/qiqi_sleeping.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#94a3b8;"></div></div>
-          <div class="oc-item-main"><span class="oc-title text-white">api-retry</span><span class="oc-subtitle">· idle after timeout investigation</span></div>
+          <div class="oc-item-main"><span class="oc-title text-white">api-retry</span><span class="oc-subtitle">${T.subtitleIdle}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#334155;color:#e2e8f0;">Feishu</span><span class="oc-time">18h</span></div>
         </div>
       </div>`;
@@ -789,7 +893,7 @@ function setupMockup() {
     }
     await wait(80);
     if (renameTitle) renameTitle.textContent = renamedTitle;
-    if (renameSubtitle) renameSubtitle.textContent = '· title updated by monitor automation';
+    if (renameSubtitle) renameSubtitle.textContent = T.subtitleTitleUpdated;
     renameRow?.classList.remove('oc-monitor-editing');
     renameRow?.classList.add('oc-monitor-renamed');
 

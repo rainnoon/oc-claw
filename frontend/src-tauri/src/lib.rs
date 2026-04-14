@@ -3175,6 +3175,9 @@ async fn move_mini_by(app: tauri::AppHandle, dx: f64, dy: f64) -> Result<(), Str
                 unsafe {
                     let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: false];
                 }
+                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                    *f = Some((new_frame.origin.x, new_frame.origin.y, new_frame.size.width, new_frame.size.height));
+                }
             }
         }).map_err(|e| e.to_string())?;
     }
@@ -3271,6 +3274,9 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
                 );
                 unsafe {
                     let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: false];
+                }
+                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                    *f = Some((new_frame.origin.x, new_frame.origin.y, new_frame.size.width, new_frame.size.height));
                 }
             }
         }).map_err(|e| e.to_string())?;
@@ -3451,9 +3457,11 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
                     false
                 }
             } else {
-                // When collapsed, use a generous strip across the notch so the
-                // user can hover from either side of the menu bar.
-                let rw = notch_off * 2.0 + 60.0;
+                // When collapsed, hover target is the notch (刘海) strip at
+                // the top-center of the screen — NOT the mascot window position.
+                // The strip is centered on screen and sized to cover the notch
+                // area generously so the user can approach from either side.
+                let rw = (notch_off * 2.0 + 200.0).max(220.0);
                 let rh = 50.0;
                 let rx = sx + (sw - rw) / 2.0;
                 let ry = sy + sh - rh;
