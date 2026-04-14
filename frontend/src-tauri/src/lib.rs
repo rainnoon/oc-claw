@@ -3444,12 +3444,11 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
     let mut last_enter_emit = Instant::now();
     while EFFICIENCY_HOVER_ACTIVE.load(Ordering::SeqCst) {
         let info = NOTCH_SCREEN_INFO.lock().ok().and_then(|g| *g);
-        if let Some((sx, sy, sw, sh, notch_off)) = info {
+        let sleep_ms = if let Some((sx, sy, sw, sh, notch_off)) = info {
             let cursor = macos_cursor_position();
             let is_expanded = EFFICIENCY_EXPANDED.load(Ordering::SeqCst);
 
             let inside = if is_expanded {
-                // Exact window frame — close as soon as cursor leaves the panel.
                 if let Some((fx, fy, fw, fh)) = MINI_WINDOW_FRAME.lock().ok().and_then(|g| *g) {
                     cursor.0 >= fx && cursor.0 <= fx + fw
                         && cursor.1 >= fy && cursor.1 <= fy + fh
@@ -3457,10 +3456,6 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
                     false
                 }
             } else {
-                // When collapsed, hover target is the notch (刘海) strip at
-                // the top-center of the screen — NOT the mascot window position.
-                // The strip is centered on screen and sized to cover the notch
-                // area generously so the user can approach from either side.
                 let rw = (notch_off * 2.0 + 140.0).max(154.0);
                 let rh = 35.0;
                 let rx = sx + (sw - rw) / 2.0;
@@ -3473,15 +3468,30 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
                 let _ = app.emit("efficiency-hover", true);
                 last_enter_emit = Instant::now();
             } else if inside && was_inside && last_enter_emit.elapsed() > Duration::from_millis(300) {
-                // Re-announce so the frontend can act after a collapse transition clears.
                 let _ = app.emit("efficiency-hover", true);
                 last_enter_emit = Instant::now();
             } else if !inside && was_inside {
                 let _ = app.emit("efficiency-hover", false);
             }
             was_inside = inside;
-        }
-        std::thread::sleep(Duration::from_millis(30));
+
+            // Adaptive polling: fast when cursor is near/inside the target,
+            // slow when far away to save CPU/battery.
+            if is_expanded || inside {
+                30
+            } else {
+                let screen_top = sy + sh;
+                let dist_from_top = screen_top - cursor.1;
+                if dist_from_top < 200.0 {
+                    50
+                } else {
+                    500
+                }
+            }
+        } else {
+            500
+        };
+        std::thread::sleep(Duration::from_millis(sleep_ms));
     }
     EFFICIENCY_HOVER_THREAD_ALIVE.store(false, Ordering::SeqCst);
 }
