@@ -3,6 +3,9 @@
 </p>
 <h1 align="center">OC-Claw</h1>
 <p align="center">
+  <a href="https://www.oc-claw.ai"><img src="https://img.shields.io/badge/Descargar_desde-oc--claw.ai-8A2BE2?style=for-the-badge" alt="Download" /></a>
+</p>
+<p align="center">
   <img src="assets/powered-by-kaon.png" height="28" />
 </p>
 <p align="center">
@@ -15,12 +18,6 @@
 <p align="center">
   <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
 </p>
-
-## Instalación
-
-[![Descargar](https://img.shields.io/badge/Descargar_desde-oc--claw.ai-8A2BE2?style=for-the-badge)](https://www.oc-claw.ai)
-
-Descarga la última versión para macOS y Windows desde el sitio web oficial.
 
 ## Funciones
 
