@@ -68,6 +68,7 @@ npx tauri dev
 ## 致谢
 
 - [Notchi](https://github.com/sk-ruban/notchi) — 刘海伴侣概念和草地岛屿的设计灵感
+- [Vibe Island](https://github.com/vibeislandapp/vibe-island) — 交互设计参考
 
 ## 许可证
 

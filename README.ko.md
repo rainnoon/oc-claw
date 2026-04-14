@@ -68,6 +68,7 @@ npx tauri dev
 ## 크레딧
 
 - [Notchi](https://github.com/sk-ruban/notchi) — 노치 컴패니언 컨셉과 잔디 섬의 디자인 영감
+- [Vibe Island](https://github.com/vibeislandapp/vibe-island) — 인터랙션 디자인 참고
 
 ## 라이선스
 

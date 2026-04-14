@@ -68,6 +68,7 @@ Se aceptan reportes de errores, sugerencias de funciones y pull requests.
 ## Créditos
 
 - [Notchi](https://github.com/sk-ruban/notchi) — inspiración de diseño para el concepto de compañero del notch y la isla de césped
+- [Vibe Island](https://github.com/vibeislandapp/vibe-island) — referencia de diseño de interacción
 
 ## Licencia
 

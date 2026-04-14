@@ -68,6 +68,7 @@ npx tauri dev
 ## クレジット
 
 - [Notchi](https://github.com/sk-ruban/notchi) — ノッチコンパニオンコンセプトと草地島のデザインインスピレーション
+- [Vibe Island](https://github.com/vibeislandapp/vibe-island) — インタラクションデザインの参考
 
 ## ライセンス
 

@@ -68,6 +68,7 @@ Bug reports, feature suggestions, and pull requests are welcome.
 ## Credits
 
 - [Notchi](https://github.com/sk-ruban/notchi) — design inspiration for notch companion concept and grass island
+- [Vibe Island](https://github.com/vibeislandapp/vibe-island) — interaction design reference
 
 ## License
 
