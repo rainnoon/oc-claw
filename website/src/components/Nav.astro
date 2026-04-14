@@ -1,5 +1,5 @@
 ---
-import { languages, langLabels, type Lang } from '../i18n/index';
+import { type Lang } from '../i18n/index';
 
 interface Props {
   lang?: Lang;
@@ -14,11 +14,6 @@ const { lang = 'en' } = Astro.props;
     <span class="logo-label">OC-Claw</span>
   </a>
   <div class="nav-right">
-    <div class="lang-switcher">
-      {languages.filter(l => l !== lang).map(l => (
-        <a href={`/${l}/`} class="nav-link lang-switch">{langLabels[l]}</a>
-      ))}
-    </div>
     <a href="https://github.com/rainnoon/oc-claw" class="nav-link">GitHub</a>
   </div>
 </nav>
@@ -28,18 +23,5 @@ const { lang = 'en' } = Astro.props;
     display: flex;
     align-items: center;
     gap: 1rem;
-  }
-  .lang-switcher {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .lang-switch {
-    font-size: 0.85rem;
-    opacity: 0.6;
-    transition: opacity 0.2s;
-  }
-  .lang-switch:hover {
-    opacity: 1;
   }
 </style>

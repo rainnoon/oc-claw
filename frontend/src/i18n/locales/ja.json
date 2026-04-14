@@ -112,6 +112,8 @@
     "disableSleepAnimDesc": "アイドル時に静止画を表示",
     "panelMaxHeight": "パネルの高さ",
     "panelMaxHeightDesc": "展開パネルの最大高さ",
+    "hoverDelay": "ホバー展開遅延",
+    "hoverDelayDesc": "ノッチにホバーしてからパネルを展開するまでの遅延",
     "islandBg": "アイランド背景",
     "islandBgDesc": "背景画像を選択またはアップロードし、ドラッグで切り抜き範囲を選択",
 

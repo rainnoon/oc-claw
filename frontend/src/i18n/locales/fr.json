@@ -112,6 +112,8 @@
     "disableSleepAnimDesc": "Afficher une image statique quand la mascotte est inactive",
     "panelMaxHeight": "Hauteur du panneau",
     "panelMaxHeightDesc": "Hauteur maximale du panneau déployé",
+    "hoverDelay": "Délai de survol",
+    "hoverDelayDesc": "Délai avant d'ouvrir le panneau au survol",
     "islandBg": "Arrière-plan de l'île",
     "islandBgDesc": "Sélectionnez ou téléchargez une image de fond, faites glisser pour sélectionner la zone de recadrage",
 

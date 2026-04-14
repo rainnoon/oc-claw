@@ -112,6 +112,8 @@
     "disableSleepAnimDesc": "Mostrar imagen estática cuando la mascota está inactiva",
     "panelMaxHeight": "Altura del panel",
     "panelMaxHeightDesc": "Altura máxima del panel expandido",
+    "hoverDelay": "Retardo de activación al pasar",
+    "hoverDelayDesc": "Retardo antes de expandir el panel al pasar el cursor",
     "islandBg": "Fondo de isla",
     "islandBgDesc": "Selecciona o sube una imagen de fondo, arrastra para seleccionar el área de recorte",
 

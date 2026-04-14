@@ -1,5 +1,6 @@
 ---
 import { t as tr, type Lang } from '../i18n/index';
+import MacbookMockup from './MacbookMockup.astro';
 
 interface Props {
   lang?: Lang;
@@ -12,7 +13,7 @@ const { lang = 'en' } = Astro.props;
   <img src="/app-icon.png" alt="OC-Claw app icon" class="app-icon" width="180" height="180" />
   <div class="hero-copy">
     <h1>OC-Claw</h1>
-    <p class="tagline">{tr(lang, 'hero.tagline')}</p>
+    <p class="tagline" id="hero-tagline">{tr(lang, 'hero.tagline')}</p>
   </div>
   <div class="btn-wrap">
     <a id="download-btn" href="https://github.com/rainnoon/oc-claw/releases/download/v1.7.2/oc-claw_1.7.2_aarch64.dmg" class="btn" download>
@@ -25,6 +26,7 @@ const { lang = 'en' } = Astro.props;
     </a>
   </div>
   <p class="badge"><span class="badge-label">{tr(lang, 'hero.badge')}</span><span>Tauri v2 · React · Rust</span></p>
+  <MacbookMockup lang={lang} />
 </section>
 
 <section class="features">
@@ -36,7 +38,7 @@ const { lang = 'en' } = Astro.props;
   <div class="feature-card">
     <div class="feature-emoji">🤖</div>
     <h2 class="feature-title">{tr(lang, 'hero.feature2.title')}</h2>
-    <div class="feature-desc">{tr(lang, 'hero.feature2.desc')}</div>
+    <div class="feature-desc" id="feature2-desc">{tr(lang, 'hero.feature2.desc')}</div>
   </div>
   <div class="feature-card">
     <div class="feature-emoji">🎨</div>
@@ -45,13 +47,19 @@ const { lang = 'en' } = Astro.props;
   </div>
 </section>
 
-<script define:vars={{ winLabel: tr(lang, 'hero.download.win') }}>
+<script define:vars={{ winLabel: tr(lang, 'hero.download.win'), winTagline: tr(lang, 'hero.tagline.win'), winFeature2: tr(lang, 'hero.feature2.desc.win') }}>
   {
     const btn = document.getElementById('download-btn');
     const label = document.getElementById('download-label');
     if (btn && label && navigator.userAgent.includes('Windows')) {
       btn.setAttribute('href', 'https://github.com/rainnoon/oc-claw/releases/download/v1.6.2/oc-claw_1.6.2_x64-setup.exe');
       label.textContent = winLabel;
+      const mockup = document.querySelector('.v6-macbook');
+      if (mockup) mockup.style.display = 'none';
+      const tagline = document.getElementById('hero-tagline');
+      if (tagline) tagline.textContent = winTagline;
+      const f2 = document.getElementById('feature2-desc');
+      if (f2) f2.textContent = winFeature2;
     }
   }
 

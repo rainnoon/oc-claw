@@ -226,7 +226,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void }) {
+export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, mascotPosition, onChangeMascotPosition, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
@@ -552,7 +552,7 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
             </div>
             <Toggle checked={disableSleepAnim} onChange={onToggleSleepAnim} />
           </div>
-          <div className={`p-4 ${showIslandBackgroundSettings ? 'border-b border-white/5' : ''}`}>
+          <div className="p-4 border-b border-white/5">
             <div className="flex items-center justify-between mb-2">
               <div className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-white/90">{t('settings.panelMaxHeight', 'Panel Height')}</span>
@@ -567,6 +567,24 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
               step={10}
               value={panelMaxHeight}
               onChange={(e) => onChangePanelMaxHeight(Number(e.target.value))}
+              className="w-full accent-white/60 h-1"
+            />
+          </div>
+          <div className={`p-4 ${showIslandBackgroundSettings ? 'border-b border-white/5' : ''}`}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.hoverDelay', 'Hover Trigger Delay')}</span>
+                <span className="text-xs text-white/40">{t('settings.hoverDelayDesc', 'Delay before expanding panel on hover')}</span>
+              </div>
+              <span className="text-sm text-white/60 tabular-nums">{hoverDelay.toFixed(1)}s</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={2}
+              step={0.1}
+              value={hoverDelay}
+              onChange={(e) => onChangeHoverDelay(Number(e.target.value))}
               className="w-full accent-white/60 h-1"
             />
           </div>

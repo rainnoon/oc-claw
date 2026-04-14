@@ -3175,6 +3175,9 @@ async fn move_mini_by(app: tauri::AppHandle, dx: f64, dy: f64) -> Result<(), Str
                 unsafe {
                     let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: false];
                 }
+                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                    *f = Some((new_frame.origin.x, new_frame.origin.y, new_frame.size.width, new_frame.size.height));
+                }
             }
         }).map_err(|e| e.to_string())?;
     }
@@ -3271,6 +3274,9 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
                 );
                 unsafe {
                     let _: () = msg_send![obj, setFrame: new_frame, display: true, animate: false];
+                }
+                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                    *f = Some((new_frame.origin.x, new_frame.origin.y, new_frame.size.width, new_frame.size.height));
                 }
             }
         }).map_err(|e| e.to_string())?;
@@ -3451,10 +3457,12 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
                     false
                 }
             } else {
-                // When collapsed, use a generous strip across the notch so the
-                // user can hover from either side of the menu bar.
-                let rw = notch_off * 2.0 + 60.0;
-                let rh = 50.0;
+                // When collapsed, hover target is the notch (刘海) strip at
+                // the top-center of the screen — NOT the mascot window position.
+                // The strip is centered on screen and sized to cover the notch
+                // area generously so the user can approach from either side.
+                let rw = (notch_off * 2.0 + 140.0).max(154.0);
+                let rh = 35.0;
                 let rx = sx + (sw - rw) / 2.0;
                 let ry = sy + sh - rh;
                 cursor.0 >= rx && cursor.0 <= rx + rw
@@ -5642,12 +5650,18 @@ fn resolve_cursor_window_binding(
         handle_match: bool,
     }
 
+    log::info!("[cursor_bind_resolve] cwd={} existing_port={:?} existing_handle={:?}",
+        cwd, existing_port, existing_native_handle);
+
     let mut candidates: Vec<Candidate> = Vec::new();
     for port in 23456..=23460u16 {
         let meta = match get_cursor_window_meta(port) {
             Some(meta) => meta,
             None => continue,
         };
+
+        log::info!("[cursor_bind_resolve] port={} meta: focused={} workspace_name={} roots={:?} nativeHandle={:?}",
+            meta.port, meta.focused, meta.workspace_name, meta.workspace_roots, meta.native_handle);
 
         let mut best_root: Option<String> = None;
         let mut best_score: usize = 0;
@@ -5683,10 +5697,14 @@ fn resolve_cursor_window_binding(
         }
     }
 
-    // If we have a native handle match, that wins unconditionally —
-    // it means we previously bound to this exact window.
+    log::info!("[cursor_bind_resolve] {} candidates: {:?}",
+        candidates.len(), candidates.iter().map(|c| format!("port={} score={} focused={} handle_match={} keep_existing={} handle={:?}",
+            c.port, c.score, c.focused, c.handle_match, c.keep_existing, c.native_handle)).collect::<Vec<_>>());
+
+    // If we have a native handle match, that wins unconditionally.
     if let Some(idx) = candidates.iter().position(|c| c.handle_match) {
         let c = &candidates[idx];
+        log::info!("[cursor_bind_resolve] → native handle match: port={}", c.port);
         return Some(CursorWindowBinding {
             port: c.port,
             workspace_root: c.workspace_root.clone(),
@@ -5695,22 +5713,27 @@ fn resolve_cursor_window_binding(
         });
     }
 
+    // Stick with existing bound port if still valid.
+    if let Some(ep) = existing_port {
+        if let Some(c) = candidates.iter().find(|c| c.port == ep) {
+            log::info!("[cursor_bind_resolve] → keeping existing port={}", ep);
+            return Some(CursorWindowBinding {
+                port: c.port,
+                workspace_root: c.workspace_root.clone(),
+                workspace_name: c.workspace_name.clone(),
+                native_handle: c.native_handle.clone(),
+            });
+        }
+    }
+
     candidates.sort_by(|a, b| {
         b.score.cmp(&a.score)
-            .then_with(|| b.keep_existing.cmp(&a.keep_existing))
             .then_with(|| b.focused.cmp(&a.focused))
             .then_with(|| a.port.cmp(&b.port))
     });
 
     let best = candidates.first()?;
-    if let Some(second) = candidates.get(1) {
-        let ambiguous = best.score == second.score
-            && best.keep_existing == second.keep_existing
-            && best.focused == second.focused;
-        if ambiguous {
-            return None;
-        }
-    }
+    log::info!("[cursor_bind_resolve] → best candidate: port={} score={} focused={}", best.port, best.score, best.focused);
 
     Some(CursorWindowBinding {
         port: best.port,
@@ -5787,12 +5810,9 @@ fn activate_cursor_workspace_window(workspace_name: &str) {
     let ax_ok = check_accessibility_permission();
     let escaped_workspace = workspace_name.replace('\\', "\\\\").replace('"', "\\\"");
 
-    let script = if !ax_ok || escaped_workspace.is_empty() {
-        // No AX permission or no workspace name — just activate Cursor.
-        // This brings *some* Cursor window to front but can't target a
-        // specific one. Still useful as a fallback.
+    let script = if escaped_workspace.is_empty() {
         r#"tell application "Cursor" to activate"#.to_string()
-    } else {
+    } else if ax_ok {
         format!(
             r#"tell application "System Events"
     set cursorProcs to every process whose name is "Cursor"
@@ -5815,6 +5835,24 @@ fn activate_cursor_workspace_window(workspace_name: &str) {
     if not matched then
         set frontmost of cursorProc to true
     end if
+end tell"#,
+            workspace = escaped_workspace,
+        )
+    } else {
+        // No AX permission — use Cursor's own AppleScript dictionary
+        // to find and raise the matching window by index, which does
+        // not require System Events / Accessibility permission.
+        format!(
+            r#"tell application "Cursor"
+    activate
+    set matched to false
+    repeat with i from 1 to count of windows
+        if name of window i contains "{workspace}" then
+            set index of window i to 1
+            set matched to true
+            exit repeat
+        end if
+    end repeat
 end tell"#,
             workspace = escaped_workspace,
         )
@@ -8252,41 +8290,44 @@ try {
     let ext_dir = home.join(".cursor").join("extensions").join(format!("{}-1.0.0", ext_id));
     log::info!("[cursor_hooks] syncing terminal-focus extension...");
 
-    // Locate extension source: bundled in app resources or next to the binary
+    // Locate extension source with multiple fallbacks:
+    // - repo/dev layout
+    // - unpacked release binary layout
+    // - macOS app bundle Resources
     let ext_source = {
         let mut candidates = Vec::new();
 
-        // In dev: extensions/cursor/ relative to project root
-        #[cfg(debug_assertions)]
-        {
-            // exe is typically at frontend/src-tauri/target/debug/ooclaw
-            if let Ok(exe) = std::env::current_exe() {
-                let mut dir = exe.parent();
-                for _ in 0..6 {
-                    if let Some(d) = dir {
-                        let candidate = d.join("extensions").join("cursor").join("extension.js");
-                        if candidate.exists() {
-                            candidates.push(d.join("extensions").join("cursor"));
-                            break;
-                        }
-                        dir = d.parent();
+        if let Ok(exe) = std::env::current_exe() {
+            let mut dir = exe.parent();
+            for _ in 0..10 {
+                if let Some(d) = dir {
+                    let repo_candidate = d.join("extensions").join("cursor");
+                    if repo_candidate.join("extension.js").exists() {
+                        candidates.push(repo_candidate);
+                        break;
                     }
+
+                    let bundled_candidate = d.join("Resources").join("extensions").join("cursor");
+                    if bundled_candidate.join("extension.js").exists() {
+                        candidates.push(bundled_candidate);
+                        break;
+                    }
+
+                    dir = d.parent();
+                } else {
+                    break;
                 }
             }
         }
 
-        // In production: bundled as a Tauri resource
-        #[cfg(not(debug_assertions))]
-        {
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(macos_dir) = exe.parent() {
-                    let res = macos_dir.parent().map(|p| p.join("Resources").join("extensions").join("cursor"));
-                    if let Some(ref r) = res {
-                        if r.join("extension.js").exists() {
-                            candidates.push(r.clone());
-                        }
-                    }
-                }
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            let repo_candidate = PathBuf::from(manifest_dir)
+                .join("..")
+                .join("..")
+                .join("extensions")
+                .join("cursor");
+            if repo_candidate.join("extension.js").exists() {
+                candidates.push(repo_candidate);
             }
         }
 
@@ -8297,7 +8338,7 @@ try {
         if let Err(e) = std::fs::create_dir_all(&ext_dir) {
             log::warn!("[cursor_hooks] failed to create extension dir: {}", e);
         } else {
-            let files = ["package.json", "extension.js"];
+            let files = ["package.json", "extension.js", "icon.png", "README.md"];
             let mut ok = true;
             for fname in &files {
                 let from = src.join(fname);
@@ -8308,6 +8349,105 @@ try {
                 }
             }
             if ok {
+                // If the user previously uninstalled this extension in Cursor,
+                // Cursor records it in ~/.cursor/extensions/.obsolete and keeps
+                // hiding it even when files are copied back. Clear that flag.
+                let obsolete_path = home.join(".cursor").join("extensions").join(".obsolete");
+                let ext_folder_name = format!("{}-1.0.0", ext_id);
+                if obsolete_path.exists() {
+                    match std::fs::read_to_string(&obsolete_path) {
+                        Ok(content) => {
+                            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&content) {
+                                if let Some(obj) = v.as_object_mut() {
+                                    if obj.remove(&ext_folder_name).is_some() {
+                                        match serde_json::to_string(obj) {
+                                            Ok(s) => {
+                                                if let Err(e) = std::fs::write(&obsolete_path, s) {
+                                                    log::warn!("[cursor_hooks] failed to update .obsolete: {}", e);
+                                                } else {
+                                                    log::info!("[cursor_hooks] removed obsolete flag for {}", ext_folder_name);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::warn!("[cursor_hooks] failed to serialize .obsolete: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("[cursor_hooks] failed to read .obsolete: {}", e);
+                        }
+                    }
+                }
+
+                // Ensure Cursor extension registry includes this local extension.
+                // Some Cursor builds rely on extensions.json for listing/loading.
+                let extensions_json_path = home.join(".cursor").join("extensions").join("extensions.json");
+                let ext_version = "1.0.0";
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let registry_entry = serde_json::json!({
+                    "identifier": { "id": ext_id },
+                    "version": ext_version,
+                    "location": {
+                        "$mid": 1,
+                        "path": ext_dir.to_string_lossy().to_string(),
+                        "scheme": "file"
+                    },
+                    "relativeLocation": format!("{}-{}", ext_id, ext_version),
+                    "metadata": {
+                        "installedTimestamp": now_ms,
+                        "pinned": false,
+                        "source": "vsix"
+                    }
+                });
+                let mut updated_registry = false;
+                let mut registry_val: serde_json::Value = if extensions_json_path.exists() {
+                    match std::fs::read_to_string(&extensions_json_path) {
+                        Ok(content) => serde_json::from_str(&content).unwrap_or(serde_json::json!([])),
+                        Err(_) => serde_json::json!([]),
+                    }
+                } else {
+                    serde_json::json!([])
+                };
+                if !registry_val.is_array() {
+                    registry_val = serde_json::json!([]);
+                }
+                if let Some(arr) = registry_val.as_array_mut() {
+                    let mut found = false;
+                    for item in arr.iter_mut() {
+                        let item_id = item.get("identifier")
+                            .and_then(|v| v.get("id"))
+                            .and_then(|v| v.as_str());
+                        if item_id == Some(ext_id) {
+                            *item = registry_entry.clone();
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        arr.push(registry_entry);
+                    }
+                    updated_registry = true;
+                }
+                if updated_registry {
+                    match serde_json::to_string(&registry_val) {
+                        Ok(s) => {
+                            if let Err(e) = std::fs::write(&extensions_json_path, s) {
+                                log::warn!("[cursor_hooks] failed to update extensions.json: {}", e);
+                            } else {
+                                log::info!("[cursor_hooks] registered extension {} in extensions.json", ext_id);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("[cursor_hooks] failed to serialize extensions.json: {}", e);
+                        }
+                    }
+                }
                 log::info!("[cursor_hooks] terminal-focus extension synced at {:?}", ext_dir);
             }
         }
@@ -8630,6 +8770,10 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(install_claude_hooks()) {
                 log::warn!("Failed to install Claude hooks on startup: {}", e);
             }
+            // Install Cursor hooks + terminal-focus extension on startup (idempotent)
+            if let Err(e) = tauri::async_runtime::block_on(install_cursor_hooks()) {
+                log::warn!("Failed to install Cursor hooks on startup: {}", e);
+            }
 
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
@@ -8637,13 +8781,11 @@ pub fn run() {
                     .build(),
             )?;
 
-            // Request Accessibility permission on first launch (macOS).
-            // Prompts the user once; subsequent launches are silent.
-            #[cfg(target_os = "macos")]
-            if !check_accessibility_permission() {
-                log::info!("[setup] requesting accessibility permission");
-                let _ = tauri::async_runtime::block_on(request_ax_permission());
-            }
+            // Accessibility permission is no longer requested automatically on
+            // startup. Cursor window raising is handled by the extension running
+            // inside the Cursor process itself, which doesn't need AX permission.
+            // The check_ax_permission / request_ax_permission commands remain
+            // available for the frontend to invoke if needed.
 
             // Hide from Dock, show only in menu bar (macOS only)
             #[cfg(target_os = "macos")]

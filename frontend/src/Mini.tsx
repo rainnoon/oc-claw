@@ -584,6 +584,9 @@ export default function Mini() {
   const [panelMaxHeight, setPanelMaxHeight] = useState(300)
   const panelMaxHeightRef = useRef(300)
   panelMaxHeightRef.current = panelMaxHeight
+  const [hoverDelay, setHoverDelay] = useState(0.2)
+  const hoverDelayRef = useRef(0.2)
+  hoverDelayRef.current = hoverDelay
   const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
   const mascotPositionRef = useRef<'left' | 'right'>('right')
   const [islandBg, setIslandBg] = useState('__anime__')
@@ -1092,6 +1095,8 @@ export default function Mini() {
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const pmh = await store.get('panel_max_height')
       if (typeof pmh === 'number' && pmh >= 200 && pmh <= 500) setPanelMaxHeight(pmh)
+      const hd = await store.get('hover_delay')
+      if (typeof hd === 'number' && hd >= 0 && hd <= 2) { setHoverDelay(hd); hoverDelayRef.current = hd }
       const mp = (await store.get('mascot_position')) as string
       if (mp === 'left' || mp === 'right') {
         setMascotPosition(mp)
@@ -1330,6 +1335,7 @@ export default function Mini() {
     }
   }, [])
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hoverOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const syncExpandedWindowLayout = useCallback(async (mode: 'island' | 'efficiency' = viewModeRef.current) => {
     await invoke('set_mini_expanded', {
       expanded: true,
@@ -1758,20 +1764,30 @@ export default function Mini() {
         return
       }
       if (event.payload) {
-        // Cursor entered the notch / panel region.
-        // Cancel any pending auto-close timer first.
         if (hoverCloseTimerRef.current) {
           clearTimeout(hoverCloseTimerRef.current)
           hoverCloseTimerRef.current = null
         }
-        // If collapsed, not in a transition, and not in drag-move mode, expand via hover.
-        if (!expandedRef.current && !collapsingRef.current && !expandingRef.current && !moveModeRef.current) {
-          hoverExpandedRef.current = true
-          expandFnRef.current?.()
+        if (!expandedRef.current && !collapsingRef.current && !expandingRef.current && !moveModeRef.current && !hoverOpenTimerRef.current) {
+          const delayMs = Math.round(hoverDelayRef.current * 1000)
+          if (delayMs <= 0) {
+            hoverExpandedRef.current = true
+            expandFnRef.current?.()
+          } else {
+            hoverOpenTimerRef.current = setTimeout(() => {
+              hoverOpenTimerRef.current = null
+              if (!expandedRef.current && !collapsingRef.current && !expandingRef.current && !moveModeRef.current) {
+                hoverExpandedRef.current = true
+                expandFnRef.current?.()
+              }
+            }, delayMs)
+          }
         }
       } else {
-        // Cursor left the region.  If the panel was hover-opened (and not pinned),
-        // schedule auto-close after a short grace period.
+        if (hoverOpenTimerRef.current) {
+          clearTimeout(hoverOpenTimerRef.current)
+          hoverOpenTimerRef.current = null
+        }
         if (expandedRef.current && hoverExpandedRef.current && !pinnedRef.current) {
           hoverCloseTimerRef.current = setTimeout(() => {
             hoverExpandedRef.current = false
@@ -1783,6 +1799,10 @@ export default function Mini() {
     })
     return () => {
       unlisten.then((fn) => fn())
+      if (hoverOpenTimerRef.current) {
+        clearTimeout(hoverOpenTimerRef.current)
+        hoverOpenTimerRef.current = null
+      }
     }
   }, [viewMode, collapse])
 
@@ -3781,6 +3801,14 @@ export default function Mini() {
                           setPanelMaxHeight(v)
                           const store = await getStore()
                           await store.set('panel_max_height', v)
+                          await store.save()
+                        }}
+                        hoverDelay={hoverDelay}
+                        onChangeHoverDelay={async (v) => {
+                          setHoverDelay(v)
+                          hoverDelayRef.current = v
+                          const store = await getStore()
+                          await store.set('hover_delay', v)
                           await store.save()
                         }}
                       />
