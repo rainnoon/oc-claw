@@ -56,6 +56,8 @@ const { lang = 'en' } = Astro.props;
       label.textContent = winLabel;
       const mockup = document.querySelector('.v6-macbook');
       if (mockup) mockup.style.display = 'none';
+      const actions = document.querySelector('.oc-actions');
+      if (actions) actions.style.display = 'none';
       const tagline = document.getElementById('hero-tagline');
       if (tagline) tagline.textContent = winTagline;
       const f2 = document.getElementById('feature2-desc');
