@@ -27,10 +27,10 @@
 
 ## Fonctionnalités
 
-- Réagit en temps réel à l'activité des agents OpenClaw / Claude Code (en cours, inactif, en attente)
+- Réagit en temps réel à l'activité des agents OpenClaw / Claude Code / Codex / Cursor (en cours, inactif, en attente)
 - Un personnage vit sur votre bureau (macOS / Windows), s'anime quand les agents travaillent et dort quand ils sont inactifs
 - Détecte automatiquement les agents OpenClaw locaux, affiche les listes de sessions, l'historique des conversations et les graphiques d'appels/tokens quotidiens
-- Écoute les sessions locales de Claude Code via des hooks, visualise les conversations en direct
+- Écoute les sessions locales de Claude Code, Codex et Cursor via des hooks, visualise les conversations en direct
 - Connexion aux instances OpenClaw sur des serveurs distants via SSH
 - Animations personnalisées, associez différents agents à différents personnages
 - Arrière-plans d'île personnalisables avec outil de recadrage
@@ -39,18 +39,20 @@
 ## Prérequis
 
 - macOS ou Windows
-- [OpenClaw](https://github.com/nicepkg/openclaw) et/ou [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installé
+- [OpenClaw](https://github.com/nicepkg/openclaw), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) et/ou [Cursor](https://www.cursor.com) installé
 
 ## Comment ça marche
 
 ```
 OpenClaw Agents ──→ Fichiers de session JSONL ──→ Sondage de santé ──→ État d'activité
-Claude Code     ──→ Hooks (SessionStart/Stop) ──→ Parseur d'événements ──→ État d'activité
-                                                                                ↓
-                                          Sprites animés ← Machine à états ← Effets sonores
+Claude Code     ──→ Hooks ──→ Parseur d'événements ──→ État d'activité
+Codex           ──→ Hooks ──→ Parseur d'événements ──→ État d'activité
+Cursor          ──→ Hooks ──→ Parseur d'événements ──→ État d'activité
+                                                            ↓
+                     Sprites animés ← Machine à états ← Effets sonores
 ```
 
-OC-Claw sonde les fichiers de session OpenClaw pour détecter l'activité des agents, et écoute Claude Code via les hooks installés. Les états d'activité pilotent les animations de personnages sur l'île de l'encoche, avec un panneau extensible pour les détails de session, l'historique des conversations et les métriques.
+OC-Claw sonde les fichiers de session OpenClaw pour détecter l'activité des agents, et écoute Claude Code, Codex et Cursor via les hooks installés. Les états d'activité pilotent les animations de personnages sur l'île de l'encoche, avec un panneau extensible pour les détails de session, l'historique des conversations et les métriques.
 
 ## Stack Technique
 

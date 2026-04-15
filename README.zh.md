@@ -27,10 +27,10 @@
 
 ## 功能
 
-- 实时响应 OpenClaw / Claude Code agent 活动状态（工作、空闲、等待）
+- 实时响应 OpenClaw / Claude Code / Codex / Cursor agent 活动状态（工作、空闲、等待）
 - 桌面宠物角色，工作时播放动画，休息时打盹（macOS 刘海或 Windows 任务栏）
 - 自动发现本地 OpenClaw agent，显示 session 列表、聊天记录、调用量/token 统计图表
-- 通过 Hook 监听本地 Claude Code 会话，查看实时对话
+- 通过 Hook 监听本地 Claude Code、Codex 和 Cursor 会话，查看实时对话
 - 通过 SSH 连接远程服务器上的 OpenClaw 实例
 - 自定义角色动画，将不同 agent 配对不同角色
 - 可自定义岛屿背景，支持裁剪工具
@@ -39,18 +39,20 @@
 ## 前置条件
 
 - macOS 或 Windows
-- 已安装 [OpenClaw](https://github.com/nicepkg/openclaw) 和/或 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- 已安装 [OpenClaw](https://github.com/nicepkg/openclaw)、[Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[Codex](https://github.com/openai/codex) 和/或 [Cursor](https://www.cursor.com)
 
 ## 工作原理
 
 ```
 OpenClaw Agents ──→ JSONL session 文件 ──→ 健康轮询 ──→ 活动状态
-Claude Code     ──→ Hooks (SessionStart/Stop) ──→ 事件解析 ──→ 活动状态
-                                                                    ↓
-                                      角色动画 ← 状态机 ← 提示音效
+Claude Code     ──→ Hooks ──→ 事件解析 ──→ 活动状态
+Codex           ──→ Hooks ──→ 事件解析 ──→ 活动状态
+Cursor          ──→ Hooks ──→ 事件解析 ──→ 活动状态
+                                              ↓
+                          角色动画 ← 状态机 ← 提示音效
 ```
 
-OC-Claw 通过轮询 OpenClaw session 文件检测 agent 活动，并通过安装的 Hook 监听 Claude Code。活动状态驱动刘海岛屿上的角色动画，可展开面板查看 session 详情、聊天记录和统计数据。
+OC-Claw 通过轮询 OpenClaw session 文件检测 agent 活动，并通过安装的 Hook 监听 Claude Code、Codex 和 Cursor。活动状态驱动刘海岛屿上的角色动画，可展开面板查看 session 详情、聊天记录和统计数据。
 
 ## 技术栈
 

@@ -27,10 +27,10 @@
 
 ## 機能
 
-- OpenClaw / Claude Code エージェントの活動にリアルタイムで反応（稼働中・アイドル・待機中）
+- OpenClaw / Claude Code / Codex / Cursor エージェントの活動にリアルタイムで反応（稼働中・アイドル・待機中）
 - デスクトップにキャラクターが住み着き（macOS / Windows）、エージェント稼働中はアニメーション、アイドル時は居眠り
 - ローカルの OpenClaw エージェントを自動検出し、セッション一覧・チャット履歴・呼び出し数/トークン統計を表示
-- Hook 経由でローカル Claude Code セッションをリッスンし、リアルタイム会話を表示
+- Hook 経由でローカル Claude Code、Codex、Cursor セッションをリッスンし、リアルタイム会話を表示
 - SSH 経由でリモートサーバー上の OpenClaw インスタンスに接続
 - カスタムアニメーション、エージェントごとに異なるキャラクターを割り当て
 - 島の背景をカスタマイズ可能、クロップツール対応
@@ -39,18 +39,20 @@
 ## 必要条件
 
 - macOS または Windows
-- [OpenClaw](https://github.com/nicepkg/openclaw) および/または [Claude Code](https://docs.anthropic.com/en/docs/claude-code) がインストール済み
+- [OpenClaw](https://github.com/nicepkg/openclaw)、[Claude Code](https://docs.anthropic.com/en/docs/claude-code)、[Codex](https://github.com/openai/codex)、[Cursor](https://www.cursor.com) のいずれかがインストール済み
 
 ## 仕組み
 
 ```
 OpenClaw Agents ──→ JSONL セッションファイル ──→ ヘルスポーリング ──→ 活動状態
-Claude Code     ──→ Hooks (SessionStart/Stop) ──→ イベントパーサー ──→ 活動状態
-                                                                          ↓
-                                        アニメスプライト ← ステートマシン ← サウンドエフェクト
+Claude Code     ──→ Hooks ──→ イベントパーサー ──→ 活動状態
+Codex           ──→ Hooks ──→ イベントパーサー ──→ 活動状態
+Cursor          ──→ Hooks ──→ イベントパーサー ──→ 活動状態
+                                                      ↓
+                  アニメスプライト ← ステートマシン ← サウンドエフェクト
 ```
 
-OC-Claw は OpenClaw のセッションファイルをポーリングしてエージェントの活動を検出し、インストールされた Hook を通じて Claude Code をリッスンします。活動状態がノッチ島のキャラクターアニメーションを駆動し、展開パネルでセッション詳細、チャット履歴、メトリクスを表示します。
+OC-Claw は OpenClaw のセッションファイルをポーリングしてエージェントの活動を検出し、インストールされた Hook を通じて Claude Code、Codex、Cursor をリッスンします。活動状態がノッチ島のキャラクターアニメーションを駆動し、展開パネルでセッション詳細、チャット履歴、メトリクスを表示します。
 
 ## 技術スタック
 
