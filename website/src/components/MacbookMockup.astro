@@ -671,6 +671,10 @@ function setupMockup() {
     // Step 2: Panel opens via clip-path animation
     mascot.style.opacity = '0';
     notch.classList.add('oc-notch-open');
+    // preload sleep gif so switch is instant when panel closes
+    const sleepImg = new Image();
+    sleepImg.src = '/images/pets/xiangqie_sleeping.gif';
+    sleepImg.onload = () => setMascotMode('sleep');
 
     const steps = content.querySelectorAll('.oc-step');
     await wait(200);  showStep(steps[0]);
@@ -688,7 +692,6 @@ function setupMockup() {
     notch.classList.remove('oc-notch-open');
     cursor.style.opacity = '0';
     await wait(320);
-    setMascotMode('sleep');
     mascot.style.opacity = '1';
     ccTerminal.classList.add('cc-visible');
     await wait(980);
