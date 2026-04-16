@@ -13,7 +13,6 @@ const { lang = 'en' } = Astro.props;
   <img src="/app-icon.png" alt="OC-Claw app icon" class="app-icon" width="180" height="180" />
   <div class="hero-copy">
     <h1>OC-Claw</h1>
-    <p class="tagline" id="hero-tagline">{tr(lang, 'hero.tagline')}</p>
   </div>
   <div class="btn-wrap">
     <a id="download-btn" href="https://github.com/rainnoon/oc-claw/releases/download/v1.7.2/oc-claw_1.7.2_aarch64.dmg" class="btn" download>
@@ -25,7 +24,25 @@ const { lang = 'en' } = Astro.props;
       <span id="download-label">{tr(lang, 'hero.download.mac')}</span>
     </a>
   </div>
-  <p class="badge"><span class="badge-label">{tr(lang, 'hero.badge')}</span><span>Tauri v2 · React · Rust</span></p>
+  <p class="tagline" id="hero-tagline">{tr(lang, 'hero.tagline')}</p>
+  <div class="agent-chips" id="agent-chips">
+    <a href="https://github.com/nicepkg/openclaw" target="_blank" rel="noopener" class="agent-chip">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a7 7 0 0 0-7 7c0 3.5 2.5 6.5 5 8v3h4v-3c2.5-1.5 5-4.5 5-8a7 7 0 0 0-7-7z"/><path d="M9 22h6"/><path d="M10 2v1"/><path d="M14 2v1"/></svg>
+      <span>OpenClaw</span>
+    </a>
+    <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener" class="agent-chip">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#e87a65" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72z"/><path d="m14 7 3 3"/></svg>
+      <span>Claude Code</span>
+    </a>
+    <a href="https://github.com/openai/codex" target="_blank" rel="noopener" class="agent-chip agent-chip-mac" id="chip-codex">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8l-4 4 4 4"/><path d="M17 8l4 4-4 4"/><path d="m14 4-4 16"/></svg>
+      <span>Codex</span>
+    </a>
+    <a href="https://www.cursor.com" target="_blank" rel="noopener" class="agent-chip agent-chip-mac" id="chip-cursor">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5eb5f7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 8-6 2-4 6z"/></svg>
+      <span>Cursor</span>
+    </a>
+  </div>
   <MacbookMockup lang={lang} />
 </section>
 
@@ -58,6 +75,7 @@ const { lang = 'en' } = Astro.props;
       if (mockup) mockup.style.display = 'none';
       const actions = document.querySelector('.oc-actions');
       if (actions) actions.style.display = 'none';
+      document.querySelectorAll('.agent-chip-mac').forEach(el => el.style.display = 'none');
       const tagline = document.getElementById('hero-tagline');
       if (tagline) tagline.textContent = winTagline;
       const f2 = document.getElementById('feature2-desc');

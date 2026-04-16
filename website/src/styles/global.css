@@ -180,7 +180,45 @@ nav {
   max-width: 38rem;
   text-wrap: balance;
   opacity: 0;
-  animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.25s both;
+  animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.35s both;
+}
+
+/* Agent chips */
+.agent-chips {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  opacity: 0;
+  animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.4s both;
+}
+
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-text-soft);
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.agent-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--color-text);
+  transform: translateY(-1px);
+}
+
+.agent-chip svg {
+  flex-shrink: 0;
 }
 
 .btn-wrap {
@@ -190,7 +228,7 @@ nav {
   flex-wrap: wrap;
   justify-content: center;
   opacity: 0;
-  animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.35s both;
+  animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.25s both;
 }
 
 .btn-secondary {
@@ -269,7 +307,7 @@ nav {
   color: var(--color-text-muted);
   flex-wrap: nowrap;
   opacity: 0;
-  animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.45s both;
+  animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.5s both;
   white-space: nowrap;
 }
 

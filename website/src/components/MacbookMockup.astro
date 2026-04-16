@@ -873,6 +873,7 @@ function setupMockup() {
     await wait(180);
     cursor.style.opacity = '0';
 
+    setDetailsLayout(true);
     if (listStep) {
       listStep.style.transition = 'opacity 0.26s ease, transform 0.26s ease';
       listStep.style.opacity = '0';
@@ -880,9 +881,7 @@ function setupMockup() {
     }
     await wait(280);
     if (listStep) listStep.style.display = 'none';
-    await wait(220);
     setTopbar('details');
-    setDetailsLayout(true);
     if (detailStep) {
       detailStep.style.display = '';
       showStep(detailStep);
