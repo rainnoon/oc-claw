@@ -198,7 +198,7 @@ const mockupI18n = mockupI18nMap[lang] || mockupI18nMap.en;
 
       <!-- Collapsed mascot (visible when panel is hidden) -->
       <div class="oc-mascot" id="oc-mascot">
-        <img src="/images/pets/xiangqie_working.gif" alt="" class="oc-mascot-img" />
+        <img src="/images/pets/furina_working.gif" alt="" class="oc-mascot-img" />
         <div class="oc-mascot-dot" id="oc-mascot-dot" style="background:#2ecc71;"></div>
       </div>
 
@@ -628,8 +628,8 @@ function setupMockup() {
     if (!mascotImg || !mascotDot) return;
     const isSleep = mode === 'sleep';
     mascotImg.src = isSleep
-      ? '/images/pets/xiangqie_sleeping.gif'
-      : '/images/pets/xiangqie_working.gif';
+      ? '/images/pets/furina_sleeping.gif'
+      : '/images/pets/furina_working.gif';
     mascotDot.style.background = isSleep ? '#94a3b8' : '#2ecc71';
   }
 
@@ -673,7 +673,7 @@ function setupMockup() {
     notch.classList.add('oc-notch-open');
     // preload sleep gif so switch is instant when panel closes
     const sleepImg = new Image();
-    sleepImg.src = '/images/pets/xiangqie_sleeping.gif';
+    sleepImg.src = '/images/pets/furina_sleeping.gif';
     sleepImg.onload = () => setMascotMode('sleep');
 
     const steps = content.querySelectorAll('.oc-step');
@@ -713,7 +713,7 @@ function setupMockup() {
     content.innerHTML = `
       <div class="oc-step" data-s="1">
         <div class="oc-item" style="align-items:flex-start;">
-          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
+          <div class="oc-avatar"><img src="/images/pets/furina_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
           <div style="flex:1;min-width:0;">
             <div class="oc-item-main"><span class="oc-title text-white">fix-auth-bug</span><span class="oc-subtitle">${T.approveWaiting}</span></div>
             <div class="oc-item-right" style="margin-top:2px;"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
@@ -781,7 +781,7 @@ function setupMockup() {
     content.innerHTML = `
       <div class="oc-step oc-details-list" data-s="1">
         <div class="oc-item oc-detail-entry-target">
-          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
+          <div class="oc-avatar"><img src="/images/pets/furina_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">code2026</span><span class="oc-subtitle">${T.subtitleTune}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#1a2f3f;color:#5eb5f7;">Cursor</span><span class="oc-time"><1m</span></div>
         </div>
@@ -796,7 +796,7 @@ function setupMockup() {
           <div class="oc-item-right"><span class="oc-badge" style="background:#2a1f45;color:#c4b5fd;">Codex</span><span class="oc-time"><1m</span></div>
         </div>
         <div class="oc-item">
-          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
+          <div class="oc-avatar"><img src="/images/pets/furina_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">${T.subtitleWaitingApproval}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
         </div>
@@ -917,7 +917,7 @@ function setupMockup() {
     content.innerHTML = `
       <div class="oc-step oc-details-list" data-s="1">
         <div class="oc-item oc-monitor-rename-row">
-          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
+          <div class="oc-avatar"><img src="/images/pets/furina_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white oc-monitor-rename-title">codex-agent-01</span><input class="oc-monitor-rename-input" value="codex-agent-01" readonly /><span class="oc-subtitle oc-monitor-rename-subtitle">${T.subtitleMonitorWatch}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#2a1f45;color:#c4b5fd;">Codex</span><span class="oc-time"><1m</span></div>
         </div>
@@ -935,7 +935,7 @@ function setupMockup() {
           </div>
         </div>
         <div class="oc-item">
-          <div class="oc-avatar"><img src="/images/pets/xiangqie_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
+          <div class="oc-avatar"><img src="/images/pets/furina_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">${T.subtitleWaitingApproval}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
         </div>
