@@ -109,6 +109,8 @@
     "display": "Display",
     "mascotPosition": "Mascot Position",
     "mascotPositionDesc": "Which side of the notch the mascot is on",
+    "mascotScale": "Mascot Scale",
+    "mascotScaleDesc": "Adjust the mascot size using a multiplier",
     "left": "Left",
     "right": "Right",
     "disableSleepAnim": "Disable Sleep Animation",

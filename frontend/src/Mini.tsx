@@ -78,9 +78,17 @@ interface UpdateProgressPayload {
 }
 
 const MAX_SLOTS = 10
+const MASCOT_SCALE_MIN = 1
+const MASCOT_SCALE_MAX = 3
+const MASCOT_BASE_SIZE = 43
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
+
+function clampMascotScale(value: number): number {
+  if (!Number.isFinite(value)) return 1
+  return Math.min(MASCOT_SCALE_MAX, Math.max(MASCOT_SCALE_MIN, value))
+}
 
 function ChatList({ messages, accentColor }: { messages: { role: string; text: string }[]; accentColor: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -587,6 +595,9 @@ export default function Mini() {
   const [hoverDelay, setHoverDelay] = useState(0.2)
   const hoverDelayRef = useRef(0.2)
   hoverDelayRef.current = hoverDelay
+  const [mascotScale, setMascotScale] = useState(1)
+  const mascotScaleRef = useRef(1)
+  mascotScaleRef.current = mascotScale
   const [mascotPosition, setMascotPosition] = useState<'left' | 'right'>('right')
   const mascotPositionRef = useRef<'left' | 'right'>('right')
   const [islandBg, setIslandBg] = useState('__anime__')
@@ -671,7 +682,15 @@ export default function Mini() {
     load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
       _setViewMode('efficiency')
       viewModeRef.current = 'efficiency'
-      invoke('set_mini_expanded', { expanded: false, position: 'right', efficiency: true }).catch(() => {})
+      const storedPosition = (await store.get('mascot_position')) as string | null
+      const initialMascotPosition = storedPosition === 'left' || storedPosition === 'right' ? storedPosition : 'right'
+      const storedMascotScale = await store.get('mascot_scale')
+      const initialMascotScale = typeof storedMascotScale === 'number' ? clampMascotScale(storedMascotScale) : 1
+      setMascotPosition(initialMascotPosition)
+      setMascotScale(initialMascotScale)
+      mascotPositionRef.current = initialMascotPosition
+      mascotScaleRef.current = initialMascotScale
+      invoke('set_mini_expanded', { expanded: false, position: initialMascotPosition, efficiency: true, mascotScale: initialMascotScale }).catch(() => {})
       await store.set('view_mode', 'efficiency')
       // Force-reset mascot custom position to avoid off-screen placement.
       // Keep collapsed default placement controlled by `set_mini_expanded`.
@@ -1097,6 +1116,12 @@ export default function Mini() {
       if (typeof pmh === 'number' && pmh >= 200 && pmh <= 500) setPanelMaxHeight(pmh)
       const hd = await store.get('hover_delay')
       if (typeof hd === 'number' && hd >= 0 && hd <= 2) { setHoverDelay(hd); hoverDelayRef.current = hd }
+      const ms = await store.get('mascot_scale')
+      if (typeof ms === 'number') {
+        const nextMascotScale = clampMascotScale(ms)
+        setMascotScale(nextMascotScale)
+        mascotScaleRef.current = nextMascotScale
+      }
       const mp = (await store.get('mascot_position')) as string
       if (mp === 'left' || mp === 'right') {
         setMascotPosition(mp)
@@ -1342,6 +1367,7 @@ export default function Mini() {
       position: mascotPositionRef.current,
       efficiency: mode === 'efficiency',
       maxHeight: panelMaxHeightRef.current,
+      mascotScale: mascotScaleRef.current,
     })
     expandedWindowModeRef.current = mode
   }, [])
@@ -1379,7 +1405,7 @@ export default function Mini() {
     updateModalPrevExpandedRef.current = expandedRef.current
     expandedWindowModeRef.current = null
     try {
-      await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, keepOnTop: true })
+      await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, keepOnTop: true, mascotScale: mascotScaleRef.current })
       await new Promise<void>((r) => setTimeout(r, 80))
     } catch {
       updateModalWindowAdjustedRef.current = false
@@ -1408,7 +1434,7 @@ export default function Mini() {
         expandedRef.current = true
         setShowPanel(true)
       } else {
-        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current })
         await restoreCollapsedMascotPosition()
         setExpanded(false)
         expandedRef.current = false
@@ -1654,7 +1680,12 @@ export default function Mini() {
       expandedWindowModeRef.current = null
       try {
         await new Promise<void>((r) => setTimeout(r, 50))
-        await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
+        await invoke('set_mini_expanded', {
+          expanded: false,
+          position: mascotPositionRef.current,
+          efficiency: viewModeRef.current === 'efficiency',
+          mascotScale: mascotScaleRef.current,
+        })
         await restoreCollapsedMascotPosition()
         await new Promise<void>((r) => setTimeout(r, 50))
       } catch {}
@@ -1714,9 +1745,14 @@ export default function Mini() {
       try {
         await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
         if (wasSettings) {
-          await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current })
+          await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current })
         } else {
-          await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: viewModeRef.current === 'efficiency' })
+          await invoke('set_mini_expanded', {
+            expanded: false,
+            position: mascotPositionRef.current,
+            efficiency: viewModeRef.current === 'efficiency',
+            mascotScale: mascotScaleRef.current,
+          })
         }
         await restoreCollapsedMascotPosition()
       } catch {
@@ -1820,7 +1856,7 @@ export default function Mini() {
     setSettingsTransitioning(true)
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
     try {
-      await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current })
+      await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current })
     } catch {}
     settingsModeRef.current = true
     setSettingsMode(true)
@@ -2038,6 +2074,12 @@ export default function Mini() {
     })
   }, [expanded, showPanel, settingsMode, settingsTransitioning, updateModalOpen, viewMode, syncExpandedWindowLayout])
 
+  const collapsedMascotSize = Math.round(MASCOT_BASE_SIZE * mascotScale)
+  const collapsedPlaceholderRadius = Math.round(10 * mascotScale)
+  const collapsedPlaceholderFontSize = Math.max(16, Math.round(16 * mascotScale))
+  const collapsedStatusSize = 8
+  const collapsedStatusBorder = 1.5
+
   return (
     <div
       style={{
@@ -2082,24 +2124,24 @@ export default function Mini() {
           >
             {miniGif ? (
               disableSleepAnim && mainPetState === 'idle' ? (
-                <FrozenImg src={miniGif} style={{ width: 43, height: 43, objectFit: 'contain' }} draggable={false} />
+                <FrozenImg src={miniGif} style={{ width: collapsedMascotSize, height: collapsedMascotSize, objectFit: 'contain' }} draggable={false} />
               ) : mainPetState === 'compacting' ? (
-                <IntervalGif src={miniGif} style={{ width: 43, height: 43, objectFit: 'contain' }} />
+                <IntervalGif src={miniGif} style={{ width: collapsedMascotSize, height: collapsedMascotSize, objectFit: 'contain' }} />
               ) : (
-                <img src={miniGif} alt="mini" style={{ width: 43, height: 43, objectFit: 'contain' }} draggable={false} />
+                <img src={miniGif} alt="mini" style={{ width: collapsedMascotSize, height: collapsedMascotSize, objectFit: 'contain' }} draggable={false} />
               )
             ) : (
               <div
                 style={{
-                  width: 43,
-                  height: 43,
-                  borderRadius: 10,
+                  width: collapsedMascotSize,
+                  height: collapsedMascotSize,
+                  borderRadius: collapsedPlaceholderRadius,
                   background: 'rgba(0,0,0,0.3)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   color: '#999',
-                  fontSize: 16,
+                  fontSize: collapsedPlaceholderFontSize,
                 }}
               >
                 ?
@@ -2110,11 +2152,11 @@ export default function Mini() {
                 position: 'absolute',
                 bottom: 0,
                 right: 0,
-                width: 8,
-                height: 8,
+                width: collapsedStatusSize,
+                height: collapsedStatusSize,
                 borderRadius: '50%',
                 background: mainPetState === 'waiting' ? '#f59e0b' : hasWorking ? '#2ecc71' : '#777',
-                border: '1.5px solid rgba(0,0,0,0.3)',
+                border: `${collapsedStatusBorder}px solid rgba(0,0,0,0.3)`,
               }}
             />
           </div>
@@ -3780,6 +3822,15 @@ export default function Mini() {
                           mascotPositionRef.current = v
                           const store = await getStore()
                           await store.set('mascot_position', v)
+                          await store.save()
+                        }}
+                        mascotScale={mascotScale}
+                        onChangeMascotScale={async (v) => {
+                          const nextMascotScale = clampMascotScale(v)
+                          setMascotScale(nextMascotScale)
+                          mascotScaleRef.current = nextMascotScale
+                          const store = await getStore()
+                          await store.set('mascot_scale', nextMascotScale)
                           await store.save()
                         }}
                         islandBg={islandBg}

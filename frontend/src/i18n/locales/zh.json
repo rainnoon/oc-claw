@@ -109,6 +109,8 @@
     "display": "显示",
     "mascotPosition": "看板娘位置",
     "mascotPositionDesc": "看板娘在刘海的哪一侧",
+    "mascotScale": "看板娘大小",
+    "mascotScaleDesc": "通过倍率调整看板娘大小",
     "left": "居左",
     "right": "居右",
     "disableSleepAnim": "关闭睡眠动画",

@@ -106,6 +106,8 @@
     "display": "디스플레이",
     "mascotPosition": "마스코트 위치",
     "mascotPositionDesc": "노치 어느 쪽에 마스코트를 표시할지",
+    "mascotScale": "마스코트 크기",
+    "mascotScaleDesc": "배율로 마스코트 크기를 조절",
     "left": "왼쪽",
     "right": "오른쪽",
     "disableSleepAnim": "슬립 애니메이션 비활성화",

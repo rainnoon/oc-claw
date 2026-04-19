@@ -106,6 +106,8 @@
     "display": "表示",
     "mascotPosition": "マスコット位置",
     "mascotPositionDesc": "ノッチのどちら側にマスコットを表示するか",
+    "mascotScale": "マスコットサイズ",
+    "mascotScaleDesc": "倍率でマスコットの大きさを調整",
     "left": "左",
     "right": "右",
     "disableSleepAnim": "スリープアニメを無効化",

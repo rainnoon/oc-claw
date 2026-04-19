@@ -106,6 +106,8 @@
     "display": "Affichage",
     "mascotPosition": "Position de la mascotte",
     "mascotPositionDesc": "De quel côté de l'encoche la mascotte se trouve",
+    "mascotScale": "Taille de la mascotte",
+    "mascotScaleDesc": "Ajustez la taille de la mascotte avec un multiplicateur",
     "left": "Gauche",
     "right": "Droite",
     "disableSleepAnim": "Désactiver l'animation de repos",

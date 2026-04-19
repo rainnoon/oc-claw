@@ -106,6 +106,8 @@
     "display": "Pantalla",
     "mascotPosition": "Posición de la mascota",
     "mascotPositionDesc": "En qué lado del notch se muestra la mascota",
+    "mascotScale": "Escala de la mascota",
+    "mascotScaleDesc": "Ajusta el tamaño de la mascota con un multiplicador",
     "left": "Izquierda",
     "right": "Derecha",
     "disableSleepAnim": "Desactivar animación de reposo",

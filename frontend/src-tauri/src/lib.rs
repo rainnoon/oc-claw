@@ -2906,8 +2906,12 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                         Some((frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, notch_off))
                     };
                     if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
-                        let win_w = 60.0;
-                        let win_h = 45.0;
+                        let (win_w, win_h) = MINI_WINDOW_FRAME
+                            .lock()
+                            .ok()
+                            .and_then(|g| *g)
+                            .map(|(_, _, w, h)| (w, h))
+                            .unwrap_or_else(|| collapsed_mascot_window_size(1.0));
                         let x = sx + sw / 2.0 + notch_off;
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
@@ -2926,8 +2930,14 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 let scale = monitor.scale_factor();
                 let sw = monitor.size().width as f64 / scale;
                 let ui = win_ui_scale(&monitor);
-                let win_w = (60.0 * ui).round();
-                let win_h = (45.0 * ui).round();
+                let (base_w, base_h) = MINI_WINDOW_FRAME
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .map(|(_, _, w, h)| (w, h))
+                    .unwrap_or_else(|| collapsed_mascot_window_size(1.0));
+                let win_w = (base_w * ui).round();
+                let win_h = (base_h * ui).round();
                 let notch_off = (80.0 * ui).round();
                 let x = sw / 2.0 + notch_off;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
@@ -2943,7 +2953,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
 
     let builder = WebviewWindowBuilder::new(&app, "mini", WebviewUrl::App("index.html#/mini".into()))
         .title("oc-claw Mini")
-        .inner_size(60.0, 45.0)
+        .inner_size(COLLAPSED_MASCOT_BASE_W, COLLAPSED_MASCOT_BASE_H)
         .decorations(false)
         .transparent(true)
         .shadow(false)
@@ -2991,8 +3001,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 };
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
-                    let win_w = 60.0;
-                    let win_h = 45.0;
+                    let (win_w, win_h) = collapsed_mascot_window_size(1.0);
                     let x = sx + sw / 2.0 + notch_off;
                     let y = sy + sh - win_h;
                     let frame = NSRect::new(
@@ -3018,8 +3027,9 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
             let scale = monitor.scale_factor();
             let sw = monitor.size().width as f64 / scale;
             let ui = win_ui_scale(&monitor);
-            let win_w = (60.0 * ui).round();
-            let win_h = (45.0 * ui).round();
+            let (base_w, base_h) = collapsed_mascot_window_size(1.0);
+            let win_w = (base_w * ui).round();
+            let win_h = (base_h * ui).round();
             let notch_off = (80.0 * ui).round();
             let x = sw / 2.0 + notch_off;
             let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
@@ -3048,6 +3058,23 @@ fn collapsed_x(sx: f64, sw: f64, win_w: f64, position: &str, notch_offset: f64) 
     } else {
         sx + sw / 2.0 + notch_offset
     }
+}
+
+const COLLAPSED_MASCOT_BASE_W: f64 = 60.0;
+const COLLAPSED_MASCOT_BASE_H: f64 = 45.0;
+const MASCOT_SCALE_MIN: f64 = 1.0;
+const MASCOT_SCALE_MAX: f64 = 3.0;
+
+fn sanitized_mascot_scale(scale: Option<f64>) -> f64 {
+    let scale = scale.unwrap_or(1.0);
+    if !scale.is_finite() {
+        return 1.0;
+    }
+    scale.max(MASCOT_SCALE_MIN).min(MASCOT_SCALE_MAX)
+}
+
+fn collapsed_mascot_window_size(scale: f64) -> (f64, f64) {
+    (COLLAPSED_MASCOT_BASE_W * scale, COLLAPSED_MASCOT_BASE_H * scale)
 }
 
 /// Compute a UI-scale multiplier for Windows based on the monitor's logical
@@ -3298,9 +3325,10 @@ async fn set_ime_mode(_app: tauri::AppHandle, _active: bool) -> Result<(), Strin
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
-async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>, max_height: Option<f64>) -> Result<(), String> {
+async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>, max_height: Option<f64>, mascot_scale: Option<f64>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
+    let mascot_scale = sanitized_mascot_scale(mascot_scale);
 
     #[cfg(target_os = "macos")]
     {
@@ -3358,8 +3386,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         }
                         (x, y, win_w, win_h)
                     } else {
-                        let win_w = 60.0;
-                        let win_h = 45.0;
+                        let (win_w, win_h) = collapsed_mascot_window_size(mascot_scale);
                         let x = collapsed_x(sx, sw, win_w, &pos, notch_off);
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
@@ -3396,8 +3423,9 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
                 let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             } else {
-                let win_w = (60.0 * ui).round();
-                let win_h = (45.0 * ui).round();
+                let (base_w, base_h) = collapsed_mascot_window_size(mascot_scale);
+                let win_w = (base_w * ui).round();
+                let win_h = (base_h * ui).round();
                 let notch_off = (80.0 * ui).round();
                 let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
@@ -3457,7 +3485,12 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
                 }
             } else {
                 let rw = (notch_off * 2.0 + 140.0).max(154.0);
-                let rh = 35.0;
+                let rh = MINI_WINDOW_FRAME
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .map(|(_, _, _, fh)| fh.max(35.0))
+                    .unwrap_or(35.0);
                 let rx = sx + (sw - rw) / 2.0;
                 let ry = sy + sh - rh;
                 cursor.0 >= rx && cursor.0 <= rx + rw
@@ -3589,10 +3622,12 @@ async fn set_mini_size(
     restore: bool,
     position: Option<String>,
     keep_on_top: Option<bool>,
+    mascot_scale: Option<f64>,
 ) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
     let want_top = keep_on_top.unwrap_or(restore);
+    let mascot_scale = sanitized_mascot_scale(mascot_scale);
 
     #[cfg(target_os = "macos")]
     {
@@ -3631,8 +3666,7 @@ async fn set_mini_size(
                         *info = Some((sx, sy, sw, sh, notch_off));
                     }
                     if restore {
-                        let win_w = 60.0;
-                        let win_h = 45.0;
+                        let (win_w, win_h) = collapsed_mascot_window_size(mascot_scale);
                         let x = collapsed_x(sx, sw, win_w, &pos, notch_off);
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
@@ -3687,8 +3721,9 @@ async fn set_mini_size(
             let sh = monitor.size().height as f64 / scale;
             let ui = win_ui_scale(&monitor);
             if restore {
-                let win_w = (60.0 * ui).round();
-                let win_h = (45.0 * ui).round();
+                let (base_w, base_h) = collapsed_mascot_window_size(mascot_scale);
+                let win_w = (base_w * ui).round();
+                let win_h = (base_h * ui).round();
                 let notch_off = (80.0 * ui).round();
                 let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
@@ -8845,8 +8880,7 @@ pub fn run() {
                         };
 
                         if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
-                            let win_w = 60.0;
-                            let win_h = 45.0;
+                            let (win_w, win_h) = collapsed_mascot_window_size(1.0);
                             let x = sx + sw / 2.0 + notch_off;
                             let y = sy + sh - win_h;
                             let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
