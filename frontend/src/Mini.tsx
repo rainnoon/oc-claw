@@ -1672,6 +1672,7 @@ export default function Mini() {
   )
 
   const enterMoveMode = useCallback(async () => {
+    moveModeRef.current = true
     setShowPanel(false)
     setTimeout(async () => {
       setHiding(true)
@@ -1689,8 +1690,8 @@ export default function Mini() {
         await restoreCollapsedMascotPosition()
         await new Promise<void>((r) => setTimeout(r, 50))
       } catch {}
-      setHiding(false)
       setMoveMode(true)
+      setHiding(false)
     }, 350)
   }, [restoreCollapsedMascotPosition])
 
@@ -1936,7 +1937,7 @@ export default function Mini() {
   useEffect(() => {
     if (expanded || moveMode || updateModalOpen) return
     const onFocus = () => {
-      if (collapsingRef.current) return
+      if (collapsingRef.current || moveModeRef.current) return
       expand()
     }
     window.addEventListener('focus', onFocus)
