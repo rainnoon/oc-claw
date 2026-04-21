@@ -4,8 +4,9 @@
   -webkit-user-select: none;
   user-select: none;
 }
-:root, body {
+:root, body, #root {
   cursor: default;
+  background: transparent !important;
 }
 button, [role="button"], a {
   cursor: pointer;

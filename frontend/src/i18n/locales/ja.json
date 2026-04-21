@@ -134,6 +134,8 @@
     "waitingSoundDesc": "Claude Codeがユーザーの確認を待っている時にサウンドを再生",
     "autoCloseCompletion": "完了ポップアップを自動で閉じる",
     "autoCloseCompletionDesc": "完了ポップアップを5秒後に自動で閉じます",
+    "autoExpandOnTask": "自動ポップアップ",
+    "autoExpandOnTaskDesc": "タスク完了や入力待ちの際にパネルを自動で展開します",
 
     "about": "バージョン情報",
     "currentVersion": "現在のバージョン",

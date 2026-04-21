@@ -226,7 +226,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, mascotPosition, onChangeMascotPosition, mascotScale, onChangeMascotScale, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay }: { disableSleepAnim: boolean; onToggleSleepAnim: (v: boolean) => void; notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; mascotPosition: 'left' | 'right'; onChangeMascotPosition: (v: 'left' | 'right') => void; mascotScale: number; onChangeMascotScale: (v: number) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void }) {
+export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
@@ -530,45 +530,10 @@ export function SettingsTab({ disableSleepAnim, onToggleSleepAnim, notifySound, 
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.mascotPosition')}</span>
-              <span className="text-xs text-white/40">{t('settings.mascotPositionDesc')}</span>
+              <span className="text-sm font-medium text-white/90">{t('settings.autoExpandOnTask', 'Auto Popup')}</span>
+              <span className="text-xs text-white/40">{t('settings.autoExpandOnTaskDesc', 'Automatically expand panel when a task completes or needs input')}</span>
             </div>
-            <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
-              {(['left', 'right'] as const).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => onChangeMascotPosition(s)}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${mascotPosition === s ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
-                >
-                  {s === 'left' ? t('settings.left') : t('settings.right')}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center justify-between p-4 border-b border-white/5">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.disableSleepAnim')}</span>
-              <span className="text-xs text-white/40">{t('settings.disableSleepAnimDesc')}</span>
-            </div>
-            <Toggle checked={disableSleepAnim} onChange={onToggleSleepAnim} />
-          </div>
-          <div className="p-4 border-b border-white/5">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-white/90">{t('settings.mascotScale', 'Mascot Scale')}</span>
-                <span className="text-xs text-white/40">{t('settings.mascotScaleDesc', 'Adjust the mascot size using a multiplier')}</span>
-              </div>
-              <span className="text-sm text-white/60 tabular-nums">{mascotScale.toFixed(1)}x</span>
-            </div>
-            <input
-              type="range"
-              min={1}
-              max={3}
-              step={0.1}
-              value={mascotScale}
-              onChange={(e) => onChangeMascotScale(Number(e.target.value))}
-              className="w-full accent-white/60 h-1"
-            />
+            <Toggle checked={autoExpandOnTask} onChange={onToggleAutoExpandOnTask} />
           </div>
           <div className="p-4 border-b border-white/5">
             <div className="flex items-center justify-between mb-2">

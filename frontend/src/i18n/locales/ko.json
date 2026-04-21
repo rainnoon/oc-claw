@@ -134,6 +134,8 @@
     "waitingSoundDesc": "Claude Code가 사용자 확인을 기다릴 때 소리 재생",
     "autoCloseCompletion": "완료 팝업 자동 닫기",
     "autoCloseCompletionDesc": "완료 팝업이 5초 후 자동으로 닫힙니다",
+    "autoExpandOnTask": "자동 팝업",
+    "autoExpandOnTaskDesc": "작업 완료 또는 입력 대기 시 패널을 자동으로 확장합니다",
 
     "about": "정보",
     "currentVersion": "현재 버전",

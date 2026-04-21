@@ -134,6 +134,8 @@
     "waitingSoundDesc": "Jouer un son quand Claude Code attend la confirmation de l'utilisateur",
     "autoCloseCompletion": "Fermer auto le popup de fin",
     "autoCloseCompletionDesc": "Fermer automatiquement le popup de fin après 5 secondes",
+    "autoExpandOnTask": "Popup automatique",
+    "autoExpandOnTaskDesc": "Développer automatiquement le panneau lorsqu'une tâche se termine ou nécessite une saisie",
 
     "about": "À propos",
     "currentVersion": "Version actuelle",
