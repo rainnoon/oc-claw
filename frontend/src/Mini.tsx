@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, ChevronUp, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud } from 'lucide-react'
+import { ChevronDown, ChevronUp, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud, Maximize, Minimize } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
@@ -1152,15 +1152,24 @@ export default function Mini() {
       const acc = await store.get('auto_close_completion')
       if (typeof acc === 'boolean') setAutoCloseCompletion(acc)
       const aet = await store.get('auto_expand_on_task')
-      if (typeof aet === 'boolean') { setAutoExpandOnTask(aet); autoExpandOnTaskRef.current = aet }
+      if (typeof aet === 'boolean') {
+        setAutoExpandOnTask(aet)
+        autoExpandOnTaskRef.current = aet
+      }
       const dsa = await store.get('disable_sleep_anim')
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const lm = await store.get('large_mascot')
-      if (typeof lm === 'boolean') { setLargeMascot(lm); largeMascotRef.current = lm }
+      if (typeof lm === 'boolean') {
+        setLargeMascot(lm)
+        largeMascotRef.current = lm
+      }
       const pmh = await store.get('panel_max_height')
       if (typeof pmh === 'number' && pmh >= 200 && pmh <= 500) setPanelMaxHeight(pmh)
       const hd = await store.get('hover_delay')
-      if (typeof hd === 'number' && hd >= 0 && hd <= 2) { setHoverDelay(hd); hoverDelayRef.current = hd }
+      if (typeof hd === 'number' && hd >= 0 && hd <= 2) {
+        setHoverDelay(hd)
+        hoverDelayRef.current = hd
+      }
       const ms = await store.get('mascot_scale')
       if (typeof ms === 'number') {
         const nextMascotScale = clampMascotScale(ms)
@@ -1205,7 +1214,15 @@ export default function Mini() {
           if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId)) {
             seenCompletions.add(s.sessionId)
             // Only auto-expand if tab not active and panel is collapsed
-            if (autoExpandOnTaskRef.current && !updateModalOpenRef.current && !s.isActiveTab && viewModeRef.current === 'efficiency' && !expandedRef.current && !expandingRef.current && !collapsingRef.current) {
+            if (
+              autoExpandOnTaskRef.current &&
+              !updateModalOpenRef.current &&
+              !s.isActiveTab &&
+              viewModeRef.current === 'efficiency' &&
+              !expandedRef.current &&
+              !expandingRef.current &&
+              !collapsingRef.current
+            ) {
               hoverExpandedRef.current = true
               setCompletionSessionId(s.sessionId)
               expandFnRef.current?.()
@@ -1715,18 +1732,18 @@ export default function Mini() {
         return
       }
 
-      // Move mode: drag to reposition, click to exit
+      // Move mode: drag to reposition, click to exit.
+      // Listen on `window` instead of the element so that pointer events
+      // keep arriving even when macOS blurs/refocuses the webview during
+      // a native window move (which kills pointer capture and fires
+      // lostpointercapture, aborting the first drag attempt).
       e.preventDefault()
-      const el = e.currentTarget as HTMLElement
       mascotDragActiveRef.current = true
 
       let lastX = e.screenX
       let lastY = e.screenY
       let dragging = false
       const pid = e.pointerId
-      try {
-        el.setPointerCapture(pid)
-      } catch {}
 
       const onMove = (ev: PointerEvent) => {
         if (ev.pointerId !== pid) return
@@ -1752,13 +1769,9 @@ export default function Mini() {
           setLargePetAction(null)
           largePetActionRef.current = null
         }
-        el.removeEventListener('pointermove', onMove)
-        el.removeEventListener('pointerup', onUp)
-        el.removeEventListener('pointercancel', onCancel)
-        el.removeEventListener('lostpointercapture', onCancel)
-        try {
-          if (el.hasPointerCapture(pid)) el.releasePointerCapture(pid)
-        } catch {}
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onCancel)
       }
 
       const onCancel = (ev: PointerEvent) => {
@@ -1788,10 +1801,9 @@ export default function Mini() {
         }
       }
 
-      el.addEventListener('pointermove', onMove)
-      el.addEventListener('pointerup', onUp)
-      el.addEventListener('pointercancel', onCancel)
-      el.addEventListener('lostpointercapture', onCancel)
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+      window.addEventListener('pointercancel', onCancel)
     },
     [expand],
   )
@@ -1799,37 +1811,31 @@ export default function Mini() {
   const enterMoveMode = useCallback(async () => {
     moveModeRef.current = true
     mascotDragActiveRef.current = true
+    // Immediately hide everything, skip the panel close animation so the
+    // user doesn't see a 350ms delay followed by a position jump.
     setShowPanel(false)
-    setTimeout(async () => {
-      // Hide the collapsed mascot while the native window shrinks from
-      // expanded (500×350) to collapsed size, otherwise the mascot renders
-      // inside the still-large frame and visibly jumps when the resize lands.
-      setHiding(true)
-      setExpanded(false)
-      expandedRef.current = false
-      expandedWindowModeRef.current = null
-      try {
-        await new Promise<void>((r) => setTimeout(r, 50))
-        // Resize to collapsed dimensions and place at the default position
-        // (large mascot → bottom-right, small → near notch). If the user
-        // previously dragged the mascot, restoreCollapsedMascotPosition()
-        // overrides with their saved position. setHiding(true) keeps the
-        // mascot invisible throughout so none of this is visible.
-        await invoke('set_mini_expanded', {
-          expanded: false,
-          position: mascotPositionRef.current,
-          efficiency: viewModeRef.current === 'efficiency',
-          mascotScale: mascotScaleRef.current,
-          largeMascot: largeMascotRef.current,
-        })
-        await restoreCollapsedMascotPosition()
-      } catch {}
-      setMoveMode(true)
-      setHiding(false)
-      setTimeout(() => {
-        if (moveModeRef.current) mascotDragActiveRef.current = false
-      }, 500)
-    }, 350)
+    setHiding(true)
+    setExpanded(false)
+    expandedRef.current = false
+    expandedWindowModeRef.current = null
+    try {
+      // Wait one frame so React unmounts the expanded tree before we
+      // resize the native window.
+      await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+      await invoke('set_mini_expanded', {
+        expanded: false,
+        position: mascotPositionRef.current,
+        efficiency: viewModeRef.current === 'efficiency',
+        mascotScale: mascotScaleRef.current,
+        largeMascot: largeMascotRef.current,
+      })
+      await restoreCollapsedMascotPosition()
+    } catch {}
+    setMoveMode(true)
+    setHiding(false)
+    setTimeout(() => {
+      if (moveModeRef.current) mascotDragActiveRef.current = false
+    }, 500)
   }, [restoreCollapsedMascotPosition])
 
   const collapse = useCallback(async () => {
@@ -2145,10 +2151,7 @@ export default function Mini() {
   const inAgentDetail = selectedAgentId !== null
   const selectedAgent = agents.find((a) => a.id === selectedAgentId)
   const inDetailPage = inAgentDetail || selectedClaudeSession !== null || selectedSessionKey !== null || showClaudeStats
-  const detailPageMaxHeight =
-    typeof window !== 'undefined'
-      ? Math.max(240, Math.floor(((window.screen?.availHeight || 800) * 0.75) / Math.max(uiScale, 0.01)))
-      : 600
+  const detailPageMaxHeight = typeof window !== 'undefined' ? Math.max(240, Math.floor(((window.screen?.availHeight || 800) * 0.75) / Math.max(uiScale, 0.01))) : 600
 
   // Panel dimensions — CSS uses fixed base sizes; on Windows high-DPI screens
   // the panel root applies `zoom: uiScale` so all content scales uniformly.
@@ -2425,38 +2428,6 @@ export default function Mini() {
                   <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
                 </button>
               ) : (
-                <>
-                {miniChar?.largeActions && Object.keys(miniChar.largeActions).length > 0 && (
-                  <button
-                    data-no-drag
-                    onClick={async (e) => {
-                      e.stopPropagation()
-                      const next = !largeMascot
-                      setLargeMascot(next)
-                      largeMascotRef.current = next
-                      if (largeClickWindowTimerRef.current) clearTimeout(largeClickWindowTimerRef.current)
-                      if (largeClickActionTimerRef.current) clearTimeout(largeClickActionTimerRef.current)
-                      largeClickWindowTimerRef.current = null
-                      largeClickActionTimerRef.current = null
-                      setLargePetAction(null)
-                      largePetActionRef.current = null
-                      largeClickCountRef.current = 0
-                      const store = await load('settings.json', { defaults: {}, autoSave: true })
-                      await store.set('large_mascot', next)
-                      await store.save()
-                    }}
-                    className={`transition-colors ${largeMascot ? 'text-[#F0D140]' : 'text-slate-400 hover:text-slate-200'}`}
-                    title={largeMascot ? '切换到小看板娘' : '切换到大看板娘'}
-                  >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
-                      {largeMascot ? (
-                        <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M4 16V6a2 2 0 0 1 2-2h10" /></>
-                      ) : (
-                        <><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M9 9h6v6H9z" /></>
-                      )}
-                    </svg>
-                  </button>
-                )}
                 <button
                   data-no-drag
                   onClick={(e) => {
@@ -2473,7 +2444,6 @@ export default function Mini() {
                 >
                   <Pin className="w-4 h-4" strokeWidth={2.5} />
                 </button>
-                </>
               )}
               <button
                 data-no-drag
@@ -2499,6 +2469,31 @@ export default function Mini() {
               >
                 {soundEnabled || codexSoundEnabled || cursorSoundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
               </button>
+              {!(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) && miniChar?.largeActions && Object.keys(miniChar.largeActions).length > 0 && (
+                <button
+                  data-no-drag
+                  onClick={async (e) => {
+                    e.stopPropagation()
+                    const next = !largeMascot
+                    setLargeMascot(next)
+                    largeMascotRef.current = next
+                    if (largeClickWindowTimerRef.current) clearTimeout(largeClickWindowTimerRef.current)
+                    if (largeClickActionTimerRef.current) clearTimeout(largeClickActionTimerRef.current)
+                    largeClickWindowTimerRef.current = null
+                    largeClickActionTimerRef.current = null
+                    setLargePetAction(null)
+                    largePetActionRef.current = null
+                    largeClickCountRef.current = 0
+                    const store = await load('settings.json', { defaults: {}, autoSave: true })
+                    await store.set('large_mascot', next)
+                    await store.save()
+                  }}
+                  className={`transition-colors ${largeMascot ? 'text-[#F0D140]' : 'text-slate-400 hover:text-slate-200'}`}
+                  title={largeMascot ? '切换到小看板娘' : '切换到大看板娘'}
+                >
+                  {largeMascot ? <Minimize className="w-4 h-4" strokeWidth={2.5} /> : <Maximize className="w-4 h-4" strokeWidth={2.5} />}
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-4">
               <button
@@ -2764,9 +2759,16 @@ export default function Mini() {
                                               editingTitleDefaultRef.current = title
                                             }
                                           }}
-                                          onChange={(e) => { editingTitleValueRef.current = e.target.value }}
-                                          onCompositionStart={() => { composingRef.current = true }}
-                                          onCompositionEnd={(e) => { composingRef.current = false; editingTitleValueRef.current = (e.target as HTMLInputElement).value }}
+                                          onChange={(e) => {
+                                            editingTitleValueRef.current = e.target.value
+                                          }}
+                                          onCompositionStart={() => {
+                                            composingRef.current = true
+                                          }}
+                                          onCompositionEnd={(e) => {
+                                            composingRef.current = false
+                                            editingTitleValueRef.current = (e.target as HTMLInputElement).value
+                                          }}
                                           onBlur={() => {
                                             saveSessionNickname(`oc:${s.agentId}:${s.key}`, editingTitleValueRef.current, title)
                                             setEditingSessionTitle(null)
@@ -2918,9 +2920,16 @@ export default function Mini() {
                                                 editingTitleDefaultRef.current = defaultProjectName
                                               }
                                             }}
-                                            onChange={(e) => { editingTitleValueRef.current = e.target.value }}
-                                            onCompositionStart={() => { composingRef.current = true }}
-                                            onCompositionEnd={(e) => { composingRef.current = false; editingTitleValueRef.current = (e.target as HTMLInputElement).value }}
+                                            onChange={(e) => {
+                                              editingTitleValueRef.current = e.target.value
+                                            }}
+                                            onCompositionStart={() => {
+                                              composingRef.current = true
+                                            }}
+                                            onCompositionEnd={(e) => {
+                                              composingRef.current = false
+                                              editingTitleValueRef.current = (e.target as HTMLInputElement).value
+                                            }}
                                             onBlur={() => {
                                               saveSessionNickname(cs.sessionId, editingTitleValueRef.current, defaultProjectName)
                                               setEditingSessionTitle(null)
