@@ -3437,10 +3437,9 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                             let cur: NSRect = unsafe { msg_send![obj, frame] };
                             (cur.origin.x, cur.origin.y + cur.size.height - win_h)
                         } else if large_mascot.unwrap_or(false) {
-                            // Large mascot defaults to the bottom-right corner
-                            // of the screen (with a small margin).
-                            let margin = 10.0;
-                            (sx + sw - win_w - margin, sy + margin)
+                            let margin_x = 10.0;
+                            let margin_y = 300.0;
+                            (sx + sw - win_w - margin_x, sy + margin_y)
                         } else {
                             (collapsed_x(sx, sw, win_w, &pos, notch_off), sy + sh - win_h)
                         };
@@ -3554,12 +3553,12 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
                     false
                 }
             } else {
-                let rw = (notch_off * 2.0 + 140.0).max(154.0);
+                let rw = (notch_off * 2.0 + 10.0).max(80.0);
                 let rh = MINI_WINDOW_FRAME
                     .lock()
                     .ok()
                     .and_then(|g| *g)
-                    .map(|(_, _, _, fh)| fh.max(35.0))
+                    .map(|(_, _, _, fh)| fh.clamp(20.0, 28.0))
                     .unwrap_or(35.0);
                 let rx = sx + (sw - rw) / 2.0;
                 let ry = sy + sh - rh;
