@@ -621,8 +621,8 @@ export default function Mini() {
   const [largeMascot, setLargeMascot] = useState(false)
   const largeMascotRef = useRef(false)
   largeMascotRef.current = largeMascot
-  const [largePetAction, setLargePetAction] = useState<string | null>(null)
-  const largePetActionRef = useRef<string | null>(null)
+  const [largePetAction, setLargePetAction] = useState<LargePetAction | null>(null)
+  const largePetActionRef = useRef<LargePetAction | null>(null)
   largePetActionRef.current = largePetAction
   const largeActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const largeDailyAngryCountRef = useRef(0)
@@ -2175,7 +2175,8 @@ export default function Mini() {
   const largeVideoBaseUrl = largeMascot ? getLargeVideo(miniChar ?? undefined, mainPetState, largePetAction, fallbackLargeActions) : undefined
   const largeVideoUrl = largeVideoBaseUrl ? `${largeVideoBaseUrl}?rev=alpha-fix-2` : undefined
   const largeVideoRef = useRef<HTMLVideoElement>(null)
-  const prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
+  // @ts-ignore unused ref kept for future use
+  const _prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
 
   const handleDeleteChar = useCallback(async (name: string) => {
     try {
