@@ -3100,6 +3100,7 @@ const COLLAPSED_MASCOT_BASE_W: f64 = 60.0;
 const COLLAPSED_MASCOT_BASE_H: f64 = 45.0;
 const MASCOT_SCALE_MIN: f64 = 1.0;
 const MASCOT_SCALE_MAX: f64 = 3.0;
+const LARGE_MASCOT_SIZE_MULTIPLIER: f64 = 3.0;
 
 fn sanitized_mascot_scale(scale: Option<f64>) -> f64 {
     let scale = scale.unwrap_or(1.0);
@@ -3111,6 +3112,11 @@ fn sanitized_mascot_scale(scale: Option<f64>) -> f64 {
 
 fn collapsed_mascot_window_size(scale: f64) -> (f64, f64) {
     (COLLAPSED_MASCOT_BASE_W * scale, COLLAPSED_MASCOT_BASE_H * scale)
+}
+
+fn large_collapsed_mascot_window_size(scale: f64) -> (f64, f64) {
+    let size = 43.0 * scale * LARGE_MASCOT_SIZE_MULTIPLIER;
+    (size, size)
 }
 
 /// Compute a UI-scale multiplier for Windows based on the monitor's logical
@@ -3423,7 +3429,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         (x, y, win_w, win_h)
                     } else {
                         let (win_w, win_h) = if large_mascot.unwrap_or(false) {
-                            (COLLAPSED_MASCOT_BASE_W * mascot_scale * 3.0, COLLAPSED_MASCOT_BASE_H * mascot_scale * 3.0)
+                            large_collapsed_mascot_window_size(mascot_scale)
                         } else {
                             collapsed_mascot_window_size(mascot_scale)
                         };
@@ -3473,7 +3479,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             } else {
                 let (base_w, base_h) = if large_mascot.unwrap_or(false) {
-                    (COLLAPSED_MASCOT_BASE_W * mascot_scale * 3.0, COLLAPSED_MASCOT_BASE_H * mascot_scale * 3.0)
+                    large_collapsed_mascot_window_size(mascot_scale)
                 } else {
                     collapsed_mascot_window_size(mascot_scale)
                 };
@@ -3732,7 +3738,7 @@ async fn set_mini_size(
                     }
                     if restore {
                         let (win_w, win_h) = if large_mascot.unwrap_or(false) {
-                            (COLLAPSED_MASCOT_BASE_W * mascot_scale * 3.0, COLLAPSED_MASCOT_BASE_H * mascot_scale * 3.0)
+                            large_collapsed_mascot_window_size(mascot_scale)
                         } else {
                             collapsed_mascot_window_size(mascot_scale)
                         };
@@ -3795,7 +3801,7 @@ async fn set_mini_size(
             let ui = win_ui_scale(&monitor);
             if restore {
                 let (base_w, base_h) = if large_mascot.unwrap_or(false) {
-                    (COLLAPSED_MASCOT_BASE_W * mascot_scale * 3.0, COLLAPSED_MASCOT_BASE_H * mascot_scale * 3.0)
+                    large_collapsed_mascot_window_size(mascot_scale)
                 } else {
                     collapsed_mascot_window_size(mascot_scale)
                 };

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
@@ -85,9 +85,11 @@ const MASCOT_BASE_SIZE = 43
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
-const LARGE_CLICK_WINDOW_MS = 10_000
-const LARGE_CLICK_ACTION_MS = 3_000
-const LARGE_CLICK_ANGRY_THRESHOLD = 3
+const LARGE_ACTION_DISPLAY_MS = 3_000
+const LARGE_DAILY_ANGRY_LIMIT = 10
+const LARGE_MASCOT_SIZE_MULTIPLIER = 3
+const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 1.8
+const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.5
 const MOVE_DRAG_THRESHOLD = 1
 
 function clampMascotScale(value: number): number {
@@ -305,9 +307,11 @@ function getMiniGif(char: CharacterMeta | undefined, petState: PetState | boolea
 
 type LargePetAction = 'work' | 'rest' | 'question' | 'grasp' | 'shy' | 'angry'
 
-function getLargeVideo(char: CharacterMeta | undefined, petState: PetState, overrideAction: string | null): string | undefined {
-  if (!char?.largeActions || Object.keys(char.largeActions).length === 0) return undefined
-  const la = char.largeActions
+function getLargeVideo(char: CharacterMeta | undefined, petState: PetState, overrideAction: string | null, fallbackLargeActions?: Record<string, string>): string | undefined {
+  const la = char?.largeActions && Object.keys(char.largeActions).length > 0
+    ? char.largeActions
+    : fallbackLargeActions
+  if (!la || Object.keys(la).length === 0) return undefined
   if (overrideAction && la[overrideAction]) return la[overrideAction]
   if (petState === 'waiting' && la['question']) return la['question']
   if (petState === 'working' || petState === 'compacting') return la['work'] || la['rest']
@@ -620,9 +624,9 @@ export default function Mini() {
   const [largePetAction, setLargePetAction] = useState<string | null>(null)
   const largePetActionRef = useRef<string | null>(null)
   largePetActionRef.current = largePetAction
-  const largeClickCountRef = useRef(0)
-  const largeClickWindowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const largeClickActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const largeActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const largeDailyAngryCountRef = useRef(0)
+  const largeDailyAngryDateRef = useRef('')
   const [panelMaxHeight, setPanelMaxHeight] = useState(300)
   const panelMaxHeightRef = useRef(300)
   panelMaxHeightRef.current = panelMaxHeight
@@ -1661,8 +1665,7 @@ export default function Mini() {
 
   useEffect(() => {
     return () => {
-      if (largeClickWindowTimerRef.current) clearTimeout(largeClickWindowTimerRef.current)
-      if (largeClickActionTimerRef.current) clearTimeout(largeClickActionTimerRef.current)
+      if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
     }
   }, [])
 
@@ -1670,62 +1673,100 @@ export default function Mini() {
     (e: React.PointerEvent) => {
       if (e.button !== 0 || collapsingRef.current) return
       const isMoveMode = moveModeRef.current
+      const target = e.currentTarget as HTMLElement
+      // Keep large mascot visual size unchanged, but shrink the effective hitbox.
+      if (!isMoveMode && largeMascotRef.current) {
+        const visualSize = MASCOT_BASE_SIZE * mascotScaleRef.current * LARGE_MASCOT_SIZE_MULTIPLIER
+        const hitWidth = MASCOT_BASE_SIZE * mascotScaleRef.current * LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER
+        const hitHeight = MASCOT_BASE_SIZE * mascotScaleRef.current * LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER
+        const insetX = Math.max(0, (visualSize - hitWidth) / 2)
+        const insetY = Math.max(0, (visualSize - hitHeight) / 2)
+        const rect = target.getBoundingClientRect()
+        const localX = e.clientX - rect.left
+        const localY = e.clientY - rect.top
+        if (localX < insetX || localX > visualSize - insetX || localY < insetY || localY > visualSize - insetY) return
+      }
 
-      // Normal mode: click to expand (or handle large mascot click counting)
-      if (!isMoveMode) {
-        if (largeMascotRef.current) {
-          // Long press (800ms) expands the panel.
-          // Normal click immediately shows shy; if 3+ clicks accumulate
-          // within the 10s window, switch to angry.
-          let longPressTriggered = false
-          const longPressTimer = setTimeout(() => {
-            longPressTriggered = true
-            hoverExpandedRef.current = false
-            setCompletionSessionId(null)
-            expand()
-          }, 800)
-          const cancelLongPress = () => {
-            clearTimeout(longPressTimer)
-            window.removeEventListener('pointerup', finishLargeMascotClick)
-            window.removeEventListener('pointercancel', cancelLongPress)
+      // Large mascot normal mode: drag to move window, click for angry/shy
+      if (!isMoveMode && largeMascotRef.current) {
+        e.preventDefault()
+        mascotDragActiveRef.current = true
+        let lastX = e.screenX
+        let lastY = e.screenY
+        let dragging = false
+        const pid = e.pointerId
+
+        const onMove = (ev: PointerEvent) => {
+          if (ev.pointerId !== pid) return
+          if (!dragging) {
+            if (Math.abs(ev.screenX - lastX) + Math.abs(ev.screenY - lastY) >= 3) {
+              dragging = true
+              setLargePetAction('grasp')
+              largePetActionRef.current = 'grasp'
+            } else return
           }
+          const dx = ev.screenX - lastX
+          const dy = ev.screenY - lastY
+          lastX = ev.screenX
+          lastY = ev.screenY
+          if (dx !== 0 || dy !== 0) invoke('move_mini_by', { dx, dy })
+        }
 
-          const finishLargeMascotClick = () => {
-            cancelLongPress()
-            if (longPressTriggered) return
+        const cleanup = () => {
+          mascotDragActiveRef.current = false
+          if (largePetActionRef.current === 'grasp') {
+            setLargePetAction(null)
+            largePetActionRef.current = null
+          }
+          window.removeEventListener('pointermove', onMove)
+          window.removeEventListener('pointerup', onUp)
+          window.removeEventListener('pointercancel', onCancelLarge)
+        }
 
-            largeClickCountRef.current += 1
-            const count = largeClickCountRef.current
+        const onCancelLarge = (ev: PointerEvent) => {
+          if (ev.pointerId !== pid) return
+          cleanup()
+        }
 
-            // Immediately show the appropriate action
-            const action = count >= LARGE_CLICK_ANGRY_THRESHOLD ? 'angry' : 'shy'
+        const onUp = (ev: PointerEvent) => {
+          if (ev.pointerId !== pid) return
+          cleanup()
+          if (dragging) {
+            invoke('get_mini_origin').then(async (pos) => {
+              const [x, y] = pos as [number, number]
+              customPosRef.current = { x, y }
+              const store = await load('settings.json', { defaults: {}, autoSave: true })
+              await store.set('mini_custom_pos', { x, y })
+              await store.save()
+            })
+          } else {
+            // Click: angry for the first 10 clicks per day, then shy
+            const today = new Date().toDateString()
+            if (largeDailyAngryDateRef.current !== today) {
+              largeDailyAngryDateRef.current = today
+              largeDailyAngryCountRef.current = 0
+            }
+            largeDailyAngryCountRef.current += 1
+            const action = largeDailyAngryCountRef.current <= LARGE_DAILY_ANGRY_LIMIT ? 'angry' : 'shy'
             setLargePetAction(action)
             largePetActionRef.current = action
-
-            // Reset the auto-clear timer so the action stays visible
-            if (largeClickActionTimerRef.current) clearTimeout(largeClickActionTimerRef.current)
-            largeClickActionTimerRef.current = setTimeout(() => {
+            if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
+            largeActionTimerRef.current = setTimeout(() => {
               setLargePetAction(null)
               largePetActionRef.current = null
-              largeClickActionTimerRef.current = null
-              largeClickCountRef.current = 0
-              largeClickWindowTimerRef.current = null
-            }, LARGE_CLICK_ACTION_MS)
-
-            // Start the 10s aggregation window on first click
-            if (!largeClickWindowTimerRef.current) {
-              largeClickWindowTimerRef.current = setTimeout(() => {
-                // Window expired — reset counters (action timer handles display)
-                largeClickCountRef.current = 0
-                largeClickWindowTimerRef.current = null
-              }, LARGE_CLICK_WINDOW_MS)
-            }
+              largeActionTimerRef.current = null
+            }, LARGE_ACTION_DISPLAY_MS)
           }
-
-          window.addEventListener('pointerup', finishLargeMascotClick, { once: true })
-          window.addEventListener('pointercancel', cancelLongPress, { once: true })
-          return
         }
+
+        window.addEventListener('pointermove', onMove)
+        window.addEventListener('pointerup', onUp, { once: true })
+        window.addEventListener('pointercancel', onCancelLarge, { once: true })
+        return
+      }
+
+      // Normal mode (small mascot): click to expand
+      if (!isMoveMode) {
         hoverExpandedRef.current = false
         setCompletionSessionId(null)
         expand()
@@ -2126,7 +2167,12 @@ export default function Mini() {
   // Priority: waiting > compacting > working > idle
   const mainPetState: PetState = claudeWaiting ? 'waiting' : claudeCompacting ? 'compacting' : hasWorking ? 'working' : 'idle'
   const miniGif = getMiniGif(miniChar ?? undefined, mainPetState, true)
-  const largeVideoBaseUrl = largeMascot ? getLargeVideo(miniChar ?? undefined, mainPetState, largePetAction) : undefined
+  const fallbackLargeActions = useMemo(() => {
+    const c = characters.find((ch) => ch.largeActions && Object.keys(ch.largeActions).length > 0)
+    return c?.largeActions
+  }, [characters])
+  const hasAnyLargeActions = !!(miniChar?.largeActions && Object.keys(miniChar.largeActions).length > 0) || !!(fallbackLargeActions && Object.keys(fallbackLargeActions).length > 0)
+  const largeVideoBaseUrl = largeMascot ? getLargeVideo(miniChar ?? undefined, mainPetState, largePetAction, fallbackLargeActions) : undefined
   const largeVideoUrl = largeVideoBaseUrl ? `${largeVideoBaseUrl}?rev=alpha-fix-2` : undefined
   const largeVideoRef = useRef<HTMLVideoElement>(null)
   const prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
@@ -2243,6 +2289,7 @@ export default function Mini() {
   const collapsedPlaceholderFontSize = Math.max(16, Math.round(16 * mascotScale))
   const collapsedStatusSize = largeMascot ? 6 : 8
   const collapsedStatusBorder = largeMascot ? 1.1 : 1.5
+  const largeMascotVisualSize = collapsedMascotSize * LARGE_MASCOT_SIZE_MULTIPLIER
 
   return (
     <div
@@ -2273,6 +2320,8 @@ export default function Mini() {
         >
           <div
             onPointerDown={handleMascotPointerDown}
+            onMouseMove={undefined}
+            onMouseLeave={undefined}
             style={{
               position: 'relative',
               cursor: moveMode ? 'grab' : 'pointer',
@@ -2295,7 +2344,7 @@ export default function Mini() {
                 muted
                 playsInline
                 preload="auto"
-                style={{ width: collapsedMascotSize * 3, height: collapsedMascotSize * 3, objectFit: 'contain', pointerEvents: 'none' }}
+                style={{ width: largeMascotVisualSize, height: largeMascotVisualSize, objectFit: 'contain', pointerEvents: 'none' }}
                 draggable={false}
               >
                 <source src={largeVideoUrl} type={getLargeVideoType(largeVideoUrl)} />
@@ -2469,7 +2518,7 @@ export default function Mini() {
               >
                 {soundEnabled || codexSoundEnabled || cursorSoundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
               </button>
-              {!(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) && miniChar?.largeActions && Object.keys(miniChar.largeActions).length > 0 && (
+              {!(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) && hasAnyLargeActions && (
                 <button
                   data-no-drag
                   onClick={async (e) => {
@@ -2477,13 +2526,10 @@ export default function Mini() {
                     const next = !largeMascot
                     setLargeMascot(next)
                     largeMascotRef.current = next
-                    if (largeClickWindowTimerRef.current) clearTimeout(largeClickWindowTimerRef.current)
-                    if (largeClickActionTimerRef.current) clearTimeout(largeClickActionTimerRef.current)
-                    largeClickWindowTimerRef.current = null
-                    largeClickActionTimerRef.current = null
+                    if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
+                    largeActionTimerRef.current = null
                     setLargePetAction(null)
                     largePetActionRef.current = null
-                    largeClickCountRef.current = 0
                     const store = await load('settings.json', { defaults: {}, autoSave: true })
                     await store.set('large_mascot', next)
                     await store.save()
@@ -2496,17 +2542,19 @@ export default function Mini() {
               )}
             </div>
             <div className="flex items-center gap-4">
-              <button
-                data-no-drag
-                onClick={(e) => {
-                  e.stopPropagation()
-                  enterMoveMode()
-                }}
-                className="text-slate-400 hover:text-[#F0D140] transition-colors"
-                title={t('mini.moveMascot')}
-              >
-                <Move className="w-4 h-4" strokeWidth={2.5} />
-              </button>
+              {!largeMascot && (
+                <button
+                  data-no-drag
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    enterMoveMode()
+                  }}
+                  className="text-slate-400 hover:text-[#F0D140] transition-colors"
+                  title={t('mini.moveMascot')}
+                >
+                  <Move className="w-4 h-4" strokeWidth={2.5} />
+                </button>
+              )}
               <button
                 data-no-drag
                 onClick={(e) => {
@@ -3752,7 +3800,7 @@ export default function Mini() {
                     ))}
                   </div>
                 </div>
-                {miniChar?.largeActions && Object.keys(miniChar.largeActions).length > 0 && (
+                {hasAnyLargeActions && (
                   <button
                     data-no-drag
                     onClick={async (e) => {
@@ -3760,13 +3808,10 @@ export default function Mini() {
                       const next = !largeMascot
                       setLargeMascot(next)
                       largeMascotRef.current = next
-                      if (largeClickWindowTimerRef.current) clearTimeout(largeClickWindowTimerRef.current)
-                      if (largeClickActionTimerRef.current) clearTimeout(largeClickActionTimerRef.current)
-                      largeClickWindowTimerRef.current = null
-                      largeClickActionTimerRef.current = null
+                      if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
+                      largeActionTimerRef.current = null
                       setLargePetAction(null)
                       largePetActionRef.current = null
-                      largeClickCountRef.current = 0
                       const store = await load('settings.json', { defaults: {}, autoSave: true })
                       await store.set('large_mascot', next)
                       await store.save()
