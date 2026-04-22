@@ -20,6 +20,7 @@ export interface CharacterMeta {
   angryGifs?: string[]
   shyGifs?: string[]
   miniActions?: Record<string, string[]>
+  largeActions?: Record<string, string>
 }
 
 export interface AgentInfo {

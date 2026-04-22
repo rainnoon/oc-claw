@@ -109,6 +109,8 @@
     "display": "Display",
     "mascotPosition": "Mascot Position",
     "mascotPositionDesc": "Which side of the notch the mascot is on",
+    "mascotScale": "Mascot Scale",
+    "mascotScaleDesc": "Adjust the mascot size using a multiplier",
     "left": "Left",
     "right": "Right",
     "disableSleepAnim": "Disable Sleep Animation",
@@ -137,6 +139,8 @@
     "waitingSoundDesc": "Play sound when Claude Code awaits user confirmation",
     "autoCloseCompletion": "Auto-close Completion Popup",
     "autoCloseCompletionDesc": "Automatically close the completion popup after 5 seconds",
+    "autoExpandOnTask": "Auto Popup",
+    "autoExpandOnTaskDesc": "Automatically expand panel when a task completes or needs input",
 
     "about": "About",
     "currentVersion": "Current Version",

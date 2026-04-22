@@ -1,15 +1,15 @@
 {
   "platforms": {
     "macos": {
-      "version": "1.7.2",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.7.2/oc-claw_1.7.2_aarch64.dmg",
+      "version": "1.8.0",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.0/oc-claw_1.8.0_aarch64.dmg",
       "notes_i18n": {
-        "zh": "- 恢复正式版的一天一次自动检查更新频率\n- 延续 1.7.x 的效率模式详情页、IME 与会话体验修复",
-        "en": "- Restore the standard once-per-day automatic update check interval\n- Keep the 1.7.x efficiency-mode detail, IME, and session UX improvements",
-        "ja": "- 自動更新チェック頻度を正式版向けの1日1回に戻しました\n- 1.7.x の効率モード詳細、IME、セッション体験の改善を引き続き含みます",
-        "ko": "- 자동 업데이트 확인 주기를 정식 빌드 기준인 하루 한 번으로 되돌렸습니다\n- 1.7.x의 효율 모드 상세, IME, 세션 UX 개선을 계속 포함합니다",
-        "es": "- Se restableció la comprobación automática de actualizaciones a la frecuencia normal de una vez al día\n- Se mantienen las mejoras de la serie 1.7.x en detalles del modo eficiente, IME y experiencia de sesiones",
-        "fr": "- La vérification automatique des mises à jour revient au rythme normal d'une fois par jour\n- Les améliorations 1.7.x du mode efficacité, de l'IME et de l'expérience des sessions sont conservées"
+        "zh": "- 支持大看板娘模式\n- 允许关闭主动弹窗\n- 修复拖动失败的 bug",
+        "en": "- Large mascot mode support\n- Allow disabling auto-expand popups\n- Fix drag failure bug",
+        "ja": "- 大マスコットモードに対応\n- 自動ポップアップの無効化が可能に\n- ドラッグ失敗のバグを修正",
+        "ko": "- 대형 마스코트 모드 지원\n- 자동 팝업 비활성화 가능\n- 드래그 실패 버그 수정",
+        "es": "- Soporte para modo de mascota grande\n- Permitir desactivar ventanas emergentes automáticas\n- Corrección del error de arrastre fallido",
+        "fr": "- Prise en charge du mode grande mascotte\n- Possibilité de désactiver les popups automatiques\n- Correction du bug d'échec de glisser-déposer"
       }
     },
     "windows": {

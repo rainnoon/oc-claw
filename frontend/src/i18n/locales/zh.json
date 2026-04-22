@@ -109,6 +109,8 @@
     "display": "显示",
     "mascotPosition": "看板娘位置",
     "mascotPositionDesc": "看板娘在刘海的哪一侧",
+    "mascotScale": "看板娘大小",
+    "mascotScaleDesc": "通过倍率调整看板娘大小",
     "left": "居左",
     "right": "居右",
     "disableSleepAnim": "关闭睡眠动画",
@@ -137,6 +139,8 @@
     "waitingSoundDesc": "Claude Code 等待用户确认时播放提示音",
     "autoCloseCompletion": "自动关闭完成弹窗",
     "autoCloseCompletionDesc": "完成弹窗出现后 5 秒自动关闭",
+    "autoExpandOnTask": "主动弹窗",
+    "autoExpandOnTaskDesc": "任务完成或需要输入时自动弹出面板",
 
     "about": "关于",
     "currentVersion": "当前版本",

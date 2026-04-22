@@ -1498,6 +1498,39 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
                 }
             }
 
+            // Scan large/ directory for large-mascot videos. On macOS we want
+            // to prefer HEVC-with-alpha containers first, because WKWebView
+            // does not render WebM alpha correctly.
+            let mut large_actions: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+            let large_dir = entry.path().join("large");
+            if large_dir.exists() {
+                if let Ok(files) = std::fs::read_dir(&large_dir) {
+                    let mut preferred: std::collections::HashMap<String, (u8, String)> = std::collections::HashMap::new();
+                    for f in files.filter_map(|f| f.ok()) {
+                        if let Some(ext) = f.path().extension().and_then(|e| e.to_str()) {
+                            let priority = match ext.to_ascii_lowercase().as_str() {
+                                "mov" => 0,
+                                "mp4" => 1,
+                                "webm" => 2,
+                                _ => continue,
+                            };
+                            let stem = f.path().file_stem().unwrap_or_default().to_string_lossy().to_string();
+                            let url = format!("{}/{}/large/{}", url_prefix, name, f.file_name().to_string_lossy());
+                            let should_replace = preferred
+                                .get(&stem)
+                                .map(|(existing_priority, _)| priority < *existing_priority)
+                                .unwrap_or(true);
+                            if should_replace {
+                                preferred.insert(stem, (priority, url));
+                            }
+                        }
+                    }
+                    for (stem, (_, url)) in preferred {
+                        large_actions.insert(stem, serde_json::Value::String(url));
+                    }
+                }
+            }
+
             let mut char_obj = serde_json::Map::new();
             char_obj.insert("builtin".into(), serde_json::Value::Bool(builtin));
             if let Some(ip_name) = ip_map.get(&name) {
@@ -1517,6 +1550,9 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
             }
             if !mini_actions.is_empty() {
                 char_obj.insert("miniActions".into(), serde_json::Value::Object(mini_actions));
+            }
+            if !large_actions.is_empty() {
+                char_obj.insert("largeActions".into(), serde_json::Value::Object(large_actions));
             }
             results.push(serde_json::Value::Object(char_obj));
         }
@@ -2906,8 +2942,12 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                         Some((frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, notch_off))
                     };
                     if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
-                        let win_w = 60.0;
-                        let win_h = 45.0;
+                        let (win_w, win_h) = MINI_WINDOW_FRAME
+                            .lock()
+                            .ok()
+                            .and_then(|g| *g)
+                            .map(|(_, _, w, h)| (w, h))
+                            .unwrap_or_else(|| collapsed_mascot_window_size(1.0));
                         let x = sx + sw / 2.0 + notch_off;
                         let y = sy + sh - win_h;
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
@@ -2926,8 +2966,14 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 let scale = monitor.scale_factor();
                 let sw = monitor.size().width as f64 / scale;
                 let ui = win_ui_scale(&monitor);
-                let win_w = (60.0 * ui).round();
-                let win_h = (45.0 * ui).round();
+                let (base_w, base_h) = MINI_WINDOW_FRAME
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .map(|(_, _, w, h)| (w, h))
+                    .unwrap_or_else(|| collapsed_mascot_window_size(1.0));
+                let win_w = (base_w * ui).round();
+                let win_h = (base_h * ui).round();
                 let notch_off = (80.0 * ui).round();
                 let x = sw / 2.0 + notch_off;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
@@ -2943,7 +2989,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
 
     let builder = WebviewWindowBuilder::new(&app, "mini", WebviewUrl::App("index.html#/mini".into()))
         .title("oc-claw Mini")
-        .inner_size(60.0, 45.0)
+        .inner_size(COLLAPSED_MASCOT_BASE_W, COLLAPSED_MASCOT_BASE_H)
         .decorations(false)
         .transparent(true)
         .shadow(false)
@@ -2991,8 +3037,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 };
 
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
-                    let win_w = 60.0;
-                    let win_h = 45.0;
+                    let (win_w, win_h) = collapsed_mascot_window_size(1.0);
                     let x = sx + sw / 2.0 + notch_off;
                     let y = sy + sh - win_h;
                     let frame = NSRect::new(
@@ -3018,8 +3063,9 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
             let scale = monitor.scale_factor();
             let sw = monitor.size().width as f64 / scale;
             let ui = win_ui_scale(&monitor);
-            let win_w = (60.0 * ui).round();
-            let win_h = (45.0 * ui).round();
+            let (base_w, base_h) = collapsed_mascot_window_size(1.0);
+            let win_w = (base_w * ui).round();
+            let win_h = (base_h * ui).round();
             let notch_off = (80.0 * ui).round();
             let x = sw / 2.0 + notch_off;
             let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
@@ -3048,6 +3094,29 @@ fn collapsed_x(sx: f64, sw: f64, win_w: f64, position: &str, notch_offset: f64) 
     } else {
         sx + sw / 2.0 + notch_offset
     }
+}
+
+const COLLAPSED_MASCOT_BASE_W: f64 = 60.0;
+const COLLAPSED_MASCOT_BASE_H: f64 = 45.0;
+const MASCOT_SCALE_MIN: f64 = 1.0;
+const MASCOT_SCALE_MAX: f64 = 3.0;
+const LARGE_MASCOT_SIZE_MULTIPLIER: f64 = 3.0;
+
+fn sanitized_mascot_scale(scale: Option<f64>) -> f64 {
+    let scale = scale.unwrap_or(1.0);
+    if !scale.is_finite() {
+        return 1.0;
+    }
+    scale.max(MASCOT_SCALE_MIN).min(MASCOT_SCALE_MAX)
+}
+
+fn collapsed_mascot_window_size(scale: f64) -> (f64, f64) {
+    (COLLAPSED_MASCOT_BASE_W * scale, COLLAPSED_MASCOT_BASE_H * scale)
+}
+
+fn large_collapsed_mascot_window_size(scale: f64) -> (f64, f64) {
+    let size = 43.0 * scale * LARGE_MASCOT_SIZE_MULTIPLIER;
+    (size, size)
 }
 
 /// Compute a UI-scale multiplier for Windows based on the monitor's logical
@@ -3298,9 +3367,10 @@ async fn set_ime_mode(_app: tauri::AppHandle, _active: bool) -> Result<(), Strin
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
-async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>, max_height: Option<f64>) -> Result<(), String> {
+async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>, max_height: Option<f64>, mascot_scale: Option<f64>, large_mascot: Option<bool>, keep_position: Option<bool>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
+    let mascot_scale = sanitized_mascot_scale(mascot_scale);
 
     #[cfg(target_os = "macos")]
     {
@@ -3358,10 +3428,21 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         }
                         (x, y, win_w, win_h)
                     } else {
-                        let win_w = 60.0;
-                        let win_h = 45.0;
-                        let x = collapsed_x(sx, sw, win_w, &pos, notch_off);
-                        let y = sy + sh - win_h;
+                        let (win_w, win_h) = if large_mascot.unwrap_or(false) {
+                            large_collapsed_mascot_window_size(mascot_scale)
+                        } else {
+                            collapsed_mascot_window_size(mascot_scale)
+                        };
+                        let (x, y) = if keep_position.unwrap_or(false) {
+                            let cur: NSRect = unsafe { msg_send![obj, frame] };
+                            (cur.origin.x, cur.origin.y + cur.size.height - win_h)
+                        } else if large_mascot.unwrap_or(false) {
+                            let margin_x = 10.0;
+                            let margin_y = 300.0;
+                            (sx + sw - win_w - margin_x, sy + margin_y)
+                        } else {
+                            (collapsed_x(sx, sw, win_w, &pos, notch_off), sy + sh - win_h)
+                        };
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
@@ -3396,12 +3477,28 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
                 let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             } else {
-                let win_w = (60.0 * ui).round();
-                let win_h = (45.0 * ui).round();
-                let notch_off = (80.0 * ui).round();
-                let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
+                let (base_w, base_h) = if large_mascot.unwrap_or(false) {
+                    large_collapsed_mascot_window_size(mascot_scale)
+                } else {
+                    collapsed_mascot_window_size(mascot_scale)
+                };
+                let win_w = (base_w * ui).round();
+                let win_h = (base_h * ui).round();
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+                if !keep_position.unwrap_or(false) {
+                    if large_mascot.unwrap_or(false) {
+                        // Large mascot defaults to bottom-right corner.
+                        let sh = monitor.size().height as f64 / scale;
+                        let margin = (10.0 * ui).round();
+                        let x = mx + sw - win_w - margin;
+                        let y = my + sh - win_h - margin;
+                        let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+                    } else {
+                        let notch_off = (80.0 * ui).round();
+                        let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
+                        let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+                    }
+                }
             }
         }
         if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
@@ -3456,8 +3553,13 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
                     false
                 }
             } else {
-                let rw = (notch_off * 2.0 + 140.0).max(154.0);
-                let rh = 35.0;
+                let rw = (notch_off * 2.0 + 10.0).max(80.0);
+                let rh = MINI_WINDOW_FRAME
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .map(|(_, _, _, fh)| fh.clamp(20.0, 28.0))
+                    .unwrap_or(35.0);
                 let rx = sx + (sw - rw) / 2.0;
                 let ry = sy + sh - rh;
                 cursor.0 >= rx && cursor.0 <= rx + rw
@@ -3589,10 +3691,13 @@ async fn set_mini_size(
     restore: bool,
     position: Option<String>,
     keep_on_top: Option<bool>,
+    mascot_scale: Option<f64>,
+    large_mascot: Option<bool>,
 ) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
     let want_top = keep_on_top.unwrap_or(restore);
+    let mascot_scale = sanitized_mascot_scale(mascot_scale);
 
     #[cfg(target_os = "macos")]
     {
@@ -3631,10 +3736,17 @@ async fn set_mini_size(
                         *info = Some((sx, sy, sw, sh, notch_off));
                     }
                     if restore {
-                        let win_w = 60.0;
-                        let win_h = 45.0;
-                        let x = collapsed_x(sx, sw, win_w, &pos, notch_off);
-                        let y = sy + sh - win_h;
+                        let (win_w, win_h) = if large_mascot.unwrap_or(false) {
+                            large_collapsed_mascot_window_size(mascot_scale)
+                        } else {
+                            collapsed_mascot_window_size(mascot_scale)
+                        };
+                        let (x, y) = if large_mascot.unwrap_or(false) {
+                            let margin = 10.0;
+                            (sx + sw - win_w - margin, sy + margin)
+                        } else {
+                            (collapsed_x(sx, sw, win_w, &pos, notch_off), sy + sh - win_h)
+                        };
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
@@ -3687,13 +3799,25 @@ async fn set_mini_size(
             let sh = monitor.size().height as f64 / scale;
             let ui = win_ui_scale(&monitor);
             if restore {
-                let win_w = (60.0 * ui).round();
-                let win_h = (45.0 * ui).round();
-                let notch_off = (80.0 * ui).round();
-                let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
+                let (base_w, base_h) = if large_mascot.unwrap_or(false) {
+                    large_collapsed_mascot_window_size(mascot_scale)
+                } else {
+                    collapsed_mascot_window_size(mascot_scale)
+                };
+                let win_w = (base_w * ui).round();
+                let win_h = (base_h * ui).round();
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
                 let _ = win.set_always_on_top(want_top && !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst));
-                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+                if large_mascot.unwrap_or(false) {
+                    let margin = (10.0 * ui).round();
+                    let x = mx + sw - win_w - margin;
+                    let y = my + sh - win_h - margin;
+                    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+                } else {
+                    let notch_off = (80.0 * ui).round();
+                    let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
+                    let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+                }
             } else {
                 let win_w = (sw * 0.85).round();
                 let win_h = (sh * 0.85).round();
@@ -8714,6 +8838,108 @@ fn install_wry_webview_ime_fix() {
     });
 }
 
+fn asset_mime_for_path(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".webm") {
+        "video/webm"
+    } else if lower.ends_with(".mp4") {
+        "video/mp4"
+    } else if lower.ends_with(".mov") {
+        "video/quicktime"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+fn build_asset_response(
+    req: &tauri::http::Request<Vec<u8>>,
+    path: &str,
+    file_path: &std::path::Path,
+    add_cors: bool,
+    log_label: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    match std::fs::read(file_path) {
+        Ok(data) => {
+            let mime = asset_mime_for_path(path);
+            let total_len = data.len();
+            let mut status = 200;
+            let mut body = data;
+            let mut content_range: Option<String> = None;
+
+            // Serve byte ranges for media files so WKWebView/Safari can stream
+            // video containers like HEVC .mov/.mp4 reliably.
+            if total_len > 0 {
+                if let Some(range_header) = req.headers().get("Range").or_else(|| req.headers().get("range")) {
+                    if let Ok(range) = range_header.to_str() {
+                        if let Some(spec) = range.strip_prefix("bytes=") {
+                            let mut parts = spec.splitn(2, '-');
+                            let start_part = parts.next().unwrap_or("");
+                            let end_part = parts.next().unwrap_or("");
+                            let parsed = if start_part.is_empty() {
+                                end_part.parse::<usize>().ok().map(|suffix_len| {
+                                    let suffix_len = suffix_len.min(total_len);
+                                    let start = total_len.saturating_sub(suffix_len);
+                                    (start, total_len.saturating_sub(1))
+                                })
+                            } else if let Ok(start) = start_part.parse::<usize>() {
+                                let end = if end_part.is_empty() {
+                                    total_len.saturating_sub(1)
+                                } else {
+                                    end_part
+                                        .parse::<usize>()
+                                        .unwrap_or(total_len.saturating_sub(1))
+                                        .min(total_len.saturating_sub(1))
+                                };
+                                if start < total_len && start <= end {
+                                    Some((start, end))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            if let Some((start, end)) = parsed {
+                                body = body[start..=end].to_vec();
+                                status = 206;
+                                content_range = Some(format!("bytes {}-{}/{}", start, end, total_len));
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut resp = tauri::http::Response::builder()
+                .status(status)
+                .header("Content-Type", mime)
+                .header("Content-Length", body.len().to_string())
+                .header("Accept-Ranges", "bytes");
+            if let Some(content_range) = content_range {
+                resp = resp.header("Content-Range", content_range);
+            }
+            if add_cors {
+                resp = resp.header("Access-Control-Allow-Origin", "*");
+            }
+            resp.body(body).unwrap()
+        }
+        Err(e) => {
+            log::warn!("[{}] 404: {} err={}", log_label, file_path.display(), e);
+            tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap()
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -8724,27 +8950,7 @@ pub fn run() {
             let resource_dir = ctx.app_handle().path().resource_dir().unwrap_or_default();
             let file_path = resource_dir.join("assets").join("builtin").join(path.trim_start_matches('/'));
             log::info!("[localasset] request={} resolved={}", raw_path, file_path.display());
-            match std::fs::read(&file_path) {
-                Ok(data) => {
-                    let mime = if path.ends_with(".gif") { "image/gif" }
-                        else if path.ends_with(".png") { "image/png" }
-                        else { "application/octet-stream" };
-                    let mut resp = tauri::http::Response::builder()
-                        .header("Content-Type", mime);
-                    // WebView2 on Windows requires CORS headers for custom scheme responses
-                    if cfg!(target_os = "windows") {
-                        resp = resp.header("Access-Control-Allow-Origin", "*");
-                    }
-                    resp.body(data).unwrap()
-                }
-                Err(e) => {
-                    log::warn!("[localasset] 404: {} err={}", file_path.display(), e);
-                    tauri::http::Response::builder()
-                        .status(404)
-                        .body(Vec::new())
-                        .unwrap()
-                }
-            }
+            build_asset_response(&req, path.as_ref(), &file_path, cfg!(target_os = "windows"), "localasset")
         })
         .register_uri_scheme_protocol("customasset", |ctx, req| {
             let raw_path = req.uri().path();
@@ -8752,23 +8958,7 @@ pub fn run() {
             let path = percent_decode_str(raw_path).decode_utf8_lossy();
             let data_dir = ctx.app_handle().path().app_data_dir().unwrap_or_default();
             let file_path = data_dir.join("characters").join(path.trim_start_matches('/'));
-            match std::fs::read(&file_path) {
-                Ok(data) => {
-                    let mime = if path.ends_with(".gif") { "image/gif" }
-                        else if path.ends_with(".png") { "image/png" }
-                        else { "application/octet-stream" };
-                    let mut resp = tauri::http::Response::builder()
-                        .header("Content-Type", mime);
-                    if cfg!(target_os = "windows") {
-                        resp = resp.header("Access-Control-Allow-Origin", "*");
-                    }
-                    resp.body(data).unwrap()
-                }
-                Err(_) => tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap(),
-            }
+            build_asset_response(&req, path.as_ref(), &file_path, cfg!(target_os = "windows"), "customasset")
         })
         .setup(|app| {
             // Fix PATH so openclaw (Node.js script) and node are both reachable
@@ -8845,8 +9035,7 @@ pub fn run() {
                         };
 
                         if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
-                            let win_w = 60.0;
-                            let win_h = 45.0;
+                            let (win_w, win_h) = collapsed_mascot_window_size(1.0);
                             let x = sx + sw / 2.0 + notch_off;
                             let y = sy + sh - win_h;
                             let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));

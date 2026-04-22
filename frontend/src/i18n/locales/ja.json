@@ -106,6 +106,8 @@
     "display": "表示",
     "mascotPosition": "マスコット位置",
     "mascotPositionDesc": "ノッチのどちら側にマスコットを表示するか",
+    "mascotScale": "マスコットサイズ",
+    "mascotScaleDesc": "倍率でマスコットの大きさを調整",
     "left": "左",
     "right": "右",
     "disableSleepAnim": "スリープアニメを無効化",
@@ -132,6 +134,8 @@
     "waitingSoundDesc": "Claude Codeがユーザーの確認を待っている時にサウンドを再生",
     "autoCloseCompletion": "完了ポップアップを自動で閉じる",
     "autoCloseCompletionDesc": "完了ポップアップを5秒後に自動で閉じます",
+    "autoExpandOnTask": "自動ポップアップ",
+    "autoExpandOnTaskDesc": "タスク完了や入力待ちの際にパネルを自動で展開します",
 
     "about": "バージョン情報",
     "currentVersion": "現在のバージョン",

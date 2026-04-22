@@ -106,6 +106,8 @@
     "display": "디스플레이",
     "mascotPosition": "마스코트 위치",
     "mascotPositionDesc": "노치 어느 쪽에 마스코트를 표시할지",
+    "mascotScale": "마스코트 크기",
+    "mascotScaleDesc": "배율로 마스코트 크기를 조절",
     "left": "왼쪽",
     "right": "오른쪽",
     "disableSleepAnim": "슬립 애니메이션 비활성화",
@@ -132,6 +134,8 @@
     "waitingSoundDesc": "Claude Code가 사용자 확인을 기다릴 때 소리 재생",
     "autoCloseCompletion": "완료 팝업 자동 닫기",
     "autoCloseCompletionDesc": "완료 팝업이 5초 후 자동으로 닫힙니다",
+    "autoExpandOnTask": "자동 팝업",
+    "autoExpandOnTaskDesc": "작업 완료 또는 입력 대기 시 패널을 자동으로 확장합니다",
 
     "about": "정보",
     "currentVersion": "현재 버전",
