@@ -12,7 +12,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     terminalMsg1: 'Let me look at the auth module.',
     terminalSearch: 'Searching for 6 patterns…', terminalRead: 'Read 2 files',
     terminalFound: 'Found the issue — token validation skips expiry check.',
-    actionJump: 'Jump', actionApprove: 'Approve', actionDetails: 'Details', actionMonitor: 'Monitor',
+    actionCompanion: 'Companion', companionGreeting: "Hi! I'm ready to help you with any software engineering tasks. What would you like to work on?", actionJump: 'Jump', actionApprove: 'Approve', actionDetails: 'Details', actionMonitor: 'Monitor',
     topbarBack: 'Back', completionYou: 'You: ', completionDone: 'Done',
     completionBody: 'Hi again. Want to chat, or should I help check oc-claw or other code?',
     expandRest: 'Expand 2 more sessions',
@@ -41,7 +41,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     terminalMsg1: '让我先看下 auth 模块。',
     terminalSearch: '正在搜索 6 个模式…', terminalRead: '读取了 2 个文件',
     terminalFound: '找到问题了——token 校验跳过了过期检查。',
-    actionJump: '跳转', actionApprove: '审批', actionDetails: '详情', actionMonitor: '监控',
+    actionCompanion: '陪伴', companionGreeting: '你好！我已准备好帮你处理各种软件工程任务。你想做什么？', actionJump: '跳转', actionApprove: '审批', actionDetails: '详情', actionMonitor: '监控',
     topbarBack: '返回', completionYou: '你: ', completionDone: '完成',
     completionBody: '你好，又见面了。今天想聊点什么，还是需要我帮你看 oc-claw 或别的代码？',
     expandRest: '展开其余 2 个会话',
@@ -70,7 +70,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     terminalMsg1: 'まず auth モジュールを見てみます。',
     terminalSearch: '6 パターンを検索中…', terminalRead: '2 ファイルを読み込みました',
     terminalFound: '問題を発見 — トークン検証で有効期限チェックがスキップされています。',
-    actionJump: 'ジャンプ', actionApprove: '承認', actionDetails: '詳細', actionMonitor: '監視',
+    actionCompanion: 'コンパニオン', companionGreeting: 'こんにちは！ソフトウェアエンジニアリングのお手伝いをする準備ができています。何をしますか？', actionJump: 'ジャンプ', actionApprove: '承認', actionDetails: '詳細', actionMonitor: '監視',
     topbarBack: '戻る', completionYou: 'あなた: ', completionDone: '完了',
     completionBody: 'こんにちは。何か話しますか、それとも oc-claw や他のコードを確認しましょうか？',
     expandRest: '残り 2 セッションを展開',
@@ -99,7 +99,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     terminalMsg1: 'auth 모듈을 먼저 살펴보겠습니다.',
     terminalSearch: '6개 패턴 검색 중…', terminalRead: '2개 파일 읽음',
     terminalFound: '문제 발견 — 토큰 검증에서 만료 확인을 건너뛰고 있습니다.',
-    actionJump: '이동', actionApprove: '승인', actionDetails: '상세', actionMonitor: '모니터',
+    actionCompanion: '동반자', companionGreeting: '안녕하세요! 소프트웨어 엔지니어링 작업을 도와드릴 준비가 되었습니다. 무엇을 하시겠습니까?', actionJump: '이동', actionApprove: '승인', actionDetails: '상세', actionMonitor: '모니터',
     topbarBack: '뒤로', completionYou: '나: ', completionDone: '완료',
     completionBody: '안녕하세요. 대화할까요, 아니면 oc-claw 나 다른 코드를 확인해 드릴까요?',
     expandRest: '나머지 2개 세션 펼치기',
@@ -128,7 +128,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     terminalMsg1: 'Déjame revisar el módulo de autenticación.',
     terminalSearch: 'Buscando 6 patrones…', terminalRead: '2 archivos leídos',
     terminalFound: 'Problema encontrado — la validación de tokens omite la verificación de expiración.',
-    actionJump: 'Ir', actionApprove: 'Aprobar', actionDetails: 'Detalles', actionMonitor: 'Monitor',
+    actionCompanion: 'Compañero', companionGreeting: '¡Hola! Estoy listo para ayudarte con cualquier tarea de ingeniería de software. ¿En qué te gustaría trabajar?', actionJump: 'Ir', actionApprove: 'Aprobar', actionDetails: 'Detalles', actionMonitor: 'Monitor',
     topbarBack: 'Volver', completionYou: 'Tú: ', completionDone: 'Listo',
     completionBody: 'Hola de nuevo. ¿Quieres charlar o necesitas que revise oc-claw u otro código?',
     expandRest: 'Expandir 2 sesiones más',
@@ -157,7 +157,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     terminalMsg1: "Laissez-moi examiner le module d'authentification.",
     terminalSearch: 'Recherche de 6 motifs…', terminalRead: '2 fichiers lus',
     terminalFound: "Problème trouvé — la validation du jeton ignore la vérification d'expiration.",
-    actionJump: 'Aller', actionApprove: 'Approuver', actionDetails: 'Détails', actionMonitor: 'Moniteur',
+    actionCompanion: 'Compagnon', companionGreeting: "Bonjour ! Je suis prêt à vous aider avec vos tâches d'ingénierie logicielle. Sur quoi souhaitez-vous travailler ?", actionJump: 'Aller', actionApprove: 'Approuver', actionDetails: 'Détails', actionMonitor: 'Moniteur',
     topbarBack: 'Retour', completionYou: 'Vous : ', completionDone: 'Terminé',
     completionBody: "Bonjour. Envie de discuter, ou dois-je vérifier oc-claw ou un autre code ?",
     expandRest: 'Afficher 2 autres sessions',
@@ -227,13 +227,21 @@ const mockupI18n = mockupI18nMap[lang] || mockupI18nMap.en;
             <span class="cc-dot cc-dot-r"></span>
             <span class="cc-dot cc-dot-y"></span>
             <span class="cc-dot cc-dot-g"></span>
-            <span class="cc-titlebar-text">claude — fix-auth-bug</span>
+            <span class="cc-titlebar-text">✱ Claude Code</span>
           </div>
-          <div class="cc-body">
-            <div class="cc-ai-msg"><span class="cc-bullet">●</span> {mockupI18n.terminalMsg1}</div>
-            <div class="cc-tool">{mockupI18n.terminalSearch} <span class="cc-hint">(ctrl+o to expand)</span></div>
-            <div class="cc-tool">{mockupI18n.terminalRead} <span class="cc-hint">(ctrl+o to expand)</span></div>
-            <div class="cc-ai-msg"><span class="cc-bullet">●</span> {mockupI18n.terminalFound}</div>
+          <div class="cc-body cc-companion-body">
+            <div class="cc-companion-header">
+              <div class="cc-companion-meta">
+                <div><b>Claude Code</b> <span style="color:#888;">v2.1.117</span></div>
+                <div style="color:#888;font-size:11px;">Sonnet 4.5 · API Usage Billing</div>
+                <div style="color:#888;font-size:11px;">~/Desktop/code2026</div>
+              </div>
+            </div>
+            <div class="cc-companion-sep"></div>
+            <div class="cc-companion-prompt"><span class="cc-companion-chevron">❯</span> {mockupI18n.terminalMsg1}</div>
+            <div class="cc-ai-msg" style="margin-top:6px;"><span class="cc-bullet">●</span> {mockupI18n.terminalFound}</div>
+            <div class="cc-companion-sep"></div>
+            <div class="cc-companion-input"><span class="cc-companion-chevron">❯</span> <span class="cc-companion-cursor">▌</span></div>
           </div>
         </div>
       </div>
@@ -247,7 +255,11 @@ const mockupI18n = mockupI18nMap[lang] || mockupI18nMap.en;
 </div>
 
 <div class="oc-actions">
-  <button class="oc-action-btn oc-action-active" data-target="jump">
+  <button class="oc-action-btn oc-action-active" data-target="companion">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12a6 6 0 0 1 12 0c0 4-3 7-6 9-3-2-6-5-6-9z"/><circle cx="9" cy="11" r="1"/><circle cx="15" cy="11" r="1"/></svg>
+    <span>{mockupI18n.actionCompanion}</span>
+  </button>
+  <button class="oc-action-btn" data-target="jump">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
     <span>{mockupI18n.actionJump}</span>
   </button>
@@ -462,6 +474,44 @@ const mockupI18n = mockupI18nMap[lang] || mockupI18nMap.en;
 .oc-detail-dates { padding-left: 25px; display: flex; justify-content: space-between; margin-top: 1px; }
 .oc-detail-dates span { font-size: 7px; color: rgba(255,255,255,0.3); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 
+/* Companion terminal */
+.cc-companion {
+  left: 6% !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  width: 55%;
+  max-width: 400px;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.cc-companion.cc-visible { opacity: 1; transform: translateY(-50%) !important; }
+.cc-companion-body { padding: 12px 16px; line-height: 1.6; }
+.cc-companion-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 4px; }
+.cc-companion-logo { color: #e87a65; font-size: 20px; line-height: 1.2; letter-spacing: -2px; }
+.cc-companion-meta { font-size: 12px; color: #d4d4d4; line-height: 1.5; }
+.cc-companion-sep { height: 1px; background: rgba(255,255,255,0.08); margin: 8px 0; }
+.cc-companion-prompt { font-size: 12px; color: #e2e8f0; }
+.cc-companion-chevron { color: #94a3b8; margin-right: 4px; }
+.cc-companion-input { font-size: 12px; color: #e2e8f0; }
+.cc-companion-cursor { color: #e2e8f0; animation: cc-blink 1s step-end infinite; }
+@keyframes cc-blink { 50% { opacity: 0; } }
+
+/* Companion mode large pet */
+.oc-companion-pet {
+  position: absolute;
+  bottom: 8%;
+  right: 10%;
+  z-index: 30;
+  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.oc-companion-img {
+  width: 160px;
+  height: 160px;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 8px 24px rgba(0,0,0,0.5));
+}
+
 /* Desktop */
 .v6-desktop { position: absolute; inset: 28px 0 0 0; }
 
@@ -568,8 +618,9 @@ function setupMockup() {
   let timers = [];
   let progressFrame = 0;
   let carouselRun = 0;
-  const MODE_ORDER = ['jump', 'approve', 'details', 'monitor'];
+  const MODE_ORDER = ['companion', 'jump', 'approve', 'details', 'monitor'];
   const MODE_DURATION = {
+    companion: 3900,
     jump: 4600,
     approve: 2800,
     details: 3400,
@@ -616,6 +667,12 @@ function setupMockup() {
     progressFrame = 0;
     cursor.style.opacity = '0';
     ccTerminal.classList.remove('cc-visible');
+    ccTerminal.style.left = '';
+    ccTerminal.style.transform = '';
+    const companionPet = document.getElementById('oc-companion-pet');
+    if (companionPet) companionPet.style.display = 'none';
+    const ccComp = document.getElementById('cc-companion-terminal');
+    if (ccComp) { ccComp.classList.remove('cc-visible'); ccComp.style.display = 'none'; }
   }
 
   function wait(ms) {
@@ -631,6 +688,95 @@ function setupMockup() {
       ? '/images/pets/furina_sleeping.gif'
       : '/images/pets/furina_working.gif';
     mascotDot.style.background = isSleep ? '#94a3b8' : '#2ecc71';
+  }
+
+  // ══════ COMPANION ══════
+  async function playCompanion() {
+    clearTimers();
+    setDetailsLayout(false);
+    setTopbar('default');
+    mascot.style.display = 'none';
+    ccTerminal.classList.remove('cc-visible');
+    notch.classList.remove('oc-notch-open');
+
+    content.innerHTML = '';
+
+    // companion pet on the right side
+    let companionEl = document.getElementById('oc-companion-pet');
+    if (!companionEl) {
+      companionEl = document.createElement('div');
+      companionEl.id = 'oc-companion-pet';
+      companionEl.className = 'oc-companion-pet';
+      companionEl.innerHTML = '<img src="/images/pets/penguin_rest.gif" alt="" class="oc-companion-img" />';
+      screen.appendChild(companionEl);
+    }
+    const petImg = companionEl.querySelector('.oc-companion-img');
+    petImg.src = '/images/pets/penguin_rest.gif';
+    companionEl.style.display = '';
+    companionEl.style.opacity = '0';
+    companionEl.style.transform = 'scale(0.8)';
+
+    // create Claude Code style terminal on the left
+    let ccCompanion = document.getElementById('cc-companion-terminal');
+    if (!ccCompanion) {
+      ccCompanion = document.createElement('div');
+      ccCompanion.id = 'cc-companion-terminal';
+      ccCompanion.className = 'cc-terminal cc-companion';
+      screen.appendChild(ccCompanion);
+    }
+    ccCompanion.innerHTML = `
+      <div class="cc-titlebar">
+        <span class="cc-dot cc-dot-r"></span>
+        <span class="cc-dot cc-dot-y"></span>
+        <span class="cc-dot cc-dot-g"></span>
+        <span class="cc-titlebar-text">✱ Claude Code</span>
+      </div>
+      <div class="cc-body cc-companion-body">
+        <div class="cc-companion-header">
+          <div class="cc-companion-meta">
+            <div><b>Claude Code</b> <span style="color:#888;">v2.1.117</span></div>
+            <div style="color:#888;font-size:11px;">Sonnet 4.5 · API Usage Billing</div>
+            <div style="color:#888;font-size:11px;">~/Desktop/code2026</div>
+          </div>
+        </div>
+        <div class="cc-companion-sep"></div>
+        <div class="cc-companion-prompt"><span class="cc-companion-chevron">❯</span> hi</div>
+        <div class="cc-ai-msg" style="margin-top:6px;"><span class="cc-bullet">●</span> ${T.companionGreeting}</div>
+        <div class="cc-companion-sep"></div>
+        <div class="cc-companion-input"><span class="cc-companion-chevron">❯</span> <span class="cc-companion-cursor">▌</span></div>
+      </div>`;
+    ccCompanion.style.display = '';
+    ccCompanion.style.opacity = '0';
+
+    await wait(300);
+    ccCompanion.style.opacity = '1';
+    ccCompanion.classList.add('cc-visible');
+    companionEl.style.opacity = '1';
+    companionEl.style.transform = 'scale(1)';
+
+    await wait(300);
+
+    // mouse moves to the pet and clicks → angry
+    cursor.style.top = '68%';
+    cursor.style.left = '80%';
+    cursor.style.opacity = '1';
+    await wait(500);
+    petImg.src = '/images/pets/penguin_angry.gif';
+    companionEl.style.transform = 'scale(1.08)';
+    await wait(200);
+    companionEl.style.transform = 'scale(1)';
+    cursor.style.opacity = '0';
+
+    await wait(2000);
+
+    // fade out
+    companionEl.style.opacity = '0';
+    companionEl.style.transform = 'scale(0.8)';
+    ccCompanion.style.opacity = '0';
+    await wait(400);
+    companionEl.style.display = 'none';
+    ccCompanion.style.display = 'none';
+    mascot.style.display = '';
   }
 
   async function playJump() {
@@ -1022,6 +1168,7 @@ function setupMockup() {
   }
 
   const handlers = {
+    companion: playCompanion,
     jump: playJump,
     approve: playApprove,
     details: playDetails,
@@ -1055,7 +1202,7 @@ function setupMockup() {
     });
   });
 
-  runMode('jump');
+  runMode('companion');
 }
 
 setupMockup();
