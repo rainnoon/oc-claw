@@ -119,6 +119,8 @@
     "panelMaxHeightDesc": "Maximum height of the expanded panel",
     "hoverDelay": "Hover Trigger Delay",
     "hoverDelayDesc": "Delay before expanding panel on hover",
+    "largeMascotScale": "Large Mascot Size",
+    "largeMascotScaleDesc": "Scale multiplier for large mascot mode",
     "islandBg": "Island Background",
     "islandBgDesc": "Select or upload a background image, drag to select the crop area",
 

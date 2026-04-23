@@ -116,6 +116,8 @@
     "panelMaxHeightDesc": "확장 패널의 최대 높이",
     "hoverDelay": "호버 트리거 지연",
     "hoverDelayDesc": "노치에 마우스를 올린 후 패널이 열리기까지의 지연 시간",
+    "largeMascotScale": "대형 마스코트 크기",
+    "largeMascotScaleDesc": "대형 마스코트 모드의 확대 배율",
     "islandBg": "아일랜드 배경",
     "islandBgDesc": "배경 이미지를 선택하거나 업로드하고, 드래그하여 자르기 영역 선택",
 

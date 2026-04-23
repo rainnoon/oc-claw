@@ -116,6 +116,8 @@
     "panelMaxHeightDesc": "展開パネルの最大高さ",
     "hoverDelay": "ホバー展開遅延",
     "hoverDelayDesc": "ノッチにホバーしてからパネルを展開するまでの遅延",
+    "largeMascotScale": "大マスコットサイズ",
+    "largeMascotScaleDesc": "大マスコットモードの拡大倍率",
     "islandBg": "アイランド背景",
     "islandBgDesc": "背景画像を選択またはアップロードし、ドラッグで切り抜き範囲を選択",
 

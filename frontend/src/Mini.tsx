@@ -87,7 +87,6 @@ type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
 const LARGE_ACTION_DISPLAY_MS = 3_000
 const LARGE_DAILY_ANGRY_LIMIT = 10
-const LARGE_MASCOT_SIZE_MULTIPLIER = 3
 const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 1.8
 const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.5
 const MOVE_DRAG_THRESHOLD = 1
@@ -621,6 +620,9 @@ export default function Mini() {
   const [largeMascot, setLargeMascot] = useState(false)
   const largeMascotRef = useRef(false)
   largeMascotRef.current = largeMascot
+  const [largeMascotScale, setLargeMascotScale] = useState(3)
+  const largeMascotScaleRef = useRef(3)
+  largeMascotScaleRef.current = largeMascotScale
   const [largePetAction, setLargePetAction] = useState<LargePetAction | null>(null)
   const largePetActionRef = useRef<LargePetAction | null>(null)
   largePetActionRef.current = largePetAction
@@ -728,13 +730,17 @@ export default function Mini() {
       const initialMascotScale = typeof storedMascotScale === 'number' ? clampMascotScale(storedMascotScale) : 1
       const storedLargeMascot = await store.get('large_mascot')
       const initialLargeMascot = typeof storedLargeMascot === 'boolean' ? storedLargeMascot : false
+      const storedLargeMascotScale = await store.get('large_mascot_scale')
+      const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(1, storedLargeMascotScale)) : 3
       setMascotPosition(initialMascotPosition)
       setMascotScale(initialMascotScale)
       setLargeMascot(initialLargeMascot)
+      setLargeMascotScale(initialLargeMascotScale)
       mascotPositionRef.current = initialMascotPosition
       mascotScaleRef.current = initialMascotScale
       largeMascotRef.current = initialLargeMascot
-      invoke('set_mini_expanded', { expanded: false, position: initialMascotPosition, efficiency: true, mascotScale: initialMascotScale, largeMascot: initialLargeMascot }).catch(() => {})
+      largeMascotScaleRef.current = initialLargeMascotScale
+      invoke('set_mini_expanded', { expanded: false, position: initialMascotPosition, efficiency: true, mascotScale: initialMascotScale, largeMascot: initialLargeMascot, largeMascotScale: initialLargeMascotScale }).catch(() => {})
       await store.set('view_mode', 'efficiency')
       // Force-reset mascot custom position to avoid off-screen placement.
       // Keep collapsed default placement controlled by `set_mini_expanded`.
@@ -1167,6 +1173,12 @@ export default function Mini() {
         setLargeMascot(lm)
         largeMascotRef.current = lm
       }
+      const lms = await store.get('large_mascot_scale')
+      if (typeof lms === 'number') {
+        const clamped = Math.min(6, Math.max(1, lms))
+        setLargeMascotScale(clamped)
+        largeMascotScaleRef.current = clamped
+      }
       const pmh = await store.get('panel_max_height')
       if (typeof pmh === 'number' && pmh >= 200 && pmh <= 500) setPanelMaxHeight(pmh)
       const hd = await store.get('hover_delay')
@@ -1502,7 +1514,7 @@ export default function Mini() {
         expandedRef.current = true
         setShowPanel(true)
       } else {
-        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current })
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
         await restoreCollapsedMascotPosition()
         setExpanded(false)
         expandedRef.current = false
@@ -1676,9 +1688,9 @@ export default function Mini() {
       const target = e.currentTarget as HTMLElement
       // Keep large mascot visual size unchanged, but shrink the effective hitbox.
       if (!isMoveMode && largeMascotRef.current) {
-        const visualSize = MASCOT_BASE_SIZE * mascotScaleRef.current * LARGE_MASCOT_SIZE_MULTIPLIER
-        const hitWidth = MASCOT_BASE_SIZE * mascotScaleRef.current * LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER
-        const hitHeight = MASCOT_BASE_SIZE * mascotScaleRef.current * LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER
+        const visualSize = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+        const hitWidth = MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER / 3 * largeMascotScaleRef.current)
+        const hitHeight = MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER / 3 * largeMascotScaleRef.current)
         const insetX = Math.max(0, (visualSize - hitWidth) / 2)
         const insetY = Math.max(0, (visualSize - hitHeight) / 2)
         const rect = target.getBoundingClientRect()
@@ -1869,6 +1881,7 @@ export default function Mini() {
         efficiency: viewModeRef.current === 'efficiency',
         mascotScale: mascotScaleRef.current,
         largeMascot: largeMascotRef.current,
+        largeMascotScale: largeMascotScaleRef.current,
       })
       await restoreCollapsedMascotPosition()
     } catch {}
@@ -1930,7 +1943,7 @@ export default function Mini() {
       try {
         await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
         if (wasSettings) {
-          await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current })
+          await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
         } else {
           await invoke('set_mini_expanded', {
             expanded: false,
@@ -1938,6 +1951,7 @@ export default function Mini() {
             efficiency: viewModeRef.current === 'efficiency',
             mascotScale: mascotScaleRef.current,
             largeMascot: largeMascotRef.current,
+            largeMascotScale: largeMascotScaleRef.current,
           })
         }
         await restoreCollapsedMascotPosition()
@@ -2290,7 +2304,7 @@ export default function Mini() {
   const collapsedPlaceholderFontSize = Math.max(16, Math.round(16 * mascotScale))
   const collapsedStatusSize = largeMascot ? 6 : 8
   const collapsedStatusBorder = largeMascot ? 1.1 : 1.5
-  const largeMascotVisualSize = collapsedMascotSize * LARGE_MASCOT_SIZE_MULTIPLIER
+  const largeMascotVisualSize = collapsedMascotSize * largeMascotScale
 
   return (
     <div
@@ -4142,6 +4156,14 @@ export default function Mini() {
                           hoverDelayRef.current = v
                           const store = await getStore()
                           await store.set('hover_delay', v)
+                          await store.save()
+                        }}
+                        largeMascotScale={largeMascotScale}
+                        onChangeLargeMascotScale={async (v) => {
+                          setLargeMascotScale(v)
+                          largeMascotScaleRef.current = v
+                          const store = await getStore()
+                          await store.set('large_mascot_scale', v)
                           await store.save()
                         }}
                       />

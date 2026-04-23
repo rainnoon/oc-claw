@@ -3114,8 +3114,9 @@ fn collapsed_mascot_window_size(scale: f64) -> (f64, f64) {
     (COLLAPSED_MASCOT_BASE_W * scale, COLLAPSED_MASCOT_BASE_H * scale)
 }
 
-fn large_collapsed_mascot_window_size(scale: f64) -> (f64, f64) {
-    let size = 43.0 * scale * LARGE_MASCOT_SIZE_MULTIPLIER;
+fn large_collapsed_mascot_window_size(scale: f64, large_scale: f64) -> (f64, f64) {
+    let lms = if large_scale.is_finite() && large_scale >= 1.0 && large_scale <= 6.0 { large_scale } else { LARGE_MASCOT_SIZE_MULTIPLIER };
+    let size = 43.0 * scale * lms;
     (size, size)
 }
 
@@ -3367,10 +3368,11 @@ async fn set_ime_mode(_app: tauri::AppHandle, _active: bool) -> Result<(), Strin
 /// Resize/reposition the mini window between collapsed (small, right of notch)
 /// and expanded (larger, centered on notch) states.
 #[tauri::command]
-async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>, max_height: Option<f64>, mascot_scale: Option<f64>, large_mascot: Option<bool>, keep_position: Option<bool>) -> Result<(), String> {
+async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Option<String>, efficiency: Option<bool>, max_height: Option<f64>, mascot_scale: Option<f64>, large_mascot: Option<bool>, keep_position: Option<bool>, large_mascot_scale: Option<f64>) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
     let mascot_scale = sanitized_mascot_scale(mascot_scale);
+    let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
 
     #[cfg(target_os = "macos")]
     {
@@ -3429,7 +3431,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         (x, y, win_w, win_h)
                     } else {
                         let (win_w, win_h) = if large_mascot.unwrap_or(false) {
-                            large_collapsed_mascot_window_size(mascot_scale)
+                            large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale)
                         } else {
                             collapsed_mascot_window_size(mascot_scale)
                         };
@@ -3478,7 +3480,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 let _ = win.set_position(tauri::LogicalPosition::new(x, my));
             } else {
                 let (base_w, base_h) = if large_mascot.unwrap_or(false) {
-                    large_collapsed_mascot_window_size(mascot_scale)
+                    large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale)
                 } else {
                     collapsed_mascot_window_size(mascot_scale)
                 };
@@ -3693,11 +3695,13 @@ async fn set_mini_size(
     keep_on_top: Option<bool>,
     mascot_scale: Option<f64>,
     large_mascot: Option<bool>,
+    large_mascot_scale: Option<f64>,
 ) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
     let want_top = keep_on_top.unwrap_or(restore);
     let mascot_scale = sanitized_mascot_scale(mascot_scale);
+    let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
 
     #[cfg(target_os = "macos")]
     {
@@ -3737,7 +3741,7 @@ async fn set_mini_size(
                     }
                     if restore {
                         let (win_w, win_h) = if large_mascot.unwrap_or(false) {
-                            large_collapsed_mascot_window_size(mascot_scale)
+                            large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale)
                         } else {
                             collapsed_mascot_window_size(mascot_scale)
                         };
@@ -3800,7 +3804,7 @@ async fn set_mini_size(
             let ui = win_ui_scale(&monitor);
             if restore {
                 let (base_w, base_h) = if large_mascot.unwrap_or(false) {
-                    large_collapsed_mascot_window_size(mascot_scale)
+                    large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale)
                 } else {
                     collapsed_mascot_window_size(mascot_scale)
                 };

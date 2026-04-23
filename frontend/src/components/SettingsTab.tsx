@@ -226,7 +226,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void }) {
+export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
@@ -568,6 +568,24 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               step={0.1}
               value={hoverDelay}
               onChange={(e) => onChangeHoverDelay(Number(e.target.value))}
+              className="w-full accent-white/60 h-1"
+            />
+          </div>
+          <div className="p-4 border-b border-white/5">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Large Mascot Size')}</span>
+                <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for large mascot mode')}</span>
+              </div>
+              <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={6}
+              step={0.1}
+              value={largeMascotScale}
+              onChange={(e) => onChangeLargeMascotScale(Number(e.target.value))}
               className="w-full accent-white/60 h-1"
             />
           </div>
