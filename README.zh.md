@@ -13,16 +13,16 @@
 </p>
 
 <p align="center">
-  <b>macOS — 效率模式</b>
-</p>
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/74b8bbf8-ddcf-4149-a91e-d18d5c24fec6" width="600" />
-</p>
-<p align="center">
   <b>macOS — 陪伴模式</b>
 </p>
 <p align="center">
   <img src="https://github.com/user-attachments/assets/bcecb428-2724-4d80-a9c4-9c19e62dffca" width="600" />
+</p>
+<p align="center">
+  <b>macOS — 效率模式</b>
+</p>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/74b8bbf8-ddcf-4149-a91e-d18d5c24fec6" width="600" />
 </p>
 <p align="center">
   <b>Windows — 岛屿模式</b>
