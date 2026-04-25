@@ -78,6 +78,10 @@ npx tauri dev
 
 Bug reports, feature suggestions, and pull requests are welcome.
 
+## Friendship Link
+
+Thanks for the support and feedback from the friends at [LINUX DO](https://linux.do/).
+
 ## Credits
 
 - [Notchi](https://github.com/sk-ruban/notchi) — design inspiration for notch companion concept and grass island

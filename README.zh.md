@@ -78,6 +78,10 @@ npx tauri dev
 
 欢迎提交 Bug 报告、功能建议和 Pull Request。
 
+## 友情链接
+
+感谢 [LINUX DO](https://linux.do/) 朋友们的支持与反馈。
+
 ## 致谢
 
 - [Notchi](https://github.com/sk-ruban/notchi) — 刘海伴侣概念和草地岛屿的设计灵感

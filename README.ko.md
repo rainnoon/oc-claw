@@ -78,6 +78,10 @@ npx tauri dev
 
 버그 리포트, 기능 제안, 풀 리퀘스트를 환영합니다.
 
+## 우정 링크
+
+[LINUX DO](https://linux.do/) 친구들의 지원과 피드백에 감사드립니다.
+
 ## 크레딧
 
 - [Notchi](https://github.com/sk-ruban/notchi) — 노치 컴패니언 컨셉과 잔디 섬의 디자인 영감

@@ -78,6 +78,10 @@ npx tauri dev
 
 Les rapports de bugs, suggestions de fonctionnalités et pull requests sont les bienvenus.
 
+## Lien d'amitié
+
+Merci pour le soutien et les retours des amis de [LINUX DO](https://linux.do/).
+
 ## Crédits
 
 - [Notchi](https://github.com/sk-ruban/notchi) — inspiration de design pour le concept de compagnon d'encoche et l'île herbeuse

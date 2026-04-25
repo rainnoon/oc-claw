@@ -78,6 +78,10 @@ npx tauri dev
 
 バグ報告、機能提案、プルリクエストを歓迎します。
 
+## フレンドシップリンク
+
+[LINUX DO](https://linux.do/) の友人たちからのサポートとフィードバックに感謝します。
+
 ## クレジット
 
 - [Notchi](https://github.com/sk-ruban/notchi) — ノッチコンパニオンコンセプトと草地島のデザインインスピレーション

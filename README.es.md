@@ -78,6 +78,10 @@ npx tauri dev
 
 Se aceptan reportes de errores, sugerencias de funciones y pull requests.
 
+## Enlace de Amistad
+
+Gracias por el apoyo y los comentarios de los amigos de [LINUX DO](https://linux.do/).
+
 ## Créditos
 
 - [Notchi](https://github.com/sk-ruban/notchi) — inspiración de diseño para el concepto de compañero del notch y la isla de césped
