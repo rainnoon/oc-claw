@@ -95,6 +95,7 @@ const MASCOT_BASE_SIZE = 43
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
 const LARGE_ACTION_DISPLAY_MS = 3_000
+const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'shy']
 const LARGE_DAILY_ANGRY_LIMIT = 10
 const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 1.8
 const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.5
@@ -818,6 +819,34 @@ export default function Mini() {
     }
   }, [appMode, currentPetAction])
 
+  // Pet mode: auto-detect music/video from frontmost app
+  useEffect(() => {
+    if (appMode !== 'pet') return
+    const AUTO_ACTIONS: PetAction[] = ['idle', 'hungry', 'music', 'watch']
+    const poll = async () => {
+      if (!AUTO_ACTIONS.includes(currentPetActionRef.current)) return
+      try {
+        const media = await invoke<string>('get_now_playing')
+        const cur = currentPetActionRef.current
+        if (media === 'music' && cur !== 'music') {
+          setCurrentPetAction('music')
+          currentPetActionRef.current = 'music'
+        } else if (media === 'video' && cur !== 'watch') {
+          setCurrentPetAction('watch')
+          currentPetActionRef.current = 'watch'
+        } else if (media === 'none' && (cur === 'music' || cur === 'watch')) {
+          const d = petDataRef.current
+          const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+          setCurrentPetAction(next)
+          currentPetActionRef.current = next
+        }
+      } catch {}
+    }
+    poll()
+    const id = setInterval(poll, 1000)
+    return () => clearInterval(id)
+  }, [appMode])
+
   const handleSelectAppMode = useCallback(async (mode: AppMode) => {
     setAppMode(mode)
     appModeRef.current = mode
@@ -856,20 +885,8 @@ export default function Mini() {
   const handleSetPetAction = useCallback((action: PetAction) => {
     setCurrentPetAction(action)
     currentPetActionRef.current = action
-    // Actions with finite duration return to idle after video loops
-    const transientActions: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'shy']
-    if (transientActions.includes(action)) {
-      setTimeout(() => {
-        const d = petDataRef.current
-        if (d.hunger < 30) {
-          setCurrentPetAction('hungry')
-          currentPetActionRef.current = 'hungry'
-        } else {
-          setCurrentPetAction('idle')
-          currentPetActionRef.current = 'idle'
-        }
-      }, LARGE_ACTION_DISPLAY_MS)
-    }
+    // Transient actions return to idle via the video `ended` event
+    // (see onEnded handler on the <video> element below).
   }, [])
 
   const handleStartPomodoro = useCallback(async (minutes: number) => {
@@ -2679,10 +2696,19 @@ export default function Mini() {
                 ref={largeVideoRef}
                 key={largeVideoUrl}
                 autoPlay
-                loop
+                loop={!(appMode === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetAction))}
                 muted
                 playsInline
                 preload="auto"
+                onEnded={() => {
+                  // Transient pet actions play once then return to idle/hungry.
+                  if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
+                    const d = petDataRef.current
+                    const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+                    setCurrentPetAction(next)
+                    currentPetActionRef.current = next
+                  }
+                }}
                 style={{ width: largeMascotVisualSize, height: largeMascotVisualSize, objectFit: 'contain', pointerEvents: 'none' }}
                 draggable={false}
               >

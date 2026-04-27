@@ -108,14 +108,23 @@ export function PetContextMenu({
       </div>
 
       {/* Buttons to the left of mascot */}
-      <div style={{
+      <style>{`
+        .pet-menu-scroll::-webkit-scrollbar { width: 2px; }
+        .pet-menu-scroll::-webkit-scrollbar-track { background: transparent; }
+        .pet-menu-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 1px; }
+      `}</style>
+      <div className="pet-menu-scroll" style={{
         position: 'absolute',
         right: mascotSize + 14,
         top: 10,
+        bottom: 10,
         display: 'flex',
         flexDirection: 'column',
         gap: 10,
         pointerEvents: 'auto',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        paddingRight: 6,
       }}>
         {subPanel === 'main' ? (
           <>

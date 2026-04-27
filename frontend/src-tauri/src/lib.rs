@@ -3764,6 +3764,171 @@ fn pet_context_schedule_restore_alpha(ns_win_ptr: *mut std::ffi::c_void) {
     }
 }
 
+/// Detect what media the user is consuming.
+///
+/// Uses CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere` to check if
+/// any audio is being produced, then checks the frontmost app's bundle ID to
+/// classify it as music, video, or neither.
+///
+/// Returns: "music", "video", or "none".
+#[tauri::command]
+async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        app.run_on_main_thread(move || {
+            let result = now_playing_detect();
+            let _ = tx.send(result);
+        }).map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok("none".into())
+    }
+}
+
+/// Check if system audio output is active, then classify based on the
+/// frontmost application.
+#[cfg(target_os = "macos")]
+fn now_playing_detect() -> String {
+    let audio_active = is_audio_output_active();
+    let frontmost_bid = get_frontmost_bundle_id();
+    let bid = frontmost_bid.to_lowercase();
+
+    if is_music_app(&bid) {
+        // Music app in front — only show music when audio is actually playing,
+        // so pausing music returns to idle.
+        if audio_active { "music".into() } else { "none".into() }
+    } else if is_video_app(&bid) || is_browser(&bid) {
+        // Video app or browser — require audio to be active.
+        // When user pauses the video, audio stops and we return to idle.
+        if audio_active { "video".into() } else { "none".into() }
+    } else {
+        "none".into()
+    }
+}
+
+/// Check if the default audio output device has any audio running.
+/// Uses CoreAudio's kAudioDevicePropertyDeviceIsRunningSomewhere.
+#[cfg(target_os = "macos")]
+fn is_audio_output_active() -> bool {
+    // CoreAudio C API types and constants
+    #[allow(non_upper_case_globals)]
+    const kAudioHardwarePropertyDefaultOutputDevice: u32 = u32::from_be_bytes(*b"dOut");
+    #[allow(non_upper_case_globals)]
+    const kAudioDevicePropertyDeviceIsRunningSomewhere: u32 = u32::from_be_bytes(*b"gone");
+    #[allow(non_upper_case_globals)]
+    const kAudioObjectPropertyScopeGlobal: u32 = u32::from_be_bytes(*b"glob");
+    #[allow(non_upper_case_globals)]
+    const kAudioObjectPropertyElementMain: u32 = 0;
+    #[allow(non_upper_case_globals)]
+    const kAudioObjectSystemObject: u32 = 1;
+
+    #[repr(C)]
+    struct AudioObjectPropertyAddress {
+        selector: u32,
+        scope: u32,
+        element: u32,
+    }
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    extern "C" {
+        fn AudioObjectGetPropertyData(
+            id: u32,
+            addr: *const AudioObjectPropertyAddress,
+            qualifier_size: u32,
+            qualifier: *const std::ffi::c_void,
+            data_size: *mut u32,
+            data: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    unsafe {
+        // Get default output device
+        let addr = AudioObjectPropertyAddress {
+            selector: kAudioHardwarePropertyDefaultOutputDevice,
+            scope: kAudioObjectPropertyScopeGlobal,
+            element: kAudioObjectPropertyElementMain,
+        };
+        let mut device: u32 = 0;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let err = AudioObjectGetPropertyData(
+            kAudioObjectSystemObject, &addr, 0, std::ptr::null(), &mut size,
+            &mut device as *mut u32 as *mut std::ffi::c_void,
+        );
+        if err != 0 || device == 0 { return false; }
+
+        // Check if device is running
+        let addr2 = AudioObjectPropertyAddress {
+            selector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            scope: kAudioObjectPropertyScopeGlobal,
+            element: kAudioObjectPropertyElementMain,
+        };
+        let mut running: u32 = 0;
+        size = std::mem::size_of::<u32>() as u32;
+        let err2 = AudioObjectGetPropertyData(
+            device, &addr2, 0, std::ptr::null(), &mut size,
+            &mut running as *mut u32 as *mut std::ffi::c_void,
+        );
+        err2 == 0 && running != 0
+    }
+}
+
+/// Get the bundle identifier of the frontmost application.
+#[cfg(target_os = "macos")]
+fn get_frontmost_bundle_id() -> String {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    unsafe {
+        let cls = match AnyClass::get(c"NSWorkspace") {
+            Some(c) => c,
+            None => return String::new(),
+        };
+        let ws: *mut AnyObject = msg_send![cls, sharedWorkspace];
+        if ws.is_null() { return String::new(); }
+        let front_app: *mut AnyObject = msg_send![&*ws, frontmostApplication];
+        if front_app.is_null() { return String::new(); }
+        let bid_ns: *mut AnyObject = msg_send![&*front_app, bundleIdentifier];
+        if bid_ns.is_null() { return String::new(); }
+        let utf8: *const u8 = msg_send![&*bid_ns, UTF8String];
+        if utf8.is_null() { return String::new(); }
+        let len: usize = msg_send![&*bid_ns, length];
+        String::from_utf8_lossy(std::slice::from_raw_parts(utf8, len)).into_owned()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_music_app(bid: &str) -> bool {
+    const MUSIC_APPS: &[&str] = &[
+        "com.apple.music", "com.spotify.client", "com.netease.163music",
+        "com.tencent.qqmusic", "com.kugou", "com.kuwo",
+        "com.xiami.client", "com.apple.itunes",
+        "com.bytedance.soda.music",
+    ];
+    MUSIC_APPS.iter().any(|m| bid.contains(m))
+}
+
+#[cfg(target_os = "macos")]
+fn is_video_app(bid: &str) -> bool {
+    const VIDEO_APPS: &[&str] = &[
+        "com.colliderli.iina", "org.videolan.vlc", "com.apple.quicktimeplayer",
+        "tv.plex.plexmediaplayer", "io.mpv", "com.apple.tv",
+        "com.bilibili.bili", "com.disneyplus", "com.netflix",
+    ];
+    VIDEO_APPS.iter().any(|v| bid.contains(v))
+}
+
+#[cfg(target_os = "macos")]
+fn is_browser(bid: &str) -> bool {
+    const BROWSERS: &[&str] = &[
+        "com.google.chrome", "org.mozilla.firefox", "com.apple.safari",
+        "com.microsoft.edgemac", "com.brave.browser", "com.vivaldi.vivaldi",
+        "company.thebrowser.browser", "com.operasoftware.opera",
+    ];
+    BROWSERS.iter().any(|b| bid.contains(b))
+}
+
 /// Expand the mini window to pet-context size and start a cursor-position poll
 /// that toggles `setIgnoresMouseEvents:` — the transparent area around the
 /// mascot passes clicks through to the desktop. When the context menu is open
@@ -9604,7 +9769,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, get_now_playing])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
