@@ -68,7 +68,8 @@ export const AFFECTION_ACTIVITY_PER_10MIN = 1
 export const AFFECTION_FEED_HUNGRY = 5
 export const AFFECTION_DANCE = 2
 
-export const DAILY_GIFT_COINS = 40
+export const DAILY_GIFT_MIN = 20
+export const DAILY_GIFT_MAX = 60
 export const POMODORO_COINS_PER_MIN = 1
 
 export const FOODS: FoodItem[] = [
@@ -171,20 +172,36 @@ export function tickPetData(data: PetData): PetData {
   }
   d.affection = Math.max(AFFECTION_OFFLINE_FLOOR, d.affection - affectionLoss)
 
-  // Daily gift
-  const today = new Date().toISOString().slice(0, 10)
-  if (d.lastDailyGift !== today) {
-    d.coins += DAILY_GIFT_COINS
-    d.lastDailyGift = today
-  }
-
   // Reset headpat counter for new day
+  const today = new Date().toISOString().slice(0, 10)
   if (d.headpatDate !== today) {
     d.headpatToday = 0
     d.headpatDate = today
   }
 
   return d
+}
+
+// ─── Daily gift ───
+
+export function canClaimDailyGift(_data: PetData): boolean {
+  // TODO: restore daily check after testing
+  // const today = new Date().toISOString().slice(0, 10)
+  // return data.lastDailyGift !== today
+  return true
+}
+
+export function claimDailyGift(data: PetData): { data: PetData; amount: number } {
+  if (!canClaimDailyGift(data)) return { data, amount: 0 }
+  const amount = DAILY_GIFT_MIN + Math.floor(Math.random() * (DAILY_GIFT_MAX - DAILY_GIFT_MIN + 1))
+  return {
+    data: {
+      ...data,
+      coins: data.coins + amount,
+      lastDailyGift: new Date().toISOString().slice(0, 10),
+    },
+    amount,
+  }
 }
 
 // ─── Action helpers ───

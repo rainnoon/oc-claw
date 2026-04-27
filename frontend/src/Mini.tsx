@@ -707,6 +707,8 @@ export default function Mini() {
   const [currentPetAction, setCurrentPetAction] = useState<PetAction>('idle')
   const currentPetActionRef = useRef<PetAction>('idle')
   currentPetActionRef.current = currentPetAction
+  const [walkFlipped, setWalkFlipped] = useState(false)
+  const walkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [pomodoro, setPomodoro] = useState<PomodoroState | null>(null)
   const pomodoroRef = useRef<PomodoroState | null>(null)
   pomodoroRef.current = pomodoro
@@ -715,6 +717,12 @@ export default function Mini() {
   const activityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [petContextMenuOpen, setPetContextMenuOpen] = useState(false)
   const petContextMenuOpenRef = useRef(false)
+
+  // Food rain effect (lives outside context menu so it persists after menu closes)
+  interface FoodRainDrop { id: number; emoji: string; x: number; delay: number; duration: number; size: number }
+  const [foodRainDrops, setFoodRainDrops] = useState<FoodRainDrop[]>([])
+  const foodRainIdRef = useRef(0)
+
 
   const [hiding, setHiding] = useState(false)
   const [pinned, setPinned] = useState(false)
@@ -818,6 +826,36 @@ export default function Mini() {
       if (activityTimerRef.current) clearInterval(activityTimerRef.current)
     }
   }, [appMode, currentPetAction])
+
+  // Walk animation: move the window and flip direction every 3 seconds
+  useEffect(() => {
+    if (walkTimerRef.current) {
+      clearInterval(walkTimerRef.current)
+      walkTimerRef.current = null
+    }
+    if (currentPetAction !== 'walk') {
+      setWalkFlipped(false)
+      return
+    }
+    const WALK_SPEED = 2
+    const WALK_INTERVAL = 30
+    const FLIP_AFTER = 3000
+    let elapsed = 0
+    let direction = -1
+    setWalkFlipped(false)
+    walkTimerRef.current = setInterval(() => {
+      elapsed += WALK_INTERVAL
+      if (elapsed >= FLIP_AFTER) {
+        elapsed = 0
+        direction *= -1
+        setWalkFlipped(prev => !prev)
+      }
+      invoke('move_mini_by', { dx: direction * WALK_SPEED, dy: 0 }).catch(() => {})
+    }, WALK_INTERVAL)
+    return () => {
+      if (walkTimerRef.current) clearInterval(walkTimerRef.current)
+    }
+  }, [currentPetAction])
 
   // Pet mode: auto-detect music/video from frontmost app
   useEffect(() => {
@@ -953,6 +991,25 @@ export default function Mini() {
     petContextMenuOpenRef.current = false
     invoke('set_pet_context_menu', { open: false }).catch(() => {})
   }, [])
+
+  const triggerFoodRain = useCallback((emoji: string) => {
+    const drops: FoodRainDrop[] = Array.from({ length: 12 }, () => {
+      foodRainIdRef.current += 1
+      return {
+        id: foodRainIdRef.current,
+        emoji,
+        x: Math.random() * 100,
+        delay: Math.random() * 0.6,
+        duration: 1.2 + Math.random() * 0.8,
+        size: 18 + Math.random() * 14,
+      }
+    })
+    setFoodRainDrops(prev => [...prev, ...drops])
+    setTimeout(() => {
+      setFoodRainDrops(prev => prev.filter(d => !drops.includes(d)))
+    }, 2500)
+  }, [])
+
 
   useEffect(() => {
     load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
@@ -2709,7 +2766,13 @@ export default function Mini() {
                     currentPetActionRef.current = next
                   }
                 }}
-                style={{ width: largeMascotVisualSize, height: largeMascotVisualSize, objectFit: 'contain', pointerEvents: 'none' }}
+                style={{
+                  width: largeMascotVisualSize,
+                  height: largeMascotVisualSize,
+                  objectFit: 'contain',
+                  pointerEvents: 'none',
+                  transform: currentPetAction === 'walk' && walkFlipped ? 'scaleX(-1)' : undefined,
+                }}
                 draggable={false}
               >
                 <source src={largeVideoUrl} type={getLargeVideoType(largeVideoUrl)} />
@@ -2787,8 +2850,29 @@ export default function Mini() {
                   closePetContextMenu()
                   enterSettings()
                 }}
+                onFoodRain={triggerFoodRain}
               />
             )}
+
+            {/* Food rain effect — rendered outside context menu so it persists after menu closes */}
+            {foodRainDrops.length > 0 && (
+              <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden', zIndex: 9999 }}>
+                <AnimatePresence>
+                  {foodRainDrops.map(drop => (
+                    <motion.span
+                      key={drop.id}
+                      initial={{ y: -30, opacity: 1 }}
+                      animate={{ y: '100vh', opacity: 0 }}
+                      transition={{ duration: drop.duration, delay: drop.delay, ease: 'easeIn' }}
+                      style={{ position: 'absolute', left: `${drop.x}%`, fontSize: drop.size, willChange: 'transform' }}
+                    >
+                      {drop.emoji}
+                    </motion.span>
+                  ))}
+                </AnimatePresence>
+              </div>
+            )}
+
           </div>
         </div>
       )}

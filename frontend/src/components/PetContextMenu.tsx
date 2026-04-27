@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
-import { motion } from 'motion/react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
+import { motion, AnimatePresence } from 'motion/react'
 import {
   type PetData, type PetAction, type PomodoroState, type AffectionTier,
   FOODS, POMODORO_PRESETS,
   getAffectionTier, canDance, canWalk, canHeadpat,
+  canClaimDailyGift, claimDailyGift,
   applyDance, applyFeed, applyHeadpat,
 } from '../lib/petStore'
 
@@ -21,12 +22,14 @@ interface PetContextMenuProps {
   onStartPomodoro: (minutes: number) => void
   onStopPomodoro: () => void
   onOpenSettings: () => void
+  onFoodRain?: (emoji: string) => void
+  onClaimGift?: (amount: number) => void
 }
 
 export function PetContextMenu({
   open, petData, currentAction, pomodoro, mascotSize,
   onClose, onUpdatePetData, onSetAction,
-  onStartPomodoro, onStopPomodoro, onOpenSettings,
+  onStartPomodoro, onStopPomodoro, onOpenSettings, onFoodRain, onClaimGift,
 }: PetContextMenuProps) {
   const [subPanel, setSubPanel] = useState<SubPanel>('main')
   const menuRef = useRef<HTMLDivElement>(null)
@@ -59,14 +62,30 @@ export function PetContextMenu({
     onSetAction(action)
   }, [petData, onUpdatePetData, onSetAction])
 
+  const giftAvailable = canClaimDailyGift(petData)
+
+  const [coinBonus, setCoinBonus] = useState<{ amount: number; id: number } | null>(null)
+  const coinBonusIdRef = useRef(0)
+
+  const handleClaimGift = useCallback(() => {
+    if (!canClaimDailyGift(petData)) return
+    const { data: updated, amount } = claimDailyGift(petData)
+    onUpdatePetData(updated)
+    coinBonusIdRef.current += 1
+    setCoinBonus({ amount, id: coinBonusIdRef.current })
+    setTimeout(() => setCoinBonus(null), 2000)
+    onClaimGift?.(amount)
+  }, [petData, onUpdatePetData, onClaimGift])
+
   const handleBuy = useCallback((foodId: string) => {
     const food = FOODS.find(f => f.id === foodId)
     if (!food) return
     const updated = applyFeed(petData, food)
     if (updated === petData) return
     onUpdatePetData(updated)
+    onFoodRain?.(food.icon)
     onSetAction('eat')
-  }, [petData, onUpdatePetData, onSetAction])
+  }, [petData, onUpdatePetData, onSetAction, onFoodRain])
 
   if (!open) return null
 
@@ -104,7 +123,32 @@ export function PetContextMenu({
       }}>
         <StatBadge icon="❤️" value={Math.round(petData.affection)} color={tierColor(tier)} />
         <StatBadge icon="🍗" value={Math.round(petData.hunger)} color={petData.hunger < 30 ? '#ef4444' : '#22c55e'} />
-        <span style={{ fontSize: 13, color: '#fbbf24', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>🪙 {petData.coins}</span>
+        <span style={{ fontSize: 13, color: '#fbbf24', fontWeight: 700, fontVariantNumeric: 'tabular-nums', position: 'relative' }}>
+          🪙 {petData.coins}
+          <AnimatePresence>
+            {coinBonus && (
+              <motion.span
+                key={coinBonus.id}
+                initial={{ opacity: 1, y: 0 }}
+                animate={{ opacity: 1, y: -20 }}
+                exit={{ opacity: 0, y: -28 }}
+                transition={{ duration: 0.8, ease: 'easeOut' }}
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  top: 0,
+                  transform: 'translateX(-50%)',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: '#4ade80',
+                  pointerEvents: 'none',
+                }}
+              >
+                +{coinBonus.amount}
+              </motion.span>
+            )}
+          </AnimatePresence>
+        </span>
       </div>
 
       {/* Buttons to the left of mascot */}
@@ -128,6 +172,13 @@ export function PetContextMenu({
       }}>
         {subPanel === 'main' ? (
           <>
+            <SideBtn
+              icon="🎁"
+              label={giftAvailable ? 'Daily Gift' : 'Claimed'}
+              onClick={handleClaimGift}
+              disabled={!giftAvailable}
+              active={giftAvailable}
+            />
             <SideBtn icon="🎬" label="Actions" onClick={() => setSubPanel('actions')} />
             <SideBtn icon="🛒" label="Shop" onClick={() => setSubPanel('shop')} />
             {pomodoro?.active ? (
@@ -164,6 +215,7 @@ export function PetContextMenu({
           </>
         )}
       </div>
+
     </motion.div>
   )
 }
