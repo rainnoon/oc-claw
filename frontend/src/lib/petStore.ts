@@ -1,0 +1,235 @@
+import { load } from '@tauri-apps/plugin-store'
+
+// ─── Types ───
+
+export type AppMode = 'coding' | 'pet'
+
+export type PetAction =
+  | 'idle'     // default loop
+  | 'sleep'    // idle timeout / night
+  | 'work'     // pomodoro active (earns coins)
+  | 'study'    // pomodoro with timer overlay
+  | 'watch'    // user-triggered activity
+  | 'music'    // user-triggered activity
+  | 'walk'     // requires hunger >= 30
+  | 'dance'    // requires hunger >= 50, affection >= 80
+  | 'eat'      // feeding animation
+  | 'hungry'   // hunger < 30
+  | 'headpat'  // user clicks head
+  | 'farewell' // app closing
+  | 'grasp'    // being dragged
+  | 'angry'    // low affection click
+  | 'shy'      // high affection click
+
+export interface FoodItem {
+  id: string
+  name: string
+  icon: string
+  hunger: number
+  affection: number
+  price: number
+}
+
+export interface PetData {
+  hunger: number        // 0-100, default 100
+  affection: number     // 0-100, default 50
+  coins: number         // >= 0
+  lastTickAt: number    // timestamp for decay calc
+  lastDailyGift: string // YYYY-MM-DD of last daily gift
+  headpatToday: number  // headpat count today
+  headpatDate: string   // YYYY-MM-DD
+  pomodoroCoins: number // coins earned in current pomodoro
+}
+
+export interface PomodoroState {
+  active: boolean
+  duration: number      // total seconds
+  remaining: number     // seconds left
+  startedAt: number     // timestamp
+}
+
+// ─── Constants ───
+
+export const HUNGER_MAX = 100
+export const HUNGER_INIT = 100
+export const HUNGER_DECAY_PER_HOUR = 2
+export const HUNGER_DECAY_SLEEP_PER_HOUR = 1
+export const HUNGER_OFFLINE_FLOOR = 10
+export const HUNGER_DANCE_COST = 10
+
+export const AFFECTION_MAX = 100
+export const AFFECTION_INIT = 50
+export const AFFECTION_DECAY_PER_DAY = 5
+export const AFFECTION_HUNGRY_DECAY_PER_HOUR = 2
+export const AFFECTION_OFFLINE_FLOOR = 10
+export const AFFECTION_HEADPAT = 2
+export const AFFECTION_HEADPAT_DAILY_LIMIT = 5
+export const AFFECTION_ACTIVITY_PER_10MIN = 1
+export const AFFECTION_FEED_HUNGRY = 5
+export const AFFECTION_DANCE = 2
+
+export const DAILY_GIFT_COINS = 40
+export const POMODORO_COINS_PER_MIN = 1
+
+export const FOODS: FoodItem[] = [
+  { id: 'meat', name: '肉', icon: '🍖', hunger: 15, affection: 0, price: 8 },
+  { id: 'boba', name: '奶茶', icon: '🧋', hunger: 8, affection: 3, price: 6 },
+]
+
+export const POMODORO_PRESETS = [15, 25, 45, 60] // minutes
+
+// ─── Affection tiers ───
+
+export type AffectionTier = 'angry' | 'cold' | 'happy' | 'shy'
+
+export function getAffectionTier(affection: number): AffectionTier {
+  if (affection >= 80) return 'shy'
+  if (affection >= 50) return 'happy'
+  if (affection >= 20) return 'cold'
+  return 'angry'
+}
+
+// ─── Store helpers ───
+
+const STORE_NAME = 'pet-data.json'
+
+let storePromise: ReturnType<typeof load> | null = null
+
+export function getPetStore() {
+  if (!storePromise) {
+    storePromise = load(STORE_NAME, { defaults: {}, autoSave: true })
+  }
+  return storePromise
+}
+
+export function defaultPetData(): PetData {
+  return {
+    hunger: HUNGER_INIT,
+    affection: AFFECTION_INIT,
+    coins: 0,
+    lastTickAt: Date.now(),
+    lastDailyGift: '',
+    headpatToday: 0,
+    headpatDate: '',
+    pomodoroCoins: 0,
+  }
+}
+
+export async function loadPetData(): Promise<PetData> {
+  const store = await getPetStore()
+  const raw = await store.get('pet') as PetData | null
+  if (!raw) {
+    const d = defaultPetData()
+    await store.set('pet', d)
+    await store.save()
+    return d
+  }
+  return { ...defaultPetData(), ...raw }
+}
+
+export async function savePetData(data: PetData): Promise<void> {
+  const store = await getPetStore()
+  await store.set('pet', data)
+  await store.save()
+}
+
+export async function loadAppMode(): Promise<AppMode | null> {
+  const store = await getPetStore()
+  return (await store.get('app_mode')) as AppMode | null
+}
+
+export async function saveAppMode(mode: AppMode): Promise<void> {
+  const store = await getPetStore()
+  await store.set('app_mode', mode)
+  await store.save()
+}
+
+// ─── Tick logic: apply time-based decay ───
+
+function isSleepHour(hour: number): boolean {
+  return hour >= 0 && hour < 8
+}
+
+export function tickPetData(data: PetData): PetData {
+  const now = Date.now()
+  const elapsed = now - data.lastTickAt
+  if (elapsed < 60_000) return data // skip if < 1 min
+
+  const hours = elapsed / 3_600_000
+  const d = { ...data, lastTickAt: now }
+
+  // Hunger decay
+  const currentHour = new Date().getHours()
+  const decayRate = isSleepHour(currentHour) ? HUNGER_DECAY_SLEEP_PER_HOUR : HUNGER_DECAY_PER_HOUR
+  d.hunger = Math.max(HUNGER_OFFLINE_FLOOR, d.hunger - decayRate * hours)
+
+  // Affection decay (daily)
+  const dayFraction = hours / 24
+  let affectionLoss = AFFECTION_DECAY_PER_DAY * dayFraction
+  if (d.hunger < 30) {
+    affectionLoss += AFFECTION_HUNGRY_DECAY_PER_HOUR * hours
+  }
+  d.affection = Math.max(AFFECTION_OFFLINE_FLOOR, d.affection - affectionLoss)
+
+  // Daily gift
+  const today = new Date().toISOString().slice(0, 10)
+  if (d.lastDailyGift !== today) {
+    d.coins += DAILY_GIFT_COINS
+    d.lastDailyGift = today
+  }
+
+  // Reset headpat counter for new day
+  if (d.headpatDate !== today) {
+    d.headpatToday = 0
+    d.headpatDate = today
+  }
+
+  return d
+}
+
+// ─── Action helpers ───
+
+export function canDance(data: PetData): boolean {
+  return data.hunger >= 50 && data.affection >= 80
+}
+
+export function canWalk(data: PetData): boolean {
+  return data.hunger >= 30
+}
+
+export function canHeadpat(data: PetData): boolean {
+  return data.headpatToday < AFFECTION_HEADPAT_DAILY_LIMIT
+}
+
+export function applyHeadpat(data: PetData): PetData {
+  if (!canHeadpat(data)) return data
+  return {
+    ...data,
+    affection: Math.min(AFFECTION_MAX, data.affection + AFFECTION_HEADPAT),
+    headpatToday: data.headpatToday + 1,
+  }
+}
+
+export function applyDance(data: PetData): PetData {
+  if (!canDance(data)) return data
+  return {
+    ...data,
+    hunger: Math.max(0, data.hunger - HUNGER_DANCE_COST),
+    affection: Math.min(AFFECTION_MAX, data.affection + AFFECTION_DANCE),
+  }
+}
+
+export function applyFeed(data: PetData, food: FoodItem): PetData {
+  if (data.coins < food.price) return data
+  const wasHungry = data.hunger < 30
+  const d = {
+    ...data,
+    coins: data.coins - food.price,
+    hunger: Math.min(HUNGER_MAX, data.hunger + food.hunger),
+    affection: Math.min(AFFECTION_MAX, data.affection + food.affection),
+  }
+  if (wasHungry) {
+    d.affection = Math.min(AFFECTION_MAX, d.affection + AFFECTION_FEED_HUNGRY)
+  }
+  return d
+}

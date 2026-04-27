@@ -26,6 +26,22 @@ static NOTCH_SCREEN_INFO: Mutex<Option<(f64, f64, f64, f64, f64)>> = Mutex::new(
 /// `resize_mini_height` so the hover poll can use the real frame size
 /// instead of hard-coded constants.
 static MINI_WINDOW_FRAME: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
+/// Temporary frame snapshot used by pet-context menu expansion. We store the
+/// original collapsed frame before expanding, then restore exactly to avoid
+/// mascot "teleport" after right-click close.
+static PET_MENU_RESTORE_FRAME: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
+/// Generation counter for pet-context alpha restore (legacy resize path).
+#[cfg(target_os = "macos")]
+static PET_ALPHA_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Whether the pet-mode click-through poll thread should be running.
+static PET_PASSTHROUGH_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the pet-mode click-through poll thread is alive.
+static PET_PASSTHROUGH_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the pet-mode context menu is currently open. When true the poll
+/// thread disables ignoresMouseEvents so the entire expanded window accepts
+/// clicks (for the menu buttons). When false, only the mascot area accepts
+/// clicks and the rest is pass-through.
+static PET_CONTEXT_MENU_OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Per-host SSH backoff state.
 struct SshBackoffState {
@@ -3248,6 +3264,15 @@ async fn move_mini_by(app: tauri::AppHandle, dx: f64, dy: f64) -> Result<(), Str
                 if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
                     *f = Some((new_frame.origin.x, new_frame.origin.y, new_frame.size.width, new_frame.size.height));
                 }
+                // Keep the pet-context restore frame in sync when dragging
+                // while the context menu is open, so closing restores to the
+                // new position instead of the stale pre-drag position.
+                if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                    if let Some(ref mut s) = *saved {
+                        s.0 += dx;
+                        s.1 -= dy; // macOS: screen y is bottom-up, dy is top-down
+                    }
+                }
             }
         }).map_err(|e| e.to_string())?;
     }
@@ -3685,6 +3710,256 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Opti
     Ok(())
 }
 
+/// Schedule restoring the NSWindow alpha to 1.0 after the webview has had
+/// time to composite at the new frame size.  Uses GCD `dispatch_after_f` on
+/// the main queue so the restore runs at a precise time without thread-spawn
+/// overhead.  A generation counter (`PET_ALPHA_GEN`) prevents stale callbacks
+/// from restoring alpha during a subsequent resize (fast double-clicks).
+#[cfg(target_os = "macos")]
+fn pet_context_schedule_restore_alpha(ns_win_ptr: *mut std::ffi::c_void) {
+    extern "C" {
+        // dispatch_get_main_queue() is a C macro; the real symbol is a global.
+        #[link_name = "_dispatch_main_q"]
+        static DISPATCH_MAIN_Q: std::ffi::c_void;
+        fn dispatch_after_f(
+            when: u64,
+            queue: *const std::ffi::c_void,
+            context: *mut std::ffi::c_void,
+            work: extern "C" fn(*mut std::ffi::c_void),
+        );
+        fn dispatch_time(when: u64, delta: i64) -> u64;
+    }
+
+    /// Packed context passed through GCD void* pointer.
+    struct RestoreCtx {
+        ns_win: *mut std::ffi::c_void,
+        gen: u64,
+    }
+
+    extern "C" fn restore_alpha(ctx_raw: *mut std::ffi::c_void) {
+        let ctx = unsafe { Box::from_raw(ctx_raw as *mut RestoreCtx) };
+        // Only restore if no newer resize has happened since we were scheduled.
+        if PET_ALPHA_GEN.load(Ordering::SeqCst) != ctx.gen {
+            return;
+        }
+        use objc2::msg_send;
+        let obj = unsafe { &*(ctx.ns_win as *const objc2::runtime::AnyObject) };
+        unsafe {
+            let _: () = msg_send![obj, setAlphaValue: 1.0f64];
+        }
+    }
+
+    let gen = PET_ALPHA_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let ctx = Box::new(RestoreCtx { ns_win: ns_win_ptr, gen });
+    unsafe {
+        // 34ms ≈ 2 frames at 60Hz — minimal delay for the webview to
+        // finish compositing at the new window size.
+        let when = dispatch_time(0, 34_000_000); // nanoseconds
+        dispatch_after_f(
+            when,
+            &DISPATCH_MAIN_Q as *const std::ffi::c_void,
+            Box::into_raw(ctx) as *mut std::ffi::c_void,
+            restore_alpha,
+        );
+    }
+}
+
+/// Expand the mini window to pet-context size and start a cursor-position poll
+/// that toggles `setIgnoresMouseEvents:` — the transparent area around the
+/// mascot passes clicks through to the desktop. When the context menu is open
+/// (`PET_CONTEXT_MENU_OPEN`), the entire window accepts clicks.
+///
+/// Pass `active: false` to stop the poll and shrink back to collapsed size.
+#[tauri::command]
+async fn set_pet_mode_window(
+    app: tauri::AppHandle,
+    active: bool,
+    mascot_scale: Option<f64>,
+    large_mascot_scale: Option<f64>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("mini").ok_or("mini window not found")?;
+    let mascot_scale = sanitized_mascot_scale(mascot_scale);
+    let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
+
+    if active {
+        // Expand window to menu-ready size (mascot area + padding for buttons).
+        #[cfg(target_os = "macos")]
+        {
+            let win_clone = win.clone();
+            app.run_on_main_thread(move || {
+                use objc2::runtime::{AnyClass, AnyObject};
+                use objc2::msg_send;
+                use objc2_foundation::{NSRect, NSPoint, NSSize};
+                if let Ok(ns_win) = win_clone.ns_window() {
+                    let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                    let current: NSRect = unsafe { msg_send![obj, frame] };
+                    let screen_info: Option<(f64, f64, f64, f64)> = unsafe {
+                        let screen: *mut AnyObject = msg_send![obj, screen];
+                        if screen.is_null() {
+                            let cls = AnyClass::get(c"NSScreen");
+                            cls.and_then(|c| {
+                                let ms: *mut AnyObject = msg_send![c, mainScreen];
+                                if ms.is_null() { None } else {
+                                    let sf: NSRect = msg_send![&*ms, frame];
+                                    Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height))
+                                }
+                            })
+                        } else {
+                            let sf: NSRect = msg_send![&*screen, frame];
+                            Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height))
+                        }
+                    };
+                    if let Some((sx, sy, sw, sh)) = screen_info {
+                        let left_pad = 180.0;
+                        let top_pad = 100.0;
+                        let win_w = (current.size.width + left_pad).min(sw);
+                        let win_h = (current.size.height + top_pad).min(sh);
+                        // Keep bottom-right corner fixed (mascot stays there).
+                        let mut x = current.origin.x + current.size.width - win_w;
+                        let y = current.origin.y;
+                        x = x.max(sx).min(sx + sw - win_w);
+                        let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
+                        unsafe {
+                            // Start with clicks passing through until the poll takes over.
+                            let _: () = msg_send![obj, setIgnoresMouseEvents: true];
+                            let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                            let _: () = msg_send![obj, setLevel: 27isize];
+                            let _: () = msg_send![obj, orderFrontRegardless];
+                        }
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((x, y, win_w, win_h));
+                        }
+                    }
+                }
+            }).map_err(|e| e.to_string())?;
+        }
+
+        // Start the click-through poll thread.
+        PET_PASSTHROUGH_ACTIVE.store(true, Ordering::SeqCst);
+        if !PET_PASSTHROUGH_THREAD_ALIVE.load(Ordering::SeqCst) {
+            let app2 = app.clone();
+            std::thread::spawn(move || pet_passthrough_poll(app2, mascot_scale, large_mascot_scale));
+        }
+    } else {
+        // Stop the poll thread.
+        PET_PASSTHROUGH_ACTIVE.store(false, Ordering::SeqCst);
+        PET_CONTEXT_MENU_OPEN.store(false, Ordering::SeqCst);
+
+        // Shrink back to collapsed mascot size and re-enable mouse events.
+        #[cfg(target_os = "macos")]
+        {
+            let win_clone = win.clone();
+            app.run_on_main_thread(move || {
+                use objc2::runtime::AnyObject;
+                use objc2::msg_send;
+                use objc2_foundation::{NSRect, NSPoint, NSSize};
+                if let Ok(ns_win) = win_clone.ns_window() {
+                    let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                    let current: NSRect = unsafe { msg_send![obj, frame] };
+                    let (win_w, win_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+                    // Collapse towards bottom-right corner.
+                    let x = current.origin.x + current.size.width - win_w;
+                    let y = current.origin.y;
+                    let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
+                    unsafe {
+                        let _: () = msg_send![obj, setIgnoresMouseEvents: false];
+                        let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                    }
+                    if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                        *f = Some((x, y, win_w, win_h));
+                    }
+                }
+            }).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Tell the pet-mode pass-through poll whether the context menu is open.
+#[tauri::command]
+async fn set_pet_context_menu(open: bool) -> Result<(), String> {
+    PET_CONTEXT_MENU_OPEN.store(open, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Polling loop for pet-mode click pass-through. Checks cursor position every
+/// 20ms. When the cursor is over the mascot (bottom-right of the expanded
+/// window) or the context menu is open, `setIgnoresMouseEvents: false` so the
+/// webview receives events. Otherwise `setIgnoresMouseEvents: true` so clicks
+/// pass through to whatever is behind.
+#[cfg(target_os = "macos")]
+fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_scale: f64) {
+    use std::time::Duration;
+    PET_PASSTHROUGH_THREAD_ALIVE.store(true, Ordering::SeqCst);
+    let mut was_interactive = false;
+    // Full visual size of the mascot in CSS points.
+    let (mascot_w, mascot_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+    // Match the frontend hitbox (LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER / 3 and
+    // LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER / 3 of the visual size, centered).
+    let hit_w = mascot_w * (1.8 / 3.0);
+    let hit_h = mascot_h * (2.5 / 3.0);
+    let inset_x = (mascot_w - hit_w) / 2.0;
+    let inset_y = (mascot_h - hit_h) / 2.0;
+
+    while PET_PASSTHROUGH_ACTIVE.load(Ordering::SeqCst) {
+        let menu_open = PET_CONTEXT_MENU_OPEN.load(Ordering::SeqCst);
+        let frame = MINI_WINDOW_FRAME.lock().ok().and_then(|g| *g);
+
+        let should_be_interactive = if menu_open {
+            true
+        } else if let Some((fx, fy, fw, _fh)) = frame {
+            let cursor = macos_cursor_position();
+            // Mascot visual area is at the bottom-right corner of the window.
+            // The hitbox is a centered sub-region within that visual area.
+            let mascot_left = fx + fw - mascot_w;
+            let mascot_bottom = fy;
+            let hit_left = mascot_left + inset_x;
+            let hit_right = mascot_left + mascot_w - inset_x;
+            let hit_bottom = mascot_bottom + inset_y;
+            let hit_top = mascot_bottom + mascot_h - inset_y;
+            cursor.0 >= hit_left && cursor.0 <= hit_right
+                && cursor.1 >= hit_bottom && cursor.1 <= hit_top
+        } else {
+            false
+        };
+
+        if should_be_interactive != was_interactive {
+            let app1 = app.clone();
+            let app2 = app.clone();
+            let val = should_be_interactive;
+            let _ = app1.run_on_main_thread(move || {
+                if let Some(win) = app2.get_webview_window("mini") {
+                    if let Ok(ns_win) = win.ns_window() {
+                        use objc2::msg_send;
+                        let obj = unsafe { &*(ns_win as *mut objc2::runtime::AnyObject) };
+                        unsafe {
+                            let _: () = msg_send![obj, setIgnoresMouseEvents: !val];
+                        }
+                    }
+                }
+            });
+            was_interactive = should_be_interactive;
+        }
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Ensure events are re-enabled when the thread exits.
+    let app_exit = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(win) = app_exit.get_webview_window("mini") {
+            if let Ok(ns_win) = win.ns_window() {
+                use objc2::msg_send;
+                let obj = unsafe { &*(ns_win as *mut objc2::runtime::AnyObject) };
+                unsafe {
+                    let _: () = msg_send![obj, setIgnoresMouseEvents: false];
+                }
+            }
+        }
+    });
+    PET_PASSTHROUGH_THREAD_ALIVE.store(false, Ordering::SeqCst);
+}
+
 /// Resize the mini window to 3/4 of screen, centered, with normal window level.
 /// Used for settings/update modal mode. Pass `restore: true` to go back to mini mode.
 #[tauri::command]
@@ -3693,6 +3968,7 @@ async fn set_mini_size(
     restore: bool,
     position: Option<String>,
     keep_on_top: Option<bool>,
+    pet_context: Option<bool>,
     mascot_scale: Option<f64>,
     large_mascot: Option<bool>,
     large_mascot_scale: Option<f64>,
@@ -3700,6 +3976,7 @@ async fn set_mini_size(
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
     let want_top = keep_on_top.unwrap_or(restore);
+    let is_pet_context = pet_context.unwrap_or(false);
     let mascot_scale = sanitized_mascot_scale(mascot_scale);
     let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
 
@@ -3738,6 +4015,98 @@ async fn set_mini_size(
                     // the mini window is temporarily resized into settings/update mode.
                     if let Ok(mut info) = NOTCH_SCREEN_INFO.lock() {
                         *info = Some((sx, sy, sw, sh, notch_off));
+                    }
+                    if is_pet_context {
+                        if restore {
+                            let current: NSRect = unsafe { msg_send![obj, frame] };
+                            if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                                if let Some((x, y, win_w, win_h)) = *saved {
+                                    let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
+                                    // Hide window before shrink to avoid compositor
+                                    // flashing the old large-frame content at the
+                                    // wrong position inside the smaller window.
+                                    unsafe {
+                                        let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                                        let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
+                                        let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                                        if want_top {
+                                            let _: () = msg_send![obj, orderFrontRegardless];
+                                        }
+                                    }
+                                    *saved = None;
+                                    if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                                        *f = Some((x, y, win_w, win_h));
+                                    }
+                                    // Restore alpha after the webview repaints at
+                                    // the new size.  dispatch_after on the main
+                                    // queue with a
+                                    // short delay lets the compositor
+                                    // finish compositing the new frame.
+                                    pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                                    return;
+                                }
+                            }
+                            // Fallback: if save frame is missing (e.g. race/double close),
+                            // still collapse around current center instead of jumping to
+                            // default corner placement.
+                            let (target_w, target_h) = if large_mascot.unwrap_or(false) {
+                                large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale)
+                            } else {
+                                collapsed_mascot_window_size(mascot_scale)
+                            };
+                            let mut x = current.origin.x + (current.size.width - target_w) / 2.0;
+                            let mut y = current.origin.y + (current.size.height - target_h) / 2.0;
+                            x = x.max(sx).min(sx + sw - target_w);
+                            y = y.max(sy).min(sy + sh - target_h);
+                            let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(target_w, target_h));
+                            unsafe {
+                                let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                                let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
+                                let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                                if want_top {
+                                    let _: () = msg_send![obj, orderFrontRegardless];
+                                }
+                            }
+                            if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                                *f = Some((x, y, target_w, target_h));
+                            }
+                            pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                            return;
+                        } else {
+                            let current: NSRect = unsafe { msg_send![obj, frame] };
+                            if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                                *saved = Some((current.origin.x, current.origin.y, current.size.width, current.size.height));
+                            }
+                            // Expand LEFT and UP, keeping the bottom-right corner
+                            // of the window fixed (macOS: origin.x+width, origin.y).
+                            // The mascot stays at bottom-right via CSS absolute pos.
+                            let left_pad = 180.0;
+                            let top_pad = 100.0;
+                            let win_w = (current.size.width + left_pad).min(sw);
+                            let win_h = (current.size.height + top_pad).min(sh);
+                            let mut x = current.origin.x + current.size.width - win_w;
+                            let mut y = current.origin.y;
+                            x = x.max(sx).min(sx + sw - win_w);
+                            y = y.max(sy).min(sy + sh - win_h);
+                            let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
+                            // Hide → resize → delayed restore, same as the
+                            // shrink path, to prevent the old small-window
+                            // content from flashing at the top-left of the
+                            // newly expanded frame.
+                            unsafe {
+                                let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                                let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
+                                let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                                if want_top {
+                                    let _: () = msg_send![obj, orderFrontRegardless];
+                                }
+                            }
+                            if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                                *f = Some((x, y, win_w, win_h));
+                            }
+                            pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                            return;
+                        }
                     }
                     if restore {
                         let (win_w, win_h) = if large_mascot.unwrap_or(false) {
@@ -9235,7 +9604,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
