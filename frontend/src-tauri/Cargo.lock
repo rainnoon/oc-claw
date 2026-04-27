@@ -2548,6 +2548,7 @@ name = "oc_claw"
 version = "1.8.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "dirs 5.0.1",
  "libc",

@@ -31,6 +31,7 @@ percent-encoding = "2"
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 libc = "0.2"
 objc2 = "0.6"
+block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSApplication", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray"] }
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }

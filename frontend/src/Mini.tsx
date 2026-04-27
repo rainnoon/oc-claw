@@ -843,7 +843,7 @@ export default function Mini() {
       } catch {}
     }
     poll()
-    const id = setInterval(poll, 1000)
+    const id = setInterval(poll, 2000)
     return () => clearInterval(id)
   }, [appMode])
 
