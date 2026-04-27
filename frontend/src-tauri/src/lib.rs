@@ -3779,25 +3779,26 @@ async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         app.run_on_main_thread(move || {
             let bid = get_frontmost_bundle_id().to_lowercase();
-            let media_remote_playing = get_system_now_playing_is_playing();
-            let music_playing_in_background = is_any_music_app_playing();
-            let music_app_running = is_music_app_running();
-            let result = if is_video_app(&bid) {
-                if media_remote_playing.unwrap_or(false) { "video" } else { "none" }
-            } else if music_playing_in_background {
-                "music"
-            } else if media_remote_playing.unwrap_or(false) && music_app_running {
+
+            let cli_playing = is_nowplaying_cli_playing();
+            let script_playing = if cli_playing.is_none() {
+                is_any_music_app_playing()
+            } else {
+                false
+            };
+
+            let is_playing = cli_playing.unwrap_or(false) || script_playing;
+
+            let result = if is_video_app(&bid) && is_playing {
+                "video"
+            } else if is_playing && (is_music_app_running() || is_music_app(&bid)) {
                 "music"
             } else {
                 "none"
             };
             log::info!(
-                "[now_playing] frontmost_bid={} media_remote={:?} music_app_running={} script_music_playing={} result={}",
-                bid,
-                media_remote_playing,
-                music_app_running,
-                music_playing_in_background,
-                result
+                "[now_playing] frontmost_bid={} cli_playing={:?} script_playing={} result={}",
+                bid, cli_playing, script_playing, result
             );
             let _ = tx.send(result.into());
         }).map_err(|e| e.to_string())?;
@@ -3867,7 +3868,7 @@ fn is_music_app_running() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn get_system_now_playing_is_playing() -> Option<bool> {
+fn _get_system_now_playing_is_playing_unused() -> Option<bool> {
     use block2::RcBlock;
     use std::ffi::c_void;
     use std::sync::{Mutex, OnceLock};
@@ -4294,6 +4295,29 @@ fn is_audio_output_active() -> bool {
         );
         err2 == 0 && running != 0
     }
+}
+
+/// Use `nowplaying-cli` (if installed) to check playback rate.
+/// Returns Some(true) if playing, Some(false) if paused, None if tool unavailable.
+#[cfg(target_os = "macos")]
+fn is_nowplaying_cli_playing() -> Option<bool> {
+    static CLI_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let path = CLI_PATH.get_or_init(|| {
+        for p in &["/opt/homebrew/bin/nowplaying-cli", "/usr/local/bin/nowplaying-cli"] {
+            if std::path::Path::new(p).exists() {
+                return Some(p.to_string());
+            }
+        }
+        None
+    });
+    let cli = path.as_deref()?;
+    let output = std::process::Command::new(cli)
+        .args(["get", "playbackRate"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let rate: f64 = text.trim().parse().ok()?;
+    Some(rate > 0.01)
 }
 
 #[cfg(target_os = "macos")]
