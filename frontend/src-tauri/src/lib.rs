@@ -3779,26 +3779,29 @@ async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         app.run_on_main_thread(move || {
             let bid = get_frontmost_bundle_id().to_lowercase();
+            let cli_status = nowplaying_cli_status();
 
-            let cli_playing = is_nowplaying_cli_playing();
-            let script_playing = if cli_playing.is_none() {
-                is_any_music_app_playing()
+            let result = if let Some((playing, ref source)) = cli_status {
+                if !playing {
+                    "none"
+                } else if is_music_app(source) {
+                    "music"
+                } else if is_video_app(source) || is_browser(source) {
+                    "video"
+                } else {
+                    "music"
+                }
             } else {
-                false
-            };
-
-            let is_playing = cli_playing.unwrap_or(false) || script_playing;
-
-            let result = if is_video_app(&bid) && is_playing {
-                "video"
-            } else if is_playing && (is_music_app_running() || is_music_app(&bid)) {
-                "music"
-            } else {
-                "none"
+                // nowplaying-cli not available, fall back to AppleScript
+                if is_any_music_app_playing() {
+                    "music"
+                } else {
+                    "none"
+                }
             };
             log::info!(
-                "[now_playing] frontmost_bid={} cli_playing={:?} script_playing={} result={}",
-                bid, cli_playing, script_playing, result
+                "[now_playing] frontmost_bid={} cli_status={:?} result={}",
+                bid, cli_status, result
             );
             let _ = tx.send(result.into());
         }).map_err(|e| e.to_string())?;
@@ -4297,10 +4300,10 @@ fn is_audio_output_active() -> bool {
     }
 }
 
-/// Use `nowplaying-cli` (if installed) to check playback rate.
-/// Returns Some(true) if playing, Some(false) if paused, None if tool unavailable.
+/// Use `nowplaying-cli` to check playback rate and source app.
+/// Returns (is_playing, source_bundle_id) or None if tool unavailable.
 #[cfg(target_os = "macos")]
-fn is_nowplaying_cli_playing() -> Option<bool> {
+fn nowplaying_cli_status() -> Option<(bool, String)> {
     static CLI_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     let path = CLI_PATH.get_or_init(|| {
         for p in &["/opt/homebrew/bin/nowplaying-cli", "/usr/local/bin/nowplaying-cli"] {
@@ -4312,12 +4315,14 @@ fn is_nowplaying_cli_playing() -> Option<bool> {
     });
     let cli = path.as_deref()?;
     let output = std::process::Command::new(cli)
-        .args(["get", "playbackRate"])
+        .args(["get", "playbackRate", "clientBundleIdentifier"])
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
-    let rate: f64 = text.trim().parse().ok()?;
-    Some(rate > 0.01)
+    let mut lines = text.lines();
+    let rate: f64 = lines.next()?.trim().parse().ok()?;
+    let source_bid = lines.next().unwrap_or("").trim().to_lowercase();
+    Some((rate > 0.01, source_bid))
 }
 
 #[cfg(target_os = "macos")]
@@ -4395,6 +4400,16 @@ fn is_video_app(bid: &str) -> bool {
         "com.bilibili.bili", "com.disneyplus", "com.netflix",
     ];
     VIDEO_APPS.iter().any(|v| bid.contains(v))
+}
+
+#[cfg(target_os = "macos")]
+fn is_browser(bid: &str) -> bool {
+    const BROWSERS: &[&str] = &[
+        "com.google.chrome", "org.mozilla.firefox", "com.apple.safari",
+        "com.microsoft.edgemac", "com.brave.browser", "com.vivaldi.vivaldi",
+        "company.thebrowser.browser", "com.operasoftware.opera",
+    ];
+    BROWSERS.iter().any(|b| bid.contains(b))
 }
 
 /// Expand the mini window to pet-context size and start a cursor-position poll
