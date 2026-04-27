@@ -21,6 +21,7 @@ import {
   loadAppMode, saveAppMode, loadPetData, savePetData, tickPetData,
   defaultPetData, getAffectionTier,
   POMODORO_COINS_PER_MIN, AFFECTION_ACTIVITY_PER_10MIN, AFFECTION_MAX,
+  HUNGER_ACTIVITY_PER_HOUR, HUNGER_OFFLINE_FLOOR,
   applyHeadpat,
 } from './lib/petStore'
 
@@ -96,6 +97,18 @@ type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
 const LARGE_ACTION_DISPLAY_MS = 3_000
 const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'shy']
+
+// Priority: higher number = harder to interrupt
+function petActionPriority(action: PetAction): number {
+  switch (action) {
+    case 'grasp': return 100
+    case 'study': case 'work': return 90
+    case 'hungry': return 70
+    case 'watch': return 50
+    case 'music': return 40
+    default: return 0
+  }
+}
 const LARGE_DAILY_ANGRY_LIMIT = 10
 const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 1.8
 const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.5
@@ -709,6 +722,7 @@ export default function Mini() {
   currentPetActionRef.current = currentPetAction
   const [walkFlipped, setWalkFlipped] = useState(false)
   const walkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const walkAutoRef = useRef(false)
   const [pomodoro, setPomodoro] = useState<PomodoroState | null>(null)
   const pomodoroRef = useRef<PomodoroState | null>(null)
   pomodoroRef.current = pomodoro
@@ -787,6 +801,18 @@ export default function Mini() {
 
   // Pet mode data loaded inside main init effect below (no separate effect)
 
+  // React to hunger changes (e.g. from Dev slider) — switch to/from hungry
+  useEffect(() => {
+    if (appMode !== 'pet') return
+    if (petData.hunger < 30 && petActionPriority(currentPetAction) < petActionPriority('hungry')) {
+      setCurrentPetAction('hungry')
+      currentPetActionRef.current = 'hungry'
+    } else if (petData.hunger >= 30 && currentPetAction === 'hungry') {
+      setCurrentPetAction('idle')
+      currentPetActionRef.current = 'idle'
+    }
+  }, [appMode, petData.hunger])
+
   // Pet mode: periodic tick for hunger/affection decay (every 5 min)
   useEffect(() => {
     if (appMode !== 'pet') return
@@ -795,8 +821,8 @@ export default function Mini() {
       setPetData(ticked)
       petDataRef.current = ticked
       await savePetData(ticked)
-      // Auto-select hungry animation when hunger drops
-      if (ticked.hunger < 30 && currentPetActionRef.current === 'idle') {
+      // Auto-select hungry animation when hunger drops (overrides lower-priority actions)
+      if (ticked.hunger < 30 && petActionPriority(currentPetActionRef.current) < petActionPriority('hungry')) {
         setCurrentPetAction('hungry')
         currentPetActionRef.current = 'hungry'
       }
@@ -806,6 +832,31 @@ export default function Mini() {
       if (petTickIntervalRef.current) clearInterval(petTickIntervalRef.current)
     }
   }, [appMode])
+
+  // Pet mode: after 5 min idle, randomly switch to sleep or walk
+  const idleAutoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (idleAutoTimerRef.current) {
+      clearTimeout(idleAutoTimerRef.current)
+      idleAutoTimerRef.current = null
+    }
+    if (appMode !== 'pet' || currentPetAction !== 'idle' || petActionPriority(currentPetAction) > 0) return
+    idleAutoTimerRef.current = setTimeout(() => {
+      if (currentPetActionRef.current !== 'idle' || petActionPriority(currentPetActionRef.current) > 0) return
+      const next: PetAction = Math.random() < 0.5 ? 'sleep' : 'walk'
+      if (next === 'walk' && !canWalk(petDataRef.current)) {
+        setCurrentPetAction('sleep')
+        currentPetActionRef.current = 'sleep'
+      } else {
+        if (next === 'walk') walkAutoRef.current = true
+        setCurrentPetAction(next)
+        currentPetActionRef.current = next
+      }
+    }, 5 * 60 * 1000)
+    return () => {
+      if (idleAutoTimerRef.current) clearTimeout(idleAutoTimerRef.current)
+    }
+  }, [appMode, currentPetAction])
 
   // Pet mode: activity affection gain (watch/music: +1 per 10 min)
   useEffect(() => {
@@ -818,12 +869,35 @@ export default function Mini() {
     activityTimerRef.current = setInterval(async () => {
       const d = { ...petDataRef.current }
       d.affection = Math.min(AFFECTION_MAX, d.affection + AFFECTION_ACTIVITY_PER_10MIN)
+      d.hunger = Math.max(HUNGER_OFFLINE_FLOOR, d.hunger - HUNGER_ACTIVITY_PER_HOUR / 6)
       setPetData(d)
       petDataRef.current = d
       await savePetData(d)
     }, 10 * 60 * 1000)
     return () => {
       if (activityTimerRef.current) clearInterval(activityTimerRef.current)
+    }
+  }, [appMode, currentPetAction])
+
+  // Pet mode: randomly trigger dance during music (avg every ~5 min)
+  const musicDanceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const danceFromMusicRef = useRef(false)
+  useEffect(() => {
+    if (musicDanceTimerRef.current) {
+      clearInterval(musicDanceTimerRef.current)
+      musicDanceTimerRef.current = null
+    }
+    if (appMode !== 'pet' || currentPetAction !== 'music') return
+    musicDanceTimerRef.current = setInterval(() => {
+      if (currentPetActionRef.current !== 'music') return
+      if (Math.random() < 0.1) {
+        danceFromMusicRef.current = true
+        setCurrentPetAction('dance')
+        currentPetActionRef.current = 'dance'
+      }
+    }, 30_000)
+    return () => {
+      if (musicDanceTimerRef.current) clearInterval(musicDanceTimerRef.current)
     }
   }, [appMode, currentPetAction])
 
@@ -840,11 +914,25 @@ export default function Mini() {
     const WALK_SPEED = 2
     const WALK_INTERVAL = 30
     const FLIP_AFTER = 3000
+    const AUTO_WALK_DURATION = 6000
+    const isAuto = walkAutoRef.current
+    walkAutoRef.current = false
     let elapsed = 0
+    let totalElapsed = 0
     let direction = -1
     setWalkFlipped(false)
     walkTimerRef.current = setInterval(() => {
       elapsed += WALK_INTERVAL
+      totalElapsed += WALK_INTERVAL
+      if (isAuto && totalElapsed >= AUTO_WALK_DURATION) {
+        if (walkTimerRef.current) clearInterval(walkTimerRef.current)
+        walkTimerRef.current = null
+        const d = petDataRef.current
+        const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+        setCurrentPetAction(next)
+        currentPetActionRef.current = next
+        return
+      }
       if (elapsed >= FLIP_AFTER) {
         elapsed = 0
         direction *= -1
@@ -860,18 +948,19 @@ export default function Mini() {
   // Pet mode: auto-detect music/video from frontmost app
   useEffect(() => {
     if (appMode !== 'pet') return
-    const AUTO_ACTIONS: PetAction[] = ['idle', 'hungry', 'music', 'watch']
     const poll = async () => {
-      if (!AUTO_ACTIONS.includes(currentPetActionRef.current)) return
+      const cur = currentPetActionRef.current
+      const curPri = petActionPriority(cur)
+      // Don't interrupt actions with higher priority than media
+      if (curPri >= petActionPriority('hungry')) return
       try {
         const media = await invoke<string>('get_now_playing')
-        const cur = currentPetActionRef.current
-        if (media === 'music' && cur !== 'music') {
-          setCurrentPetAction('music')
-          currentPetActionRef.current = 'music'
-        } else if (media === 'video' && cur !== 'watch') {
+        if (media === 'video' && cur !== 'watch') {
           setCurrentPetAction('watch')
           currentPetActionRef.current = 'watch'
+        } else if (media === 'music' && cur !== 'music') {
+          setCurrentPetAction('music')
+          currentPetActionRef.current = 'music'
         } else if (media === 'none' && (cur === 'music' || cur === 'watch')) {
           const d = petDataRef.current
           const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
@@ -2111,7 +2200,7 @@ export default function Mini() {
               } else if (tier === 'shy') {
                 const updated = applyHeadpat(petDataRef.current)
                 handleUpdatePetData(updated)
-                handleSetPetAction('headpat')
+                handleSetPetAction('shy')
               } else {
                 const updated = applyHeadpat(petDataRef.current)
                 handleUpdatePetData(updated)
@@ -2758,10 +2847,15 @@ export default function Mini() {
                 playsInline
                 preload="auto"
                 onEnded={() => {
-                  // Transient pet actions play once then return to idle/hungry.
                   if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
-                    const d = petDataRef.current
-                    const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+                    let next: PetAction
+                    if (currentPetActionRef.current === 'dance' && danceFromMusicRef.current) {
+                      danceFromMusicRef.current = false
+                      next = 'music'
+                    } else {
+                      const d = petDataRef.current
+                      next = d.hunger < 30 ? 'hungry' : 'idle'
+                    }
                     setCurrentPetAction(next)
                     currentPetActionRef.current = next
                   }

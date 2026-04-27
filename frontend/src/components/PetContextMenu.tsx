@@ -3,12 +3,12 @@ import { motion, AnimatePresence } from 'motion/react'
 import {
   type PetData, type PetAction, type PomodoroState, type AffectionTier,
   FOODS, POMODORO_PRESETS,
-  getAffectionTier, canDance, canWalk, canHeadpat,
+  getAffectionTier, canWalk, canHeadpat,
   canClaimDailyGift, claimDailyGift,
-  applyDance, applyFeed, applyHeadpat,
+  applyFeed, applyHeadpat,
 } from '../lib/petStore'
 
-type SubPanel = 'main' | 'actions' | 'shop' | 'pomodoro'
+type SubPanel = 'main' | 'actions' | 'shop' | 'pomodoro' | 'dev'
 
 interface PetContextMenuProps {
   open: boolean
@@ -54,9 +54,7 @@ export function PetContextMenu({
   const tier: AffectionTier = getAffectionTier(petData.affection)
 
   const handleAction = useCallback((action: PetAction) => {
-    if (action === 'dance') {
-      onUpdatePetData(applyDance(petData))
-    } else if (action === 'headpat') {
+    if (action === 'headpat') {
       onUpdatePetData(applyHeadpat(petData))
     }
     onSetAction(action)
@@ -187,16 +185,17 @@ export function PetContextMenu({
               <SideBtn icon="🍅" label="Pomodoro" onClick={() => setSubPanel('pomodoro')} />
             )}
             <SideBtn icon="⚙️" label="Settings" onClick={onOpenSettings} />
+            {import.meta.env.DEV && <SideBtn icon="🔧" label="Dev" onClick={() => setSubPanel('dev')} dim />}
           </>
         ) : (
           <>
             <SideBtn icon="←" label="Back" onClick={() => setSubPanel('main')} dim />
             {subPanel === 'actions' && (
               <>
+                <SideBtn icon="😴" label="Sleep" onClick={() => handleAction('sleep')} active={currentAction === 'sleep'} />
                 <SideBtn icon="📺" label="Watch" onClick={() => handleAction('watch')} active={currentAction === 'watch'} />
                 <SideBtn icon="🎵" label="Music" onClick={() => handleAction('music')} active={currentAction === 'music'} />
                 <SideBtn icon="🚶" label="Walk" onClick={() => handleAction('walk')} disabled={!canWalk(petData)} />
-                <SideBtn icon="💃" label="Dance" onClick={() => handleAction('dance')} disabled={!canDance(petData)} />
                 <SideBtn icon="😊" label={`Pat ${petData.headpatToday}/5`} onClick={() => handleAction('headpat')} disabled={!canHeadpat(petData)} />
               </>
             )}
@@ -212,6 +211,20 @@ export function PetContextMenu({
             {subPanel === 'pomodoro' && POMODORO_PRESETS.map(m => (
               <SideBtn key={m} icon="🍅" label={`${m} min`} onClick={() => onStartPomodoro(m)} />
             ))}
+            {subPanel === 'dev' && (
+              <div style={{
+                display: 'flex', flexDirection: 'column', gap: 8,
+                background: 'rgba(8,8,8,0.88)', border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: 10, padding: '10px 12px', backdropFilter: 'blur(12px)',
+              }}>
+                <DevSlider label="❤️ Affection" value={Math.round(petData.affection)} min={0} max={100}
+                  onChange={v => onUpdatePetData({ ...petData, affection: v })} />
+                <DevSlider label="🍗 Hunger" value={Math.round(petData.hunger)} min={0} max={100}
+                  onChange={v => onUpdatePetData({ ...petData, hunger: v })} />
+                <DevSlider label="🪙 Coins" value={petData.coins} min={0} max={9999}
+                  onChange={v => onUpdatePetData({ ...petData, coins: v })} />
+              </div>
+            )}
           </>
         )}
       </div>
@@ -258,6 +271,24 @@ function SideBtn({ icon, label, onClick, disabled, active, dim }: {
       <span style={{ fontSize: 15 }}>{icon}</span>
       <span>{label}</span>
     </button>
+  )
+}
+
+function DevSlider({ label, value, min, max, onChange }: {
+  label: string; value: number; min: number; max: number; onChange: (v: number) => void
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#ccc' }}>
+        <span>{label}</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: '#fff' }}>{value}</span>
+      </div>
+      <input
+        type="range" min={min} max={max} value={value}
+        onChange={e => onChange(Number(e.target.value))}
+        style={{ width: '100%', accentColor: '#f59e0b', cursor: 'pointer' }}
+      />
+    </div>
   )
 }
 

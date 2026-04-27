@@ -12,7 +12,7 @@ export type PetAction =
   | 'watch'    // user-triggered activity
   | 'music'    // user-triggered activity
   | 'walk'     // requires hunger >= 30
-  | 'dance'    // requires hunger >= 50, affection >= 80
+  | 'dance'    // random during music
   | 'eat'      // feeding animation
   | 'hungry'   // hunger < 30
   | 'headpat'  // user clicks head
@@ -55,10 +55,8 @@ export const HUNGER_INIT = 100
 export const HUNGER_DECAY_PER_HOUR = 2
 export const HUNGER_DECAY_SLEEP_PER_HOUR = 1
 export const HUNGER_OFFLINE_FLOOR = 10
-export const HUNGER_DANCE_COST = 10
-
 export const AFFECTION_MAX = 100
-export const AFFECTION_INIT = 50
+export const AFFECTION_INIT = 100 // TODO: restore to 50 after testing
 export const AFFECTION_DECAY_PER_DAY = 5
 export const AFFECTION_HUNGRY_DECAY_PER_HOUR = 2
 export const AFFECTION_OFFLINE_FLOOR = 10
@@ -66,7 +64,7 @@ export const AFFECTION_HEADPAT = 2
 export const AFFECTION_HEADPAT_DAILY_LIMIT = 5
 export const AFFECTION_ACTIVITY_PER_10MIN = 1
 export const AFFECTION_FEED_HUNGRY = 5
-export const AFFECTION_DANCE = 2
+export const HUNGER_ACTIVITY_PER_HOUR = 3
 
 export const DAILY_GIFT_MIN = 20
 export const DAILY_GIFT_MAX = 60
@@ -125,7 +123,9 @@ export async function loadPetData(): Promise<PetData> {
     await store.save()
     return d
   }
-  return { ...defaultPetData(), ...raw }
+  const d = { ...defaultPetData(), ...raw }
+  d.affection = 100 // TODO: remove after testing
+  return d
 }
 
 export async function savePetData(data: PetData): Promise<void> {
@@ -206,10 +206,6 @@ export function claimDailyGift(data: PetData): { data: PetData; amount: number }
 
 // ─── Action helpers ───
 
-export function canDance(data: PetData): boolean {
-  return data.hunger >= 50 && data.affection >= 80
-}
-
 export function canWalk(data: PetData): boolean {
   return data.hunger >= 30
 }
@@ -224,15 +220,6 @@ export function applyHeadpat(data: PetData): PetData {
     ...data,
     affection: Math.min(AFFECTION_MAX, data.affection + AFFECTION_HEADPAT),
     headpatToday: data.headpatToday + 1,
-  }
-}
-
-export function applyDance(data: PetData): PetData {
-  if (!canDance(data)) return data
-  return {
-    ...data,
-    hunger: Math.max(0, data.hunger - HUNGER_DANCE_COST),
-    affection: Math.min(AFFECTION_MAX, data.affection + AFFECTION_DANCE),
   }
 }
 
