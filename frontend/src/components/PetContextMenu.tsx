@@ -8,6 +8,8 @@ import {
   applyFeed, applyHeadpat,
 } from '../lib/petStore'
 
+import { Heart, Drumstick, Coins } from 'lucide-react'
+
 type SubPanel = 'main' | 'actions' | 'shop' | 'pomodoro' | 'dev'
 
 interface PetContextMenuProps {
@@ -101,175 +103,234 @@ export function PetContextMenu({
         pointerEvents: 'none',
       }}
     >
-      {/* Status bar above mascot */}
-      <div style={{
+      {/* Status bar top right */}
+      <div
+        onPointerDown={e => e.stopPropagation()}
+        style={{
         position: 'absolute',
-        left: '50%',
-        top: -88,
-        transform: 'translateX(-50%)',
+        right: 20,
+        top: -70,
         pointerEvents: 'auto',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         gap: 12,
-        padding: '8px 16px',
-        borderRadius: 10,
-        background: 'rgba(8,8,8,0.88)',
-        border: '1px solid rgba(255,255,255,0.1)',
-        backdropFilter: 'blur(12px)',
+        padding: '4px 16px',
+        background: 'rgba(10,10,10,0.85)',
+        border: '1.5px solid #facc15',
+        boxShadow: '0 0 12px rgba(250, 204, 21, 0.25), inset 0 0 8px rgba(250, 204, 21, 0.15)',
+        transform: 'skewX(-15deg)',
         whiteSpace: 'nowrap',
+        zIndex: 10,
       }}>
-        <StatBadge icon="❤️" value={Math.round(petData.affection)} color={tierColor(tier)} />
-        <StatBadge icon="🍗" value={Math.round(petData.hunger)} color={petData.hunger < 30 ? '#ef4444' : '#22c55e'} />
-        <span style={{ fontSize: 13, color: '#fbbf24', fontWeight: 700, fontVariantNumeric: 'tabular-nums', position: 'relative' }}>
-          🪙 {petData.coins}
-          <AnimatePresence>
-            {coinBonus && (
-              <motion.span
-                key={coinBonus.id}
-                initial={{ opacity: 1, y: 0 }}
-                animate={{ opacity: 1, y: -20 }}
-                exit={{ opacity: 0, y: -28 }}
-                transition={{ duration: 0.8, ease: 'easeOut' }}
-                style={{
-                  position: 'absolute',
-                  left: '50%',
-                  top: 0,
-                  transform: 'translateX(-50%)',
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: '#4ade80',
-                  pointerEvents: 'none',
-                }}
-              >
-                +{coinBonus.amount}
-              </motion.span>
-            )}
-          </AnimatePresence>
-        </span>
+        <div style={{ transform: 'skewX(15deg)', display: 'flex', gap: 12, alignItems: 'center' }}>
+          <StatBadge icon={<Heart size={13} strokeWidth={3} />} value={Math.round(petData.affection)} color="#facc15" />
+          <StatBadge icon={<Drumstick size={13} strokeWidth={3} />} value={Math.round(petData.hunger)} color="#facc15" />
+          <span style={{ fontSize: 13, color: '#facc15', fontWeight: 900, fontVariantNumeric: 'tabular-nums', position: 'relative', display: 'flex', alignItems: 'center', gap: 4, textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 4px rgba(0,0,0,0.8)' }}>
+            <Coins size={13} strokeWidth={3} /> {petData.coins}
+            <AnimatePresence>
+              {coinBonus && (
+                <motion.span
+                  key={coinBonus.id}
+                  initial={{ opacity: 1, y: 0 }}
+                  animate={{ opacity: 1, y: -20 }}
+                  exit={{ opacity: 0, y: -28 }}
+                  transition={{ duration: 0.8, ease: 'easeOut' }}
+                  style={{
+                    position: 'absolute',
+                    left: '50%',
+                    top: 0,
+                    transform: 'translateX(-50%)',
+                    fontSize: 12,
+                    fontWeight: 900,
+                    color: '#facc15',
+                    pointerEvents: 'none',
+                    textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 8px rgba(250,204,21,0.8)',
+                  }}
+                >
+                  +{coinBonus.amount}
+                </motion.span>
+              )}
+            </AnimatePresence>
+          </span>
+        </div>
       </div>
 
       {/* Buttons to the left of mascot */}
       <style>{`
-        .pet-menu-scroll::-webkit-scrollbar { width: 2px; }
-        .pet-menu-scroll::-webkit-scrollbar-track { background: transparent; }
-        .pet-menu-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 1px; }
+        .pet-menu-scroll::-webkit-scrollbar { display: none; }
+        .pet-menu-scroll { -ms-overflow-style: none; scrollbar-width: none; }
       `}</style>
-      <div className="pet-menu-scroll" style={{
+      <div className="pet-menu-scroll" onPointerDown={e => e.stopPropagation()} style={{
         position: 'absolute',
         right: mascotSize + 14,
-        top: 10,
-        bottom: 10,
+        top: '50%',
+        transform: 'translateY(-50%)',
+        maxHeight: '90%',
         display: 'flex',
         flexDirection: 'column',
-        gap: 10,
         pointerEvents: 'auto',
         overflowY: 'auto',
         overflowX: 'hidden',
-        paddingRight: 6,
+        paddingRight: 24,
+        paddingTop: 30,
+        paddingBottom: 30,
+        paddingLeft: 30,
       }}>
-        {subPanel === 'main' ? (
-          <>
-            <SideBtn
-              icon="🎁"
-              label={giftAvailable ? 'Daily Gift' : 'Claimed'}
-              onClick={handleClaimGift}
-              disabled={!giftAvailable}
-              active={giftAvailable}
-            />
-            <SideBtn icon="🎬" label="Actions" onClick={() => setSubPanel('actions')} />
-            <SideBtn icon="🛒" label="Shop" onClick={() => setSubPanel('shop')} />
-            {pomodoro?.active ? (
-              <SideBtn icon="⏹️" label="Stop" onClick={onStopPomodoro} />
-            ) : (
-              <SideBtn icon="🍅" label="Pomodoro" onClick={() => setSubPanel('pomodoro')} />
-            )}
-            <SideBtn icon="⚙️" label="Settings" onClick={onOpenSettings} />
-            {import.meta.env.DEV && <SideBtn icon="🔧" label="Dev" onClick={() => setSubPanel('dev')} dim />}
-          </>
-        ) : (
-          <>
-            <SideBtn icon="←" label="Back" onClick={() => setSubPanel('main')} dim />
-            {subPanel === 'actions' && (
-              <>
-                <SideBtn icon="😴" label="Sleep" onClick={() => handleAction('sleep')} active={currentAction === 'sleep'} />
-                <SideBtn icon="📺" label="Watch" onClick={() => handleAction('watch')} active={currentAction === 'watch'} />
-                <SideBtn icon="🎵" label="Music" onClick={() => handleAction('music')} active={currentAction === 'music'} />
-                <SideBtn icon="🚶" label="Walk" onClick={() => handleAction('walk')} disabled={!canWalk(petData)} />
-                <SideBtn icon="😊" label={`Pat ${petData.headpatToday}/5`} onClick={() => handleAction('headpat')} disabled={!canHeadpat(petData)} />
-              </>
-            )}
-            {subPanel === 'shop' && FOODS.map(food => (
-              <SideBtn
-                key={food.id}
-                icon={food.icon}
-                label={`${food.name} 🪙${food.price}`}
-                onClick={() => handleBuy(food.id)}
-                disabled={petData.coins < food.price}
-              />
-            ))}
-            {subPanel === 'pomodoro' && POMODORO_PRESETS.map(m => (
-              <SideBtn key={m} icon="🍅" label={`${m} min`} onClick={() => onStartPomodoro(m)} />
-            ))}
-            {subPanel === 'dev' && (
-              <div style={{
-                display: 'flex', flexDirection: 'column', gap: 8,
-                background: 'rgba(8,8,8,0.88)', border: '1px solid rgba(255,255,255,0.1)',
-                borderRadius: 10, padding: '10px 12px', backdropFilter: 'blur(12px)',
-              }}>
-                <DevSlider label="❤️ Affection" value={Math.round(petData.affection)} min={0} max={100}
-                  onChange={v => onUpdatePetData({ ...petData, affection: v })} />
-                <DevSlider label="🍗 Hunger" value={Math.round(petData.hunger)} min={0} max={100}
-                  onChange={v => onUpdatePetData({ ...petData, hunger: v })} />
-                <DevSlider label="🪙 Coins" value={petData.coins} min={0} max={9999}
-                  onChange={v => onUpdatePetData({ ...petData, coins: v })} />
-              </div>
-            )}
-          </>
-        )}
+        {/* Inner container to ensure the line spans the full scroll height */}
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 24,
+          position: 'relative',
+          minHeight: 'max-content',
+        }}>
+          {/* Vertical line with black shadow for contrast */}
+          <div style={{
+            position: 'absolute',
+            right: -12,
+            top: 0,
+            bottom: 0,
+            width: 1.5,
+            background: 'linear-gradient(to bottom, transparent, rgba(250,204,21,0.8) 20%, rgba(250,204,21,0.8) 80%, transparent)',
+            pointerEvents: 'none',
+            zIndex: 1,
+            boxShadow: '0 0 2px #000, 0 0 4px #000',
+          }} />
+
+          {subPanel === 'main' ? (
+            <>
+              <SideBtn label={giftAvailable ? 'Daily Gift' : 'Claimed'} onClick={handleClaimGift} disabled={!giftAvailable} active={giftAvailable} />
+              <SideBtn label="Actions" onClick={() => setSubPanel('actions')} />
+              <SideBtn label="Shop" onClick={() => setSubPanel('shop')} />
+              {pomodoro?.active ? (
+                <SideBtn label="Stop" onClick={onStopPomodoro} />
+              ) : (
+                <SideBtn label="Pomodoro" onClick={() => setSubPanel('pomodoro')} />
+              )}
+              <SideBtn label="Settings" onClick={onOpenSettings} />
+              {import.meta.env.DEV && <SideBtn label="Dev" onClick={() => setSubPanel('dev')} dim />}
+            </>
+          ) : (
+            <>
+              <SideBtn label="Back" onClick={() => setSubPanel('main')} dim />
+              {subPanel === 'actions' && (
+                <>
+                  <SideBtn label="Sleep" onClick={() => handleAction('sleep')} active={currentAction === 'sleep'} />
+                  <SideBtn label="Watch" onClick={() => handleAction('watch')} active={currentAction === 'watch'} />
+                  <SideBtn label="Music" onClick={() => handleAction('music')} active={currentAction === 'music'} />
+                  <SideBtn label="Walk" onClick={() => handleAction('walk')} disabled={!canWalk(petData)} />
+                  <SideBtn label={`Pat ${petData.headpatToday}/5`} onClick={() => handleAction('headpat')} disabled={!canHeadpat(petData)} />
+                </>
+              )}
+              {subPanel === 'shop' && FOODS.map(food => (
+                <SideBtn
+                  key={food.id}
+                  label={`${food.name} 🪙${food.price}`}
+                  onClick={() => handleBuy(food.id)}
+                  disabled={petData.coins < food.price}
+                />
+              ))}
+              {subPanel === 'pomodoro' && POMODORO_PRESETS.map(m => (
+                <SideBtn key={m} label={`${m} min`} onClick={() => onStartPomodoro(m)} />
+              ))}
+              {subPanel === 'dev' && (
+                <div style={{
+                  display: 'flex', flexDirection: 'column', gap: 8,
+                  background: 'rgba(8,8,8,0.88)', border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: 10, padding: '10px 12px', backdropFilter: 'blur(12px)',
+                }}>
+                  <DevSlider label="❤️ Affection" value={Math.round(petData.affection)} min={0} max={100}
+                    onChange={v => onUpdatePetData({ ...petData, affection: v })} />
+                  <DevSlider label="🍗 Hunger" value={Math.round(petData.hunger)} min={0} max={100}
+                    onChange={v => onUpdatePetData({ ...petData, hunger: v })} />
+                  <DevSlider label="🪙 Coins" value={petData.coins} min={0} max={9999}
+                    onChange={v => onUpdatePetData({ ...petData, coins: v })} />
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
     </motion.div>
   )
 }
 
-function StatBadge({ icon, value, color }: { icon: string; value: number; color: string }) {
+function StatBadge({ icon, value, color }: { icon: React.ReactNode; value: number; color: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-      <span style={{ fontSize: 14 }}>{icon}</span>
-      <span style={{ fontSize: 14, color, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{value}</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, color, textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 4px rgba(0,0,0,0.8)' }}>
+      <span style={{ display: 'flex', alignItems: 'center' }}>{icon}</span>
+      <span style={{ fontSize: 13, fontWeight: 900, fontVariantNumeric: 'tabular-nums' }}>{value}</span>
     </div>
   )
 }
 
-function SideBtn({ icon, label, onClick, disabled, active, dim }: {
-  icon: string; label: string; onClick: () => void
+function SideBtn({ label, onClick, disabled, active, dim }: {
+  label: string; onClick: () => void
   disabled?: boolean; active?: boolean; dim?: boolean
 }) {
   return (
     <button
       onClick={disabled ? undefined : onClick}
       style={{
-        padding: '8px 12px',
-        borderRadius: 10,
-        border: active ? '1px solid rgba(245,158,11,0.4)' : '1px solid rgba(255,255,255,0.1)',
-        background: active ? 'rgba(245,158,11,0.15)' : 'rgba(8,8,8,0.88)',
-        backdropFilter: 'blur(12px)',
-        color: '#fff',
         display: 'flex',
         alignItems: 'center',
-        gap: 8,
+        justifyContent: 'flex-end',
+        color: '#facc15',
+        fontWeight: 900,
+        letterSpacing: '1.5px',
         fontSize: 13,
-        fontWeight: 600,
+        textTransform: 'uppercase',
         cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.3 : dim ? 0.5 : 1,
+        opacity: disabled ? 0.3 : dim ? 0.6 : 1,
         whiteSpace: 'nowrap',
+        background: 'transparent',
+        border: 'none',
+        padding: '4px 0',
+        position: 'relative',
+        transition: 'all 0.2s',
+        textShadow: active 
+          ? '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, -2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000, 0 0 8px rgba(250,204,21,0.8)'
+          : '-1px -1px 0 #111, 1px -1px 0 #111, -1px 1px 0 #111, 1px 1px 0 #111, -2px 0 0 #111, 2px 0 0 #111, 0 -2px 0 #111, 0 2px 0 #111, 0 4px 8px rgba(0,0,0,0.8)',
       }}
-      onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = active ? 'rgba(245,158,11,0.25)' : 'rgba(20,20,20,0.92)' }}
-      onMouseLeave={e => { e.currentTarget.style.background = active ? 'rgba(245,158,11,0.15)' : 'rgba(8,8,8,0.88)' }}
+      onMouseEnter={e => {
+        if (!disabled) {
+          e.currentTarget.style.textShadow = '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, -2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000, 0 0 10px rgba(250,204,21,1)';
+          const diamond = e.currentTarget.querySelector('.diamond') as HTMLElement;
+          if (diamond) {
+            diamond.style.background = '#facc15';
+            diamond.style.boxShadow = '0 0 0 1.5px #000, 0 0 8px #facc15';
+          }
+        }
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.textShadow = active 
+          ? '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, -2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000, 0 0 8px rgba(250,204,21,0.8)'
+          : '-1px -1px 0 #111, 1px -1px 0 #111, -1px 1px 0 #111, 1px 1px 0 #111, -2px 0 0 #111, 2px 0 0 #111, 0 -2px 0 #111, 0 2px 0 #111, 0 4px 8px rgba(0,0,0,0.8)';
+        const diamond = e.currentTarget.querySelector('.diamond') as HTMLElement;
+        if (diamond) {
+          diamond.style.background = active ? '#facc15' : '#111';
+          diamond.style.boxShadow = active ? '0 0 0 1.5px #000, 0 0 6px #facc15' : '0 0 0 1.5px #facc15';
+        }
+      }}
     >
-      <span style={{ fontSize: 15 }}>{icon}</span>
-      <span>{label}</span>
+      <span style={{ position: 'relative', zIndex: 1 }}>{label}</span>
+      <div
+        className="diamond"
+        style={{
+          width: 6,
+          height: 6,
+          border: active ? '1.5px solid #000' : '1.5px solid #facc15',
+          transform: 'rotate(45deg)',
+          position: 'absolute',
+          right: -15,
+          background: active ? '#facc15' : '#111',
+          boxShadow: active ? '0 0 0 1.5px #000, 0 0 6px #facc15' : '0 0 0 1.5px #facc15',
+          transition: 'all 0.2s',
+          zIndex: 2,
+        }}
+      />
     </button>
   )
 }
