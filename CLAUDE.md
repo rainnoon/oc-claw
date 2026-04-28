@@ -304,3 +304,35 @@ Windows OpenSSH does NOT support `ControlMaster` / `ControlPath` (Unix domain so
 - Prefer simple, minimal fixes.
 - Do not over-engineer solutions.
 - Do not suggest unnecessary refactors unless explicitly asked.
+
+# Converting transparent WebM to MOV (HEVC with Alpha)
+
+WebKit/Tauri WebView requires HEVC with Alpha in `.mov` container for transparent video playback. Direct `ffmpeg` conversion from VP9 WebM often produces `yuv420p` output without alpha. Use a two-step process:
+
+### Step 1: WebM → ProRes 4444 (intermediate, preserves alpha)
+
+```bash
+ffmpeg -i input.webm -c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le -an intermediate.mov
+```
+
+### Step 2: ProRes 4444 → HEVC with Alpha (via Apple's avconvert)
+
+```bash
+avconvert --source intermediate.mov --output output.mov -p PresetHEVCHighestQualityWithAlpha
+```
+
+### Verification
+
+```bash
+# Should show "HEVC with Alpha"
+mdls -name kMDItemCodecs output.mov
+
+# Should show has_b_frames: 2, level: 120, color_space: bt709
+ffprobe -v quiet -show_streams output.mov
+```
+
+### Why not direct ffmpeg?
+
+- `ffmpeg -c:v hevc_videotoolbox -alpha_quality 1 -tag:v hvc1` often drops the alpha channel (outputs `yuv420p` instead of `yuva`)
+- Apple's `avconvert` is the only reliable way to produce HEVC with Alpha that WebKit renders correctly
+- The ProRes 4444 intermediate step ensures the alpha channel is preserved through the pipeline

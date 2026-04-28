@@ -96,13 +96,14 @@ const MASCOT_BASE_SIZE = 43
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
 const LARGE_ACTION_DISPLAY_MS = 3_000
-const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'shy']
+const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'shy', 'walkout']
 
 // Priority: higher number = harder to interrupt
 function petActionPriority(action: PetAction): number {
   switch (action) {
     case 'grasp': return 100
     case 'study': case 'work': return 90
+    case 'peek': case 'walkout': return 75
     case 'hungry': return 70
     case 'watch': return 50
     case 'music': return 40
@@ -346,6 +347,8 @@ const PET_ACTION_VIDEO_MAP: Record<PetAction, string> = {
   grasp: 'grasp',
   angry: 'angry',
   shy: 'shy',
+  peek: 'peek',
+  walkout: 'walkout',
 }
 
 function getLargeVideoPetMode(char: CharacterMeta | undefined, petAction: PetAction, fallbackLargeActions?: Record<string, string>): string | undefined {
@@ -723,6 +726,10 @@ export default function Mini() {
   const [walkFlipped, setWalkFlipped] = useState(false)
   const walkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const walkAutoRef = useRef(false)
+  // When true, auto-walk heads straight to a screen edge (no flipping)
+  const walkToEdgeRef = useRef(false)
+  // 'left' = peeking from left edge (video flipped), 'right' = right edge
+  const peekEdgeRef = useRef<'left' | 'right'>('right')
   const [pomodoro, setPomodoro] = useState<PomodoroState | null>(null)
   const pomodoroRef = useRef<PomodoroState | null>(null)
   pomodoroRef.current = pomodoro
@@ -843,12 +850,17 @@ export default function Mini() {
     if (appMode !== 'pet' || currentPetAction !== 'idle' || petActionPriority(currentPetAction) > 0) return
     idleAutoTimerRef.current = setTimeout(() => {
       if (currentPetActionRef.current !== 'idle' || petActionPriority(currentPetActionRef.current) > 0) return
-      const next: PetAction = Math.random() < 0.5 ? 'sleep' : 'walk'
+      const roll = Math.random()
+      const next: PetAction = roll < 0.33 ? 'sleep' : 'walk'
       if (next === 'walk' && !canWalk(petDataRef.current)) {
         setCurrentPetAction('sleep')
         currentPetActionRef.current = 'sleep'
       } else {
-        if (next === 'walk') walkAutoRef.current = true
+        if (next === 'walk') {
+          walkAutoRef.current = true
+          // 50% chance of walking to edge → peek
+          walkToEdgeRef.current = roll >= 0.66
+        }
         setCurrentPetAction(next)
         currentPetActionRef.current = next
       }
@@ -901,7 +913,8 @@ export default function Mini() {
     }
   }, [appMode, currentPetAction])
 
-  // Walk animation: move the window and flip direction every 3 seconds
+  // Walk animation: move the window and flip direction every 3 seconds.
+  // In "walk to edge" mode, walk straight to the nearest screen edge → peek.
   useEffect(() => {
     if (walkTimerRef.current) {
       clearInterval(walkTimerRef.current)
@@ -916,29 +929,92 @@ export default function Mini() {
     const FLIP_AFTER = 3000
     const AUTO_WALK_DURATION = 6000
     const isAuto = walkAutoRef.current
+    const isToEdge = walkToEdgeRef.current
     walkAutoRef.current = false
+    walkToEdgeRef.current = false
     let elapsed = 0
     let totalElapsed = 0
     let direction = -1
+    let edgeDirection = 0
+    let edgeCheckCounter = 0
     setWalkFlipped(false)
+
+    if (isToEdge) {
+      // Determine which edge is closer, then walk toward it
+      invoke('get_mini_origin').then((pos) => {
+        const [x] = pos as [number, number]
+        const screenW = window.screen?.availWidth || 1920
+        const actualWinW = window.innerWidth || 300
+        const mascotW = largeMascotRef.current
+          ? MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+          : MASCOT_BASE_SIZE * mascotScaleRef.current
+        const mascotLeft = x + actualWinW - mascotW
+        const mascotRight = x + actualWinW
+        const distLeft = mascotLeft
+        const distRight = screenW - mascotRight
+        edgeDirection = distLeft <= distRight ? -1 : 1
+        // face the direction of travel
+        setWalkFlipped(edgeDirection === 1)
+      }).catch(() => {})
+    }
+
     walkTimerRef.current = setInterval(() => {
       elapsed += WALK_INTERVAL
       totalElapsed += WALK_INTERVAL
-      if (isAuto && totalElapsed >= AUTO_WALK_DURATION) {
-        if (walkTimerRef.current) clearInterval(walkTimerRef.current)
-        walkTimerRef.current = null
-        const d = petDataRef.current
-        const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
-        setCurrentPetAction(next)
-        currentPetActionRef.current = next
-        return
+
+      if (isToEdge) {
+        // Walk straight toward the edge without flipping
+        const dir = edgeDirection || -1
+        invoke('move_mini_by', { dx: dir * WALK_SPEED, dy: 0 }).catch(() => {})
+      } else {
+        // Normal oscillating walk
+        if (isAuto && totalElapsed >= AUTO_WALK_DURATION) {
+          if (walkTimerRef.current) clearInterval(walkTimerRef.current)
+          walkTimerRef.current = null
+          const d = petDataRef.current
+          const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+          setCurrentPetAction(next)
+          currentPetActionRef.current = next
+          return
+        }
+        if (elapsed >= FLIP_AFTER) {
+          elapsed = 0
+          direction *= -1
+          setWalkFlipped(prev => !prev)
+        }
+        invoke('move_mini_by', { dx: direction * WALK_SPEED, dy: 0 }).catch(() => {})
       }
-      if (elapsed >= FLIP_AFTER) {
-        elapsed = 0
-        direction *= -1
-        setWalkFlipped(prev => !prev)
+
+      // Check screen edge every ~300ms
+      edgeCheckCounter += WALK_INTERVAL
+      if (edgeCheckCounter >= 300) {
+        edgeCheckCounter = 0
+        invoke('get_mini_origin').then((pos) => {
+          const [x] = pos as [number, number]
+          const screenW = window.screen?.availWidth || 1920
+          const actualWinW = window.innerWidth || 300
+          const mascotW = largeMascotRef.current
+            ? MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+            : MASCOT_BASE_SIZE * mascotScaleRef.current
+          const mascotRight = x + actualWinW
+          const mascotLeft = x + actualWinW - mascotW
+          if (mascotLeft <= EDGE_THRESHOLD) {
+            if (walkTimerRef.current) clearInterval(walkTimerRef.current)
+            walkTimerRef.current = null
+            peekEdgeRef.current = 'left'
+            setCurrentPetAction('peek')
+            currentPetActionRef.current = 'peek'
+            snapToPeekEdge('left', x)
+          } else if (mascotRight >= screenW - EDGE_THRESHOLD) {
+            if (walkTimerRef.current) clearInterval(walkTimerRef.current)
+            walkTimerRef.current = null
+            peekEdgeRef.current = 'right'
+            setCurrentPetAction('peek')
+            currentPetActionRef.current = 'peek'
+            snapToPeekEdge('right', x)
+          }
+        }).catch(() => {})
       }
-      invoke('move_mini_by', { dx: direction * WALK_SPEED, dy: 0 }).catch(() => {})
     }, WALK_INTERVAL)
     return () => {
       if (walkTimerRef.current) clearInterval(walkTimerRef.current)
@@ -1010,11 +1086,71 @@ export default function Mini() {
   }, [])
 
   const handleSetPetAction = useCallback((action: PetAction) => {
+    if (action === 'walk') {
+      walkToEdgeRef.current = true
+    }
     setCurrentPetAction(action)
     currentPetActionRef.current = action
     // Transient actions return to idle via the video `ended` event
     // (see onEnded handler on the <video> element below).
   }, [])
+
+  // Check if the mascot is at a screen edge and switch to peek if so.
+  // Snaps window to a fixed position so the character protrudes by a
+  // consistent amount (PEEK_VISIBLE_FRACTION of the mascot width).
+  const PEEK_VISIBLE_FRACTION = 0.95
+  const EDGE_THRESHOLD = 30
+
+  const snapToPeekEdge = useCallback((edge: 'left' | 'right', currentX: number) => {
+    const screenW = window.screen?.availWidth || 1920
+    const actualWinW = window.innerWidth || 300
+    const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+    const visibleW = mascotW * PEEK_VISIBLE_FRACTION
+    let targetX: number
+    if (edge === 'right') {
+      // mascotLeft = targetX + actualWinW - mascotW  should equal  screenW - visibleW
+      targetX = screenW - visibleW - actualWinW + mascotW
+    } else {
+      // mascotRight = targetX + actualWinW  should equal  visibleW
+      targetX = visibleW - actualWinW
+    }
+    const dx = targetX - currentX
+    if (Math.abs(dx) > 1) {
+      invoke('move_mini_by', { dx: Math.round(dx), dy: 0 }).catch(() => {})
+    }
+  }, [])
+
+  const checkEdgeAndSetPeek = useCallback(() => {
+    invoke('get_mini_origin').then((pos) => {
+      const [x] = pos as [number, number]
+      const screenW = window.screen?.availWidth || 1920
+      const actualWinW = window.innerWidth || 300
+      const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+      const mascotRight = x + actualWinW
+      const mascotLeft = x + actualWinW - mascotW
+      if (mascotLeft <= EDGE_THRESHOLD) {
+        peekEdgeRef.current = 'left'
+        setCurrentPetAction('peek')
+        currentPetActionRef.current = 'peek'
+        snapToPeekEdge('left', x)
+      } else if (mascotRight >= screenW - EDGE_THRESHOLD) {
+        peekEdgeRef.current = 'right'
+        setCurrentPetAction('peek')
+        currentPetActionRef.current = 'peek'
+        snapToPeekEdge('right', x)
+      } else {
+        const d = petDataRef.current
+        const action: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+        setCurrentPetAction(action)
+        currentPetActionRef.current = action
+      }
+    }).catch(() => {
+      const d = petDataRef.current
+      const action: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+      setCurrentPetAction(action)
+      currentPetActionRef.current = action
+    })
+  }, [snapToPeekEdge])
 
   const handleStartPomodoro = useCallback(async (minutes: number) => {
     const state: PomodoroState = {
@@ -2164,10 +2300,7 @@ export default function Mini() {
             setLargePetAction(null)
             largePetActionRef.current = null
             if (appModeRef.current === 'pet') {
-              const d = petDataRef.current
-              const action: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
-              setCurrentPetAction(action)
-              currentPetActionRef.current = action
+              checkEdgeAndSetPeek()
             }
           }
           window.removeEventListener('pointermove', onMove)
@@ -2193,18 +2326,22 @@ export default function Mini() {
             })
           } else {
             if (appModeRef.current === 'pet') {
-              // Pet mode click: headpat based on affection tier
-              const tier = getAffectionTier(petDataRef.current.affection)
-              if (tier === 'angry') {
-                handleSetPetAction('angry')
-              } else if (tier === 'shy') {
-                const updated = applyHeadpat(petDataRef.current)
-                handleUpdatePetData(updated)
-                handleSetPetAction('shy')
+              if (currentPetActionRef.current === 'peek') {
+                handleSetPetAction('walkout')
               } else {
-                const updated = applyHeadpat(petDataRef.current)
-                handleUpdatePetData(updated)
-                handleSetPetAction('headpat')
+                // Pet mode click: headpat based on affection tier
+                const tier = getAffectionTier(petDataRef.current.affection)
+                if (tier === 'angry') {
+                  handleSetPetAction('angry')
+                } else if (tier === 'shy') {
+                  const updated = applyHeadpat(petDataRef.current)
+                  handleUpdatePetData(updated)
+                  handleSetPetAction('shy')
+                } else {
+                  const updated = applyHeadpat(petDataRef.current)
+                  handleUpdatePetData(updated)
+                  handleSetPetAction('headpat')
+                }
               }
             } else {
               // Coding mode: angry for the first 10 clicks per day, then shy
@@ -2283,10 +2420,7 @@ export default function Mini() {
           setLargePetAction(null)
           largePetActionRef.current = null
           if (appModeRef.current === 'pet') {
-            const d = petDataRef.current
-            const action: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
-            setCurrentPetAction(action)
-            currentPetActionRef.current = action
+            checkEdgeAndSetPeek()
           }
         }
         window.removeEventListener('pointermove', onMove)
@@ -2671,8 +2805,18 @@ export default function Mini() {
     : undefined
   const largeVideoUrl = largeVideoBaseUrl ? `${largeVideoBaseUrl}?rev=alpha-fix-2` : undefined
   const largeVideoRef = useRef<HTMLVideoElement>(null)
-  // @ts-ignore unused ref kept for future use
-  const _prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
+  const prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
+
+  useEffect(() => {
+    const vid = largeVideoRef.current
+    if (!vid || !largeVideoUrl) return
+    if (prevLargeVideoUrlRef.current === largeVideoUrl) return
+    prevLargeVideoUrlRef.current = largeVideoUrl
+    const src = vid.querySelector('source')
+    if (src) src.src = largeVideoUrl
+    vid.load()
+    vid.play().catch(() => {})
+  }, [largeVideoUrl])
 
   const handleDeleteChar = useCallback(async (name: string) => {
     try {
@@ -2840,12 +2984,12 @@ export default function Mini() {
             {largeMascot && largeVideoUrl ? (
               <video
                 ref={largeVideoRef}
-                key={largeVideoUrl}
                 autoPlay
                 loop={!(appMode === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetAction))}
                 muted
                 playsInline
                 preload="auto"
+                onError={(e) => console.warn('[large-video] error:', (e.target as HTMLVideoElement).error?.message, 'src:', largeVideoUrl)}
                 onEnded={() => {
                   if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
                     let next: PetAction
@@ -2865,7 +3009,10 @@ export default function Mini() {
                   height: largeMascotVisualSize,
                   objectFit: 'contain',
                   pointerEvents: 'none',
-                  transform: currentPetAction === 'walk' && walkFlipped ? 'scaleX(-1)' : undefined,
+                  transform:
+                    (currentPetAction === 'walk' && walkFlipped) ? 'scaleX(-1)'
+                    : ((currentPetAction === 'peek' || currentPetAction === 'walkout') && peekEdgeRef.current === 'left') ? 'scaleX(-1)'
+                    : undefined,
                 }}
                 draggable={false}
               >

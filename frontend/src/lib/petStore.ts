@@ -20,6 +20,8 @@ export type PetAction =
   | 'grasp'    // being dragged
   | 'angry'    // low affection click
   | 'shy'      // high affection click
+  | 'peek'     // peeking from screen edge
+  | 'walkout'  // walking out from screen edge after peek
 
 export interface FoodItem {
   id: string
