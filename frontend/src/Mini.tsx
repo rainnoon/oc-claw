@@ -1364,6 +1364,8 @@ export default function Mini() {
         // Pomodoro complete
         if (pomodoroIntervalRef.current) clearInterval(pomodoroIntervalRef.current)
         pomodoroIntervalRef.current = null
+        // Play a cute completion cue for pet mode pomodoro.
+        playPetAudio('headpat')
         setPomodoro(null)
         pomodoroRef.current = null
         setCurrentPetAction('idle')
