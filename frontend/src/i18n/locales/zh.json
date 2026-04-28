@@ -161,6 +161,12 @@
     "checkUpdate": "检查更新",
     "exitApp": "退出应用",
 
+    "appMode": "模式",
+    "codingMode": "编程模式",
+    "codingModeDesc": "监控多 Agent 会话、Token 统计与任务提醒",
+    "petMode": "桌宠模式",
+    "petModeDesc": "丰富动作、养成系统与互动玩法",
+
     "language": "语言",
     "languageDesc": "选择界面显示语言",
     "langZh": "中文",
@@ -169,6 +175,23 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "pet": {
+    "dailyGift": "每日礼物",
+    "claimed": "已领取",
+    "actions": "动作",
+    "shop": "商店",
+    "stop": "停止",
+    "pomodoro": "番茄钟",
+    "quit": "退出",
+    "sleep": "睡觉",
+    "watch": "看视频",
+    "music": "听音乐",
+    "walk": "散步",
+    "pat": "摸头",
+    "min": "分钟",
+    "go": "开始"
   },
 
   "updateModal": {

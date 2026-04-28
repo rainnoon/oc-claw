@@ -156,6 +156,12 @@
     "checkUpdate": "업데이트 확인",
     "exitApp": "앱 종료",
 
+    "appMode": "모드",
+    "codingMode": "코딩 모드",
+    "codingModeDesc": "멀티 에이전트 모니터링, 토큰 통계 및 작업 알림",
+    "petMode": "펫 모드",
+    "petModeDesc": "풍부한 애니메이션, 육성 시스템 및 인터랙티브 플레이",
+
     "language": "언어",
     "languageDesc": "표시 언어 선택",
     "langZh": "中文",
@@ -164,6 +170,23 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "pet": {
+    "dailyGift": "일일 선물",
+    "claimed": "수령 완료",
+    "actions": "행동",
+    "shop": "상점",
+    "stop": "중지",
+    "pomodoro": "포모도로",
+    "quit": "종료",
+    "sleep": "수면",
+    "watch": "시청",
+    "music": "음악",
+    "walk": "산책",
+    "pat": "쓰다듬기",
+    "min": "분",
+    "go": "시작"
   },
 
   "character": {

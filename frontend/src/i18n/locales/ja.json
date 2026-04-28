@@ -156,6 +156,12 @@
     "checkUpdate": "アップデートを確認",
     "exitApp": "アプリを終了",
 
+    "appMode": "モード",
+    "codingMode": "コーディングモード",
+    "codingModeDesc": "マルチエージェント監視、トークン統計＆タスク通知",
+    "petMode": "ペットモード",
+    "petModeDesc": "豊富なアクション、育成システム＆インタラクティブ",
+
     "language": "言語",
     "languageDesc": "表示言語を選択",
     "langZh": "中文",
@@ -164,6 +170,23 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "pet": {
+    "dailyGift": "デイリーギフト",
+    "claimed": "受取済み",
+    "actions": "アクション",
+    "shop": "ショップ",
+    "stop": "ストップ",
+    "pomodoro": "ポモドーロ",
+    "quit": "終了",
+    "sleep": "スリープ",
+    "watch": "動画視聴",
+    "music": "音楽",
+    "walk": "お散歩",
+    "pat": "なでなで",
+    "min": "分",
+    "go": "GO"
   },
 
   "character": {

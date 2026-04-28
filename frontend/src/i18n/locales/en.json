@@ -161,6 +161,12 @@
     "checkUpdate": "Check for Updates",
     "exitApp": "Exit Application",
 
+    "appMode": "Mode",
+    "codingMode": "Coding Mode",
+    "codingModeDesc": "Multi-agent monitoring, token stats & task alerts",
+    "petMode": "Pet Mode",
+    "petModeDesc": "Rich animations, nurture system & interactive play",
+
     "language": "Language",
     "languageDesc": "Select the display language",
     "langZh": "中文",
@@ -169,6 +175,23 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "pet": {
+    "dailyGift": "Daily Gift",
+    "claimed": "Claimed",
+    "actions": "Actions",
+    "shop": "Shop",
+    "stop": "Stop",
+    "pomodoro": "Pomodoro",
+    "quit": "Quit",
+    "sleep": "Sleep",
+    "watch": "Watch",
+    "music": "Music",
+    "walk": "Walk",
+    "pat": "Pat",
+    "min": "min",
+    "go": "GO"
   },
 
   "updateModal": {

@@ -156,6 +156,12 @@
     "checkUpdate": "Buscar actualizaciones",
     "exitApp": "Salir de la aplicación",
 
+    "appMode": "Modo",
+    "codingMode": "Modo Código",
+    "codingModeDesc": "Monitoreo multi-agente, estadísticas de tokens y alertas",
+    "petMode": "Modo Mascota",
+    "petModeDesc": "Animaciones, sistema de crianza y juego interactivo",
+
     "language": "Idioma",
     "languageDesc": "Seleccionar el idioma de la interfaz",
     "langZh": "中文",
@@ -164,6 +170,23 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "pet": {
+    "dailyGift": "Regalo diario",
+    "claimed": "Reclamado",
+    "actions": "Acciones",
+    "shop": "Tienda",
+    "stop": "Detener",
+    "pomodoro": "Pomodoro",
+    "quit": "Salir",
+    "sleep": "Dormir",
+    "watch": "Ver",
+    "music": "Música",
+    "walk": "Pasear",
+    "pat": "Acariciar",
+    "min": "min",
+    "go": "IR"
   },
 
   "character": {

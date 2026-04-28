@@ -844,6 +844,18 @@ export default function Mini() {
     }
   }, [appMode])
 
+  // Pet mode always forces large mascot
+  useEffect(() => {
+    if (appMode === 'pet' && !largeMascot) {
+      setLargeMascot(true)
+      largeMascotRef.current = true
+      load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+        await store.set('large_mascot', true)
+        await store.save()
+      })
+    }
+  }, [appMode, largeMascot])
+
   // Pet mode: check system idle time → rest (5min no activity & no media) or idle
   const idleCheckRef = useRef<ReturnType<typeof setInterval> | null>(null)
   useEffect(() => {
@@ -1355,7 +1367,7 @@ export default function Mini() {
       const storedMascotScale = await store.get('mascot_scale')
       const initialMascotScale = typeof storedMascotScale === 'number' ? clampMascotScale(storedMascotScale) : 1
       const storedLargeMascot = await store.get('large_mascot')
-      const initialLargeMascot = typeof storedLargeMascot === 'boolean' ? storedLargeMascot : false
+      let initialLargeMascot = typeof storedLargeMascot === 'boolean' ? storedLargeMascot : false
       const storedLargeMascotScale = await store.get('large_mascot_scale')
       const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(1, storedLargeMascotScale)) : 3
       setMascotPosition(initialMascotPosition)
@@ -1378,6 +1390,10 @@ export default function Mini() {
           setPetData(ticked)
           petDataRef.current = ticked
           await savePetData(ticked)
+          // Pet mode always uses large mascot
+          initialLargeMascot = true
+          setLargeMascot(true)
+          largeMascotRef.current = true
         }
         // Normal startup: collapsed mascot
         await invoke('set_mini_expanded', { expanded: false, position: initialMascotPosition, efficiency: true, mascotScale: initialMascotScale, largeMascot: initialLargeMascot, largeMascotScale: initialLargeMascotScale }).catch(() => {})
@@ -2669,8 +2685,17 @@ export default function Mini() {
       expandedWindowModeRef.current = null
       try {
         await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
-        if (wasSettings) {
+        if (wasSettings && appModeRef.current === 'pet' && largeMascotRef.current) {
+          await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: true, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+          await invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+          if (petOriginBeforeSettingsRef.current) {
+            const [x, y] = petOriginBeforeSettingsRef.current
+            await invoke('set_mini_origin', { x, y }).catch(() => {})
+            petOriginBeforeSettingsRef.current = null
+          }
+        } else if (wasSettings) {
           await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+          await restoreCollapsedMascotPosition()
         } else {
           await invoke('set_mini_expanded', {
             expanded: false,
@@ -2680,8 +2705,8 @@ export default function Mini() {
             largeMascot: largeMascotRef.current,
             largeMascotScale: largeMascotScaleRef.current,
           })
+          await restoreCollapsedMascotPosition()
         }
-        await restoreCollapsedMascotPosition()
       } catch {
         /* ensure hiding is always cleared */
       }
@@ -2713,7 +2738,7 @@ export default function Mini() {
     return () => {
       invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
     }
-  }, [viewMode, moveMode, updateModalOpen, settingsMode, settingsTransitioning])
+  }, [viewMode, moveMode, updateModalOpen, settingsMode, settingsTransitioning, appMode])
 
   useEffect(() => {
     if (viewMode !== 'efficiency' || appMode === 'pet') return
@@ -2769,18 +2794,26 @@ export default function Mini() {
         hoverOpenTimerRef.current = null
       }
     }
-  }, [viewMode, collapse])
+  }, [viewMode, collapse, appMode])
+
+  const petOriginBeforeSettingsRef = useRef<[number, number] | null>(null)
 
   const enterSettings = useCallback(async () => {
     if (settingsModeRef.current || settingsTransitioningRef.current) return
-    // Entering settings is an intentional action — disable hover auto-close
-    // so the panel stays open when the mouse leaves the window.
     hoverExpandedRef.current = false
     settingsTransitioningRef.current = true
     setSelectedAgentId(null)
     setSelectedClaudeSession(null)
     setSelectedSessionKey(null)
     setShowClaudeStats(false)
+    setSettingsNav(appModeRef.current === 'pet' ? 'settings' : 'pairing')
+    // Save pet mode window origin so we can restore it exactly
+    if (appModeRef.current === 'pet') {
+      try {
+        const pos = await invoke('get_mini_origin') as [number, number]
+        petOriginBeforeSettingsRef.current = pos
+      } catch {}
+    }
     setShowSettingsOverlay(false)
     setSettingsTransitioning(true)
     // Stop pet passthrough poll before resizing to settings mode
@@ -2802,29 +2835,47 @@ export default function Mini() {
     if (!settingsModeRef.current || settingsTransitioningRef.current) return
     settingsTransitioningRef.current = true
     setShowSettingsOverlay(false)
-    await new Promise<void>((r) => setTimeout(r, 220))
-    setSettingsTransitioning(true)
-    settingsModeRef.current = false
-    setSettingsMode(false)
-    setSettingsNav('pairing')
-    // Re-sync feature toggles from store
-    const store = await load('settings.json', { defaults: {}, autoSave: true })
-    const cc = await store.get('enable_claudecode')
-    setEnableClaudeCode(cc !== false)
-    const cod = await store.get('enable_codex')
-    setEnableCodex(cod !== false)
-    const cur = await store.get('enable_cursor')
-    setEnableCursor(cur !== false)
-    fetchAgents()
     try {
-      await syncExpandedWindowLayout(viewModeRef.current)
-    } catch {}
-    // Re-enable pet passthrough after settings closes
-    if (appModeRef.current === 'pet' && largeMascotRef.current) {
-      await invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      await new Promise<void>((r) => setTimeout(r, 220))
+      setSettingsTransitioning(true)
+      settingsModeRef.current = false
+      setSettingsMode(false)
+      setSettingsNav('pairing')
+      // Always return to collapsed visual state when leaving settings.
+      setShowPanel(false)
+      setExpanded(false)
+      expandedRef.current = false
+      expandedWindowModeRef.current = null
+      if (appModeRef.current === 'pet' && largeMascotRef.current) {
+        // Pet mode: restore pet-sized window directly, skip syncExpandedWindowLayout
+        await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: true, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+        await invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+        // Restore exact window position saved before entering settings
+        if (petOriginBeforeSettingsRef.current) {
+          const [x, y] = petOriginBeforeSettingsRef.current
+          await invoke('set_mini_origin', { x, y }).catch(() => {})
+          petOriginBeforeSettingsRef.current = null
+        }
+      } else {
+        // Coding mode: re-sync feature toggles and restore layout
+        const store = await load('settings.json', { defaults: {}, autoSave: true })
+        const cc = await store.get('enable_claudecode')
+        setEnableClaudeCode(cc !== false)
+        const cod = await store.get('enable_codex')
+        setEnableCodex(cod !== false)
+        const cur = await store.get('enable_cursor')
+        setEnableCursor(cur !== false)
+        fetchAgents()
+        try {
+          await syncExpandedWindowLayout(viewModeRef.current)
+        } catch {}
+      }
+    } finally {
+      // Always clear transition/hiding guards so mascot can't get stuck invisible.
+      setSettingsTransitioning(false)
+      settingsTransitioningRef.current = false
+      setHiding(false)
     }
-    setSettingsTransitioning(false)
-    settingsTransitioningRef.current = false
   }, [fetchAgents, syncExpandedWindowLayout])
 
   // Click outside to collapse (only when not pinned)
@@ -2842,7 +2893,9 @@ export default function Mini() {
   // Skip blur when a file picker dialog is open
   useEffect(() => {
     if (updateModalOpen) return
-    if (!expanded) return
+    // In pet mode settings, expanded stays false; still need blur handling
+    // so clicking desktop can close settings via exitSettings.
+    if (!expanded && !settingsMode) return
     if (pinned && !settingsMode) return
     const onClickCapture = (e: MouseEvent) => {
       const el = e.target as HTMLElement
@@ -2858,6 +2911,12 @@ export default function Mini() {
     }
     const onBlur = () => {
       if (filePickerOpenRef.current) return
+      // When settings is open, use the dedicated close path so pet mode
+      // restores window geometry/state consistently.
+      if (settingsModeRef.current) {
+        exitSettings()
+        return
+      }
       collapse()
     }
     window.addEventListener('click', onClickCapture, true)
@@ -2868,7 +2927,7 @@ export default function Mini() {
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
     }
-  }, [expanded, pinned, settingsMode, updateModalOpen, collapse])
+  }, [expanded, pinned, settingsMode, updateModalOpen, collapse, exitSettings])
 
   useEffect(() => {
     if (expanded || moveMode || updateModalOpen) return
@@ -3100,6 +3159,7 @@ export default function Mini() {
               overflow: 'visible',
               cursor: moveMode ? 'grab' : 'pointer',
               animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : 'none',
+              display: (appMode === 'pet' && (showSettingsOverlay || settingsTransitioning)) ? 'none' : undefined,
               ...(moveMode
                 ? {
                     borderRadius: 12,
@@ -4589,12 +4649,23 @@ export default function Mini() {
             <div
               data-no-drag
               onMouseDown={(e) => {
-                if (e.target === e.currentTarget) exitSettings()
+                if (e.target === e.currentTarget) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                }
+              }}
+              onClick={(e) => {
+                if (e.target === e.currentTarget) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  exitSettings()
+                }
               }}
               style={{
                 position: 'fixed',
                 inset: 0,
                 zIndex: 40,
+                background: 'rgba(0,0,0,0.01)',
               }}
             />
             <motion.div
@@ -4650,7 +4721,7 @@ export default function Mini() {
                     >
                       <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
                     </button>
-                    {(['pairing', 'settings'] as const).map((nav) => (
+                    {(appMode === 'pet' ? ['settings'] as const : ['pairing', 'settings'] as const).map((nav) => (
                       <button
                         key={nav}
                         data-no-drag
@@ -4674,7 +4745,7 @@ export default function Mini() {
                     ))}
                   </div>
                 </div>
-                {hasAnyLargeActions && (
+                {hasAnyLargeActions && appMode !== 'pet' && (
                   <button
                     data-no-drag
                     onClick={async (e) => {

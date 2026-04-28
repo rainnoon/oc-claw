@@ -9,6 +9,7 @@ import {
 } from '../lib/petStore'
 
 import { Heart, Drumstick, Coins } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 type SubPanel = 'main' | 'actions' | 'shop' | 'pomodoro' | 'dev'
 
@@ -38,6 +39,7 @@ export function PetContextMenu({
 }: PetContextMenuProps) {
   const [subPanel, setSubPanel] = useState<SubPanel>('main')
   const menuRef = useRef<HTMLDivElement>(null)
+  const { t } = useTranslation()
 
   useEffect(() => {
     if (!open) {
@@ -204,28 +206,28 @@ export function PetContextMenu({
 
           {subPanel === 'main' ? (
             <>
-              <SideBtn side={side} label={giftAvailable ? 'Daily Gift' : 'Claimed'} onClick={handleClaimGift} disabled={!giftAvailable || !!pomodoro?.active} active={giftAvailable && !pomodoro?.active} />
-              <SideBtn side={side} label="Actions" onClick={() => setSubPanel('actions')} disabled={!!pomodoro?.active} />
-              <SideBtn side={side} label="Shop" onClick={() => setSubPanel('shop')} disabled={!!pomodoro?.active} />
+              <SideBtn side={side} label={giftAvailable ? t('pet.dailyGift') : t('pet.claimed')} onClick={handleClaimGift} disabled={!giftAvailable || !!pomodoro?.active} active={giftAvailable && !pomodoro?.active} />
+              <SideBtn side={side} label={t('pet.actions')} onClick={() => setSubPanel('actions')} disabled={!!pomodoro?.active} />
+              <SideBtn side={side} label={t('pet.shop')} onClick={() => setSubPanel('shop')} disabled={!!pomodoro?.active} />
               {pomodoro?.active ? (
-                <SideBtn side={side} label="Stop" onClick={onStopPomodoro} />
+                <SideBtn side={side} label={t('pet.stop')} onClick={onStopPomodoro} />
               ) : (
-                <SideBtn side={side} label="Pomodoro" onClick={() => setSubPanel('pomodoro')} />
+                <SideBtn side={side} label={t('pet.pomodoro')} onClick={() => setSubPanel('pomodoro')} />
               )}
-              <SideBtn side={side} label="Settings" onClick={onOpenSettings} />
-              {onQuit && <SideBtn side={side} label="Quit" onClick={onQuit} dim />}
+              <SideBtn side={side} label={t('mini.settings')} onClick={onOpenSettings} />
+              {onQuit && <SideBtn side={side} label={t('pet.quit')} onClick={onQuit} dim />}
               {import.meta.env.DEV && <SideBtn side={side} label="Dev" onClick={() => setSubPanel('dev')} dim />}
             </>
           ) : (
             <>
-              <SideBtn side={side} label="Back" onClick={() => setSubPanel('main')} dim />
+              <SideBtn side={side} label={t('common.back')} onClick={() => setSubPanel('main')} dim />
               {subPanel === 'actions' && (
                 <>
-                  <SideBtn side={side} label="Sleep" onClick={() => handleAction('sleep')} active={currentAction === 'sleep'} />
-                  <SideBtn side={side} label="Watch" onClick={() => handleAction('watch')} active={currentAction === 'watch'} />
-                  <SideBtn side={side} label="Music" onClick={() => handleAction('music')} active={currentAction === 'music'} />
-                  <SideBtn side={side} label="Walk" onClick={() => handleAction('walk')} disabled={!canWalk(petData)} />
-                  <SideBtn side={side} label={`Pat ${petData.headpatToday}/5`} onClick={() => handleAction('headpat')} disabled={!canHeadpat(petData)} />
+                  <SideBtn side={side} label={t('pet.sleep')} onClick={() => handleAction('sleep')} active={currentAction === 'sleep'} />
+                  <SideBtn side={side} label={t('pet.watch')} onClick={() => handleAction('watch')} active={currentAction === 'watch'} />
+                  <SideBtn side={side} label={t('pet.music')} onClick={() => handleAction('music')} active={currentAction === 'music'} />
+                  <SideBtn side={side} label={t('pet.walk')} onClick={() => handleAction('walk')} disabled={!canWalk(petData)} />
+                  <SideBtn side={side} label={`${t('pet.pat')} ${petData.headpatToday}/5`} onClick={() => handleAction('headpat')} disabled={!canHeadpat(petData)} />
                 </>
               )}
               {subPanel === 'shop' && FOODS.map(food => (
@@ -240,7 +242,7 @@ export function PetContextMenu({
               {subPanel === 'pomodoro' && (
                 <>
                   {POMODORO_PRESETS.map(m => (
-                    <SideBtn side={side} key={m} label={`${m} min`} onClick={() => onStartPomodoro(m)} />
+                    <SideBtn side={side} key={m} label={`${m} ${t('pet.min')}`} onClick={() => onStartPomodoro(m)} />
                   ))}
                   <CustomTimeInput side={side} onStart={onStartPomodoro} />
                 </>
@@ -349,6 +351,7 @@ function SideBtn({ label, onClick, disabled, active, dim, side = 'left' }: {
 
 function CustomTimeInput({ side, onStart }: { side?: 'left' | 'right'; onStart: (m: number) => void }) {
   const [val, setVal] = useState('')
+  const { t } = useTranslation()
   const isRight = side === 'right'
   return (
     <div style={{
@@ -359,7 +362,7 @@ function CustomTimeInput({ side, onStart }: { side?: 'left' | 'right'; onStart: 
         type="number"
         min={1}
         max={480}
-        placeholder="min"
+        placeholder={t('pet.min')}
         value={val}
         onChange={e => setVal(e.target.value)}
         onKeyDown={e => {
@@ -401,7 +404,7 @@ function CustomTimeInput({ side, onStart }: { side?: 'left' | 'right'; onStart: 
           textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000',
         }}
       >
-        GO
+        {t('pet.go')}
       </button>
     </div>
   )
@@ -441,6 +444,7 @@ export function PomodoroOverlay({ pomodoro, mascotSize, onStop }: {
   mascotSize: number
   onStop: () => void
 }) {
+  const { t } = useTranslation()
   const [remaining, setRemaining] = useState(pomodoro?.remaining ?? 0)
 
   useEffect(() => {
@@ -497,7 +501,7 @@ export function PomodoroOverlay({ pomodoro, mascotSize, onStop }: {
           onMouseEnter={e => { e.currentTarget.style.color = '#ef4444' }}
           onMouseLeave={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.35)' }}
         >
-          Stop
+          {t('pet.stop')}
         </button>
       </div>
     </div>

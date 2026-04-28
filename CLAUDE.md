@@ -184,6 +184,7 @@ Mini.tsx has multiple polling loops (`fetchAgents` 5s, `pollHealth` 1s, `fetchAl
 2. **Async polling functions need a busy lock** (e.g. `pollHealthBusyRef`). Without it, the 1s interval stacks SSH requests, overwhelming the multiplexed socket and causing cascading "stale socket" failures. If the previous call hasn't returned, skip the current tick.
 3. **Both `exitSettings()` and `collapse()` must trigger `fetchAgents()` immediately.** Users can close settings via the back button (`exitSettings`) OR by clicking outside (`collapse`). If only `exitSettings` calls `fetchAgents`, clicking outside causes a 5-8s delay before config changes are detected.
 4. **`settingsModeRef.current` must be set to `false` BEFORE calling `fetchAgents()`**, otherwise the settings-mode guard inside `fetchAgents` will skip the call.
+5. **Do not gate settings-close blur handling on `expanded` in pet mode.** In pet mode, opening settings keeps `expanded === false`; if blur handlers early-return on `!expanded`, clicking desktop will never call `exitSettings()`, leaving the settings-close restore path unapplied and causing mascot disappear/position drift.
 
 # App Updates & Releases
 

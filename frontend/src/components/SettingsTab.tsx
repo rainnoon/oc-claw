@@ -447,6 +447,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     }
   }
 
+  const isPetMode = appMode === 'pet'
+
   return (
     <div className="max-w-2xl mx-auto pt-10 pb-20 px-6 flex flex-col gap-10">
       {/* App Mode Switch */}
@@ -456,8 +458,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden p-4">
             <div className="flex gap-3">
               {([
-                { mode: 'coding' as const, label: 'Coding Mode', icon: '💻', desc: 'Monitor AI agents' },
-                { mode: 'pet' as const, label: 'Pet Mode', icon: '🐾', desc: 'Raise your desktop pet' },
+                { mode: 'coding' as const, label: t('settings.codingMode'), icon: '💻', desc: t('settings.codingModeDesc') },
+                { mode: 'pet' as const, label: t('settings.petMode'), icon: '🐾', desc: t('settings.petModeDesc') },
               ]).map(({ mode, label, icon, desc }) => (
                 <button
                   key={mode}
@@ -480,6 +482,50 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </section>
       )}
 
+      {/* Pet mode: mascot size */}
+      {isPetMode && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Large Mascot Size')}</span>
+                  <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for large mascot mode')}</span>
+                </div>
+                <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={6}
+                step={0.1}
+                value={largeMascotScale}
+                onChange={(e) => onChangeLargeMascotScale(Number(e.target.value))}
+                className="w-full accent-white/60 h-1"
+              />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Pet mode: mute toggle */}
+      {isPetMode && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.sound')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+            <div className="flex items-center justify-between p-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.completionSound')}</span>
+                <span className="text-xs text-white/40">{t('settings.completionSoundDesc')}</span>
+              </div>
+              <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {!isPetMode && <>
       {/* OpenClaw 连接 */}
       <section className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
@@ -765,6 +811,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </div>
       </section>
 
+      </>}
       {/* 关于 */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.about')}</h2>
