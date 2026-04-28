@@ -33,6 +33,7 @@ interface CharacterMeta {
   restGifs: string[]
   miniActions?: Record<string, string[]>
   largeActions?: Record<string, string>
+  audioMap?: Record<string, string>
 }
 
 interface AgentInfo {
@@ -925,6 +926,60 @@ export default function Mini() {
     return () => { if (transientTimeoutRef.current) clearTimeout(transientTimeoutRef.current) }
   }, [appMode, currentPetAction])
 
+  // Pet mode: play audio SFX mapped to pet actions via audio.json
+  const petAudioRef = useRef<HTMLAudioElement | null>(null)
+  const petAudioMapRef = useRef<Record<string, string> | null>(null)
+  useEffect(() => {
+    if (!miniChar?.largeActions) return
+    const sampleUrl = Object.values(miniChar.largeActions)[0]
+    if (!sampleUrl) return
+    const baseDir = sampleUrl.replace(/\/large\/.*$/, '')
+    const jsonUrl = `${baseDir}/audio.json`
+    console.log('[pet-audio] fetching audio.json from:', jsonUrl)
+    fetch(jsonUrl)
+      .then(r => {
+        console.log('[pet-audio] fetch status:', r.status, r.ok)
+        return r.ok ? r.json() : null
+      })
+      .then((map: Record<string, string> | null) => {
+        if (!map) { console.warn('[pet-audio] audio.json empty or failed'); return }
+        const resolved: Record<string, string> = {}
+        for (const [action, file] of Object.entries(map)) {
+          resolved[action] = `${baseDir}/audio/${file}`
+        }
+        console.log('[pet-audio] loaded audioMap:', resolved)
+        petAudioMapRef.current = resolved
+      })
+      .catch(e => console.error('[pet-audio] fetch error:', e))
+  }, [miniChar])
+
+  const petSfxPlayingRef = useRef(false)
+  const playPetAudio = useCallback((action: PetAction) => {
+    const FALLBACK_AUDIO: Record<string, string> = {
+      angry: '/assets/builtin/香企鹅/audio/angry.mp3',
+      grasp: '/assets/builtin/香企鹅/audio/angry.mp3',
+      headpat: '/assets/builtin/香企鹅/audio/cute.mp3',
+      spin: '/assets/builtin/香企鹅/audio/happy.mp3',
+      walkout: '/assets/builtin/香企鹅/audio/happy.mp3',
+      eat: '/assets/builtin/香企鹅/audio/happy.mp3',
+    }
+    const map = petAudioMapRef.current || FALLBACK_AUDIO
+    const src = map[action]
+    if (!src) return
+    if (petAudioRef.current) {
+      petAudioRef.current.pause()
+      petAudioRef.current.currentTime = 0
+    }
+    const audio = new Audio(src)
+    audio.volume = 0.6
+    petAudioRef.current = audio
+    petSfxPlayingRef.current = true
+    audio.addEventListener('ended', () => { petSfxPlayingRef.current = false })
+    audio.addEventListener('pause', () => { petSfxPlayingRef.current = false })
+    audio.addEventListener('error', () => { petSfxPlayingRef.current = false })
+    audio.play().catch(() => { petSfxPlayingRef.current = false })
+  }, [])
+
   // Pet mode: activity affection gain (watch/music: +1 per 10 min)
   useEffect(() => {
     if (appMode !== 'pet') return
@@ -1080,9 +1135,9 @@ export default function Mini() {
   useEffect(() => {
     if (appMode !== 'pet') return
     const poll = async () => {
+      if (petSfxPlayingRef.current) return
       const cur = currentPetActionRef.current
       const curPri = petActionPriority(cur)
-      // Don't interrupt actions with higher priority than media
       if (curPri >= petActionPriority('hungry')) return
       try {
         const media = await invoke<string>('get_now_playing')
@@ -1141,13 +1196,13 @@ export default function Mini() {
   }, [])
 
   const handleSetPetAction = useCallback((action: PetAction) => {
+    // During pomodoro only allow 'study' or explicit stop (which sets 'idle')
+    if (pomodoroRef.current?.active && action !== 'study' && action !== 'idle') return
     if (action === 'walk') {
       walkToEdgeRef.current = true
     }
     setCurrentPetAction(action)
     currentPetActionRef.current = action
-    // Transient actions return to idle via the video `ended` event
-    // (see onEnded handler on the <video> element below).
   }, [])
 
   // Check if the mascot is at a screen edge and switch to peek if so.
@@ -2331,6 +2386,8 @@ export default function Mini() {
       }
 
       // Large mascot normal mode: drag to move window, click for angry/spin
+      // Block drag and clicks during pomodoro
+      if (!isMoveMode && largeMascotRef.current && pomodoroRef.current?.active) return
       if (!isMoveMode && largeMascotRef.current) {
         e.preventDefault()
         mascotDragActiveRef.current = true
@@ -2346,6 +2403,7 @@ export default function Mini() {
               dragging = true
               setLargePetAction('grasp')
               largePetActionRef.current = 'grasp'
+              playPetAudio('grasp')
               if (appModeRef.current === 'pet') {
                 setCurrentPetAction('grasp')
                 currentPetActionRef.current = 'grasp'
@@ -2393,19 +2451,23 @@ export default function Mini() {
             if (appModeRef.current === 'pet') {
               if (currentPetActionRef.current === 'peek') {
                 handleSetPetAction('walkout')
+                playPetAudio('walkout')
               } else {
                 // Pet mode click: headpat based on affection tier
                 const tier = getAffectionTier(petDataRef.current.affection)
                 if (tier === 'angry') {
                   handleSetPetAction('angry')
+                  playPetAudio('angry')
                 } else if (tier === 'shy') {
                   const updated = applyHeadpat(petDataRef.current)
                   handleUpdatePetData(updated)
                   handleSetPetAction('spin')
+                  playPetAudio('spin')
                 } else {
                   const updated = applyHeadpat(petDataRef.current)
                   handleUpdatePetData(updated)
                   handleSetPetAction('headpat')
+                  playPetAudio('headpat')
                 }
               }
             } else {
@@ -3066,6 +3128,10 @@ export default function Mini() {
                 }}
                 onEnded={() => {
                   if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
+                    if (currentPetActionRef.current === 'farewell') {
+                      invoke('exit_app').catch(() => {})
+                      return
+                    }
                     let next: PetAction
                     if (currentPetActionRef.current === 'dance' && danceFromMusicRef.current) {
                       danceFromMusicRef.current = false
@@ -3167,6 +3233,11 @@ export default function Mini() {
                   enterSettings()
                 }}
                 onFoodRain={triggerFoodRain}
+                onPlayAudio={playPetAudio}
+                onQuit={() => {
+                  closePetContextMenu()
+                  handleSetPetAction('farewell')
+                }}
               />
             )}
 

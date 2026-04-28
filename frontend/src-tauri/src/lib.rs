@@ -1552,7 +1552,7 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
             if let Some(ip_name) = ip_map.get(&name) {
                 char_obj.insert("ip".into(), serde_json::Value::String(ip_name.clone()));
             }
-            char_obj.insert("name".into(), serde_json::Value::String(name));
+            char_obj.insert("name".into(), serde_json::Value::String(name.clone()));
             char_obj.insert("workGifs".into(), serde_json::Value::Array(work_gifs.into_iter().map(serde_json::Value::String).collect()));
             char_obj.insert("restGifs".into(), serde_json::Value::Array(rest_gifs.into_iter().map(serde_json::Value::String).collect()));
             if !crawl_gifs.is_empty() {
@@ -1570,6 +1570,31 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
             if !large_actions.is_empty() {
                 char_obj.insert("largeActions".into(), serde_json::Value::Object(large_actions));
             }
+
+            // Read audio.json if it exists: maps action names to audio file URLs
+            let audio_json_path = entry.path().join("audio.json");
+            if audio_json_path.exists() {
+                if let Ok(data) = std::fs::read_to_string(&audio_json_path) {
+                    if let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&data) {
+                        let mut audio_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+                        for (action, file_val) in &map {
+                            if let Some(filename) = file_val.as_str() {
+                                let audio_path = entry.path().join("audio").join(filename);
+                                if audio_path.exists() {
+                                    audio_map.insert(
+                                        action.clone(),
+                                        serde_json::Value::String(format!("{}/{}/audio/{}", url_prefix, name, filename)),
+                                    );
+                                }
+                            }
+                        }
+                        if !audio_map.is_empty() {
+                            char_obj.insert("audioMap".into(), serde_json::Value::Object(audio_map));
+                        }
+                    }
+                }
+            }
+
             results.push(serde_json::Value::Object(char_obj));
         }
     }
@@ -3807,6 +3832,9 @@ async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
 
             let result = if let Some((playing, ref source)) = cli_status {
                 if !playing {
+                    "none"
+                } else if source.contains("openclaw") || source.contains("ooclaw") {
+                    // Ignore our own SFX audio
                     "none"
                 } else if is_music_app(source) {
                     "music"

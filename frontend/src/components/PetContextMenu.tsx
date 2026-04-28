@@ -27,12 +27,14 @@ interface PetContextMenuProps {
   onOpenSettings: () => void
   onFoodRain?: (emoji: string) => void
   onClaimGift?: (amount: number) => void
+  onQuit?: () => void
+  onPlayAudio?: (action: PetAction) => void
 }
 
 export function PetContextMenu({
   open, petData, currentAction, pomodoro, mascotSize, side = 'left',
   onClose, onUpdatePetData, onSetAction,
-  onStartPomodoro, onStopPomodoro, onOpenSettings, onFoodRain, onClaimGift,
+  onStartPomodoro, onStopPomodoro, onOpenSettings, onFoodRain, onClaimGift, onQuit, onPlayAudio,
 }: PetContextMenuProps) {
   const [subPanel, setSubPanel] = useState<SubPanel>('main')
   const menuRef = useRef<HTMLDivElement>(null)
@@ -86,7 +88,8 @@ export function PetContextMenu({
     onUpdatePetData(updated)
     onFoodRain?.(food.icon)
     onSetAction('eat')
-  }, [petData, onUpdatePetData, onSetAction, onFoodRain])
+    onPlayAudio?.('eat')
+  }, [petData, onUpdatePetData, onSetAction, onFoodRain, onPlayAudio])
 
   if (!open) return null
 
@@ -201,15 +204,16 @@ export function PetContextMenu({
 
           {subPanel === 'main' ? (
             <>
-              <SideBtn side={side} label={giftAvailable ? 'Daily Gift' : 'Claimed'} onClick={handleClaimGift} disabled={!giftAvailable} active={giftAvailable} />
-              <SideBtn side={side} label="Actions" onClick={() => setSubPanel('actions')} />
-              <SideBtn side={side} label="Shop" onClick={() => setSubPanel('shop')} />
+              <SideBtn side={side} label={giftAvailable ? 'Daily Gift' : 'Claimed'} onClick={handleClaimGift} disabled={!giftAvailable || !!pomodoro?.active} active={giftAvailable && !pomodoro?.active} />
+              <SideBtn side={side} label="Actions" onClick={() => setSubPanel('actions')} disabled={!!pomodoro?.active} />
+              <SideBtn side={side} label="Shop" onClick={() => setSubPanel('shop')} disabled={!!pomodoro?.active} />
               {pomodoro?.active ? (
                 <SideBtn side={side} label="Stop" onClick={onStopPomodoro} />
               ) : (
                 <SideBtn side={side} label="Pomodoro" onClick={() => setSubPanel('pomodoro')} />
               )}
               <SideBtn side={side} label="Settings" onClick={onOpenSettings} />
+              {onQuit && <SideBtn side={side} label="Quit" onClick={onQuit} dim />}
               {import.meta.env.DEV && <SideBtn side={side} label="Dev" onClick={() => setSubPanel('dev')} dim />}
             </>
           ) : (
@@ -233,9 +237,14 @@ export function PetContextMenu({
                   disabled={petData.coins < food.price}
                 />
               ))}
-              {subPanel === 'pomodoro' && POMODORO_PRESETS.map(m => (
-                <SideBtn side={side} key={m} label={`${m} min`} onClick={() => onStartPomodoro(m)} />
-              ))}
+              {subPanel === 'pomodoro' && (
+                <>
+                  {POMODORO_PRESETS.map(m => (
+                    <SideBtn side={side} key={m} label={`${m} min`} onClick={() => onStartPomodoro(m)} />
+                  ))}
+                  <CustomTimeInput side={side} onStart={onStartPomodoro} />
+                </>
+              )}
               {subPanel === 'dev' && (
                 <div style={{
                   display: 'flex', flexDirection: 'column', gap: 8,
@@ -335,6 +344,66 @@ function SideBtn({ label, onClick, disabled, active, dim, side = 'left' }: {
         }}
       />
     </button>
+  )
+}
+
+function CustomTimeInput({ side, onStart }: { side?: 'left' | 'right'; onStart: (m: number) => void }) {
+  const [val, setVal] = useState('')
+  const isRight = side === 'right'
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6,
+      justifyContent: isRight ? 'flex-start' : 'flex-end',
+    }}>
+      <input
+        type="number"
+        min={1}
+        max={480}
+        placeholder="min"
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') {
+            const n = parseInt(val, 10)
+            if (n > 0 && n <= 480) onStart(n)
+          }
+        }}
+        style={{
+          width: 52,
+          padding: '3px 6px',
+          fontSize: 12,
+          fontWeight: 700,
+          color: '#facc15',
+          background: 'rgba(250,204,21,0.08)',
+          border: '1.5px solid rgba(250,204,21,0.4)',
+          borderRadius: 4,
+          outline: 'none',
+          textAlign: 'center',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      />
+      <button
+        onClick={() => {
+          const n = parseInt(val, 10)
+          if (n > 0 && n <= 480) onStart(n)
+        }}
+        style={{
+          fontSize: 11,
+          fontWeight: 900,
+          color: '#facc15',
+          background: 'transparent',
+          border: '1.5px solid rgba(250,204,21,0.4)',
+          borderRadius: 4,
+          padding: '3px 8px',
+          cursor: 'pointer',
+          letterSpacing: '1px',
+          textTransform: 'uppercase',
+          textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000',
+        }}
+      >
+        GO
+      </button>
+    </div>
   )
 }
 
