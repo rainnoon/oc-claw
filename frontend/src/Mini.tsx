@@ -1212,6 +1212,18 @@ export default function Mini() {
       const ticked = tickPetData(data)
       petDataRef.current = ticked
       await savePetData(ticked)
+      // When switching mode from inside Settings, keep the settings-sized window.
+      // Expanding to pet window size here compresses the settings UI for a few frames.
+      if (settingsModeRef.current || settingsTransitioningRef.current) {
+        setAppMode(mode)
+        setShowOnboarding(false)
+        setLargeMascot(true)
+        setPetData(ticked)
+        try {
+          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current })
+        } catch {}
+        return
+      }
       // Hide window content before resizing to avoid flashing the
       // onboarding modal at the wrong window dimensions.
       document.documentElement.style.opacity = '0'
@@ -1231,6 +1243,14 @@ export default function Mini() {
       setShowOnboarding(false)
       // Leaving pet mode: stop the pass-through poll first.
       invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      // When switching mode from inside Settings, keep the settings-sized window.
+      // Shrinking to collapsed size here compresses the settings UI for a few frames.
+      if (settingsModeRef.current || settingsTransitioningRef.current) {
+        try {
+          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current })
+        } catch {}
+        return
+      }
       // Restore window back to collapsed mascot size
       try {
         await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
