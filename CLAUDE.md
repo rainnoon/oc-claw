@@ -312,7 +312,13 @@ WebKit/Tauri WebView requires HEVC with Alpha in `.mov` container for transparen
 ### Step 1: WebM → ProRes 4444 (intermediate, preserves alpha)
 
 ```bash
-ffmpeg -i input.webm -c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le -an intermediate.mov
+ffmpeg -c:v libvpx-vp9 -i input.webm -c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le -an intermediate.mov
+```
+
+**CRITICAL**: The `-c:v libvpx-vp9` input decoder flag MUST come BEFORE `-i`. Without it, ffmpeg uses its default VP9 decoder which silently drops the alpha channel (produces `yuv420p` instead of `yuva420p`), resulting in black backgrounds. Verify the intermediate has alpha with:
+
+```bash
+python3 -c "from PIL import Image; img=Image.open('/dev/stdin'); print('Alpha:', img.split()[3].getextrema())" < <(ffmpeg -c:v libvpx-vp9 -i input.webm -vframes 1 -pix_fmt rgba -f image2pipe -vcodec png - 2>/dev/null)
 ```
 
 ### Step 2: ProRes 4444 → HEVC with Alpha (via Apple's avconvert)
@@ -336,3 +342,4 @@ ffprobe -v quiet -show_streams output.mov
 - `ffmpeg -c:v hevc_videotoolbox -alpha_quality 1 -tag:v hvc1` often drops the alpha channel (outputs `yuv420p` instead of `yuva`)
 - Apple's `avconvert` is the only reliable way to produce HEVC with Alpha that WebKit renders correctly
 - The ProRes 4444 intermediate step ensures the alpha channel is preserved through the pipeline
+- ffmpeg's default VP9 decoder does NOT handle WebM alpha — you MUST use `-c:v libvpx-vp9` as input decoder
