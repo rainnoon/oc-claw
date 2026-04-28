@@ -4548,9 +4548,92 @@ async fn set_pet_mode_window(
 }
 
 /// Tell the pet-mode pass-through poll whether the context menu is open.
+/// When `side` is `"right"` the window is widened rightward by 180 px
+/// (left edge stays put).  The frontend sets the mascot CSS to
+/// `right: 180` so it does not move on screen — it stays at exactly
+/// the same pixel position.  Menu buttons render in the new 180 px area
+/// via `overflow: visible` + `left: mascotSize + 14`.
 #[tauri::command]
-async fn set_pet_context_menu(open: bool) -> Result<(), String> {
+async fn set_pet_context_menu(app: tauri::AppHandle, open: bool, side: Option<String>) -> Result<(), String> {
     PET_CONTEXT_MENU_OPEN.store(open, Ordering::SeqCst);
+
+    #[cfg(target_os = "macos")]
+    {
+        let right_pad = 180.0_f64;
+        if open && side.as_deref() == Some("right") {
+            if let Some(win) = app.get_webview_window("mini") {
+                let win_clone = win.clone();
+                let (tx, rx) = std::sync::mpsc::channel::<()>();
+                let _ = app.run_on_main_thread(move || {
+                    use objc2::runtime::AnyObject;
+                    use objc2::msg_send;
+                    use objc2_foundation::{NSRect, NSPoint, NSSize};
+                    if let Ok(ns_win) = win_clone.ns_window() {
+                        let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                        let current: NSRect = unsafe { msg_send![obj, frame] };
+                        if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                            *saved = Some((
+                                current.origin.x,
+                                current.origin.y,
+                                current.size.width,
+                                current.size.height,
+                            ));
+                        }
+                        // Widen rightward — left edge stays fixed, mascot
+                        // keeps its screen position via CSS right: 180.
+                        let new_w = current.size.width + right_pad;
+                        let frame = NSRect::new(
+                            NSPoint::new(current.origin.x, current.origin.y),
+                            NSSize::new(new_w, current.size.height),
+                        );
+                        unsafe {
+                            let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                            let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                        }
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((current.origin.x, current.origin.y, new_w, current.size.height));
+                        }
+                        pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                    }
+                    let _ = tx.send(());
+                });
+                let _ = rx.recv();
+            }
+        } else if !open {
+            if let Some(win) = app.get_webview_window("mini") {
+                let win_clone = win.clone();
+                let (tx, rx) = std::sync::mpsc::channel::<()>();
+                let _ = app.run_on_main_thread(move || {
+                    use objc2::runtime::AnyObject;
+                    use objc2::msg_send;
+                    use objc2_foundation::{NSRect, NSPoint, NSSize};
+                    if let Ok(ns_win) = win_clone.ns_window() {
+                        let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                        if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                            if let Some((x, y, w, h)) = *saved {
+                                let frame = NSRect::new(
+                                    NSPoint::new(x, y),
+                                    NSSize::new(w, h),
+                                );
+                                unsafe {
+                                    let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                                    let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                                }
+                                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                                    *f = Some((x, y, w, h));
+                                }
+                                *saved = None;
+                                pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                            }
+                        }
+                    }
+                    let _ = tx.send(());
+                });
+                let _ = rx.recv();
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -4564,14 +4647,33 @@ fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_s
     use std::time::Duration;
     PET_PASSTHROUGH_THREAD_ALIVE.store(true, Ordering::SeqCst);
     let mut was_interactive = false;
-    // Full visual size of the mascot in CSS points.
     let (mascot_w, mascot_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
-    // Match the frontend hitbox (LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER / 3 and
-    // LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER / 3 of the visual size, centered).
     let hit_w = mascot_w * (1.8 / 3.0);
     let hit_h = mascot_h * (2.5 / 3.0);
     let inset_x = (mascot_w - hit_w) / 2.0;
     let inset_y = (mascot_h - hit_h) / 2.0;
+    let edge_threshold = 30.0;
+    // Get screen bounds once at startup so we can detect edge proximity.
+    let screen_bounds: Option<(f64, f64, f64, f64)> = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let app_c = app.clone();
+        let _ = app_c.run_on_main_thread(move || {
+            use objc2::runtime::{AnyClass, AnyObject};
+            use objc2::msg_send;
+            use objc2_foundation::NSRect;
+            let result: Option<(f64, f64, f64, f64)> = unsafe {
+                AnyClass::get(c"NSScreen").and_then(|cls| {
+                    let ms: *mut AnyObject = msg_send![cls, mainScreen];
+                    if ms.is_null() { None } else {
+                        let sf: NSRect = msg_send![&*ms, frame];
+                        Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height))
+                    }
+                })
+            };
+            let _ = tx.send(result);
+        });
+        rx.recv().ok().flatten()
+    };
 
     while PET_PASSTHROUGH_ACTIVE.load(Ordering::SeqCst) {
         let menu_open = PET_CONTEXT_MENU_OPEN.load(Ordering::SeqCst);
@@ -4581,14 +4683,22 @@ fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_s
             true
         } else if let Some((fx, fy, fw, _fh)) = frame {
             let cursor = macos_cursor_position();
-            // Mascot visual area is at the bottom-right corner of the window.
-            // The hitbox is a centered sub-region within that visual area.
             let mascot_left = fx + fw - mascot_w;
+            let mascot_right = mascot_left + mascot_w;
             let mascot_bottom = fy;
-            let hit_left = mascot_left + inset_x;
-            let hit_right = mascot_left + mascot_w - inset_x;
-            let hit_bottom = mascot_bottom + inset_y;
-            let hit_top = mascot_bottom + mascot_h - inset_y;
+            // Drop hitbox insets when the mascot extends near/past a screen
+            // edge so the visible portion stays fully clickable.
+            let near_edge = if let Some((sx, _sy, sw, _sh)) = screen_bounds {
+                mascot_left < sx + edge_threshold || mascot_right > sx + sw - edge_threshold
+            } else {
+                mascot_left < edge_threshold
+            };
+            let ix = if near_edge { 0.0 } else { inset_x };
+            let iy = if near_edge { 0.0 } else { inset_y };
+            let hit_left = mascot_left + ix;
+            let hit_right = mascot_right - ix;
+            let hit_bottom = mascot_bottom + iy;
+            let hit_top = mascot_bottom + mascot_h - iy;
             cursor.0 >= hit_left && cursor.0 <= hit_right
                 && cursor.1 >= hit_bottom && cursor.1 <= hit_top
         } else {

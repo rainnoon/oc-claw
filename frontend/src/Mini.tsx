@@ -2297,14 +2297,15 @@ export default function Mini() {
           const screenW = window.screen?.availWidth || 1920
           const winW = window.innerWidth || 300
           const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
-          invoke('get_mini_origin').then((pos) => {
+          invoke('get_mini_origin').then(async (pos) => {
             const [x] = pos as [number, number]
             const mascotLeft = x + winW - mascotW
-            setPetMenuSide(mascotLeft < screenW / 2 ? 'right' : 'left')
+            const side = mascotLeft < screenW / 2 ? 'right' : 'left'
+            setPetMenuSide(side)
+            await invoke('set_pet_context_menu', { open: true, side }).catch(() => {})
+            setPetContextMenuOpen(true)
+            petContextMenuOpenRef.current = true
           }).catch(() => {})
-          setPetContextMenuOpen(true)
-          petContextMenuOpenRef.current = true
-          invoke('set_pet_context_menu', { open: true }).catch(() => {})
         } else {
           setPetContextMenuOpen(false)
           petContextMenuOpenRef.current = false
@@ -2316,7 +2317,8 @@ export default function Mini() {
       const isMoveMode = moveModeRef.current
       const target = e.currentTarget as HTMLElement
       // Keep large mascot visual size unchanged, but shrink the effective hitbox.
-      if (!isMoveMode && largeMascotRef.current) {
+      // Skip inset check when peeking at edge so the visible slice stays clickable.
+      if (!isMoveMode && largeMascotRef.current && currentPetActionRef.current !== 'peek') {
         const visualSize = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
         const hitWidth = MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER / 3 * largeMascotScaleRef.current)
         const hitHeight = MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER / 3 * largeMascotScaleRef.current)
@@ -3030,7 +3032,9 @@ export default function Mini() {
             style={{
               position: (appMode === 'pet' && largeMascot) ? 'absolute' : 'relative',
               bottom: (appMode === 'pet' && largeMascot) ? 0 : undefined,
-              right: (appMode === 'pet' && largeMascot) ? 0 : undefined,
+              right: (appMode === 'pet' && largeMascot)
+                ? (petContextMenuOpen && petMenuSide === 'right' ? 180 : 0)
+                : undefined,
               overflow: 'visible',
               cursor: moveMode ? 'grab' : 'pointer',
               animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : 'none',
