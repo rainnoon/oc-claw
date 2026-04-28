@@ -122,6 +122,8 @@
     "islandBgDesc": "Sélectionnez ou téléchargez une image de fond, faites glisser pour sélectionner la zone de recadrage",
 
     "sound": "Son",
+    "petSfx": "Voix du personnage",
+    "petSfxDesc": "Jouer les sons du personnage lors des interactions",
     "completionSound": "Son de fin",
     "completionSoundDesc": "Son joué à la fin d'une tâche",
     "defaultSound": "Par défaut",
@@ -170,6 +172,13 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "onboarding": {
+    "chooseModeTitle": "Choisissez votre mode",
+    "chooseModeSubtitle": "Vous pouvez changer de mode à tout moment dans les paramètres.",
+    "codingModeLongDesc": "Surveillez vos agents IA. Survolez la mascotte pour voir état, sessions et activité.",
+    "petModeLongDesc": "Élevez votre animal de bureau : nourrir, jouer et augmenter l'affection avec de riches animations."
   },
 
   "pet": {

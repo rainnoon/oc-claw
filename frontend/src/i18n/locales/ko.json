@@ -122,6 +122,8 @@
     "islandBgDesc": "배경 이미지를 선택하거나 업로드하고, 드래그하여 자르기 영역 선택",
 
     "sound": "소리",
+    "petSfx": "캐릭터 음성",
+    "petSfxDesc": "상호작용 시 캐릭터 소리 재생",
     "completionSound": "완료 소리",
     "completionSoundDesc": "작업 완료 시 재생되는 소리",
     "defaultSound": "기본값",
@@ -170,6 +172,13 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "onboarding": {
+    "chooseModeTitle": "모드 선택",
+    "chooseModeSubtitle": "설정에서 언제든지 모드를 전환할 수 있습니다.",
+    "codingModeLongDesc": "AI 에이전트를 모니터링합니다. 마스코트에 호버해 상태/세션/활동을 확인하세요.",
+    "petModeLongDesc": "데스크톱 펫을 키워보세요! 먹이 주기, 상호작용, 풍부한 애니메이션으로 친밀도 성장."
   },
 
   "pet": {

@@ -1,4 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react'
+import { useTranslation } from 'react-i18next'
 import type { AppMode } from '../lib/petStore'
 
 interface OnboardingModalProps {
@@ -7,6 +8,7 @@ interface OnboardingModalProps {
 }
 
 export function OnboardingModal({ open, onSelect }: OnboardingModalProps) {
+  const { t } = useTranslation()
   return (
     <AnimatePresence>
       {open && (
@@ -45,26 +47,30 @@ export function OnboardingModal({ open, onSelect }: OnboardingModalProps) {
             }}
           >
             <h2 style={{ color: '#fff', fontSize: 18, fontWeight: 600, margin: 0, letterSpacing: '-0.01em' }}>
-              Choose Your Mode
+              {t('onboarding.chooseModeTitle')}
             </h2>
             <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, margin: 0, textAlign: 'center', lineHeight: 1.5 }}>
-              You can switch between modes at any time in Settings.
+              {t('onboarding.chooseModeSubtitle')}
             </p>
 
             <div style={{ display: 'flex', gap: 16, width: '100%', marginTop: 8 }}>
               <ModeCard
-                title="Coding Mode"
-                icon="💻"
-                description="Monitor your AI agents. Hover the mascot to see agent status, sessions, and activity."
-                accent="#3b82f6"
-                onClick={() => onSelect('coding')}
-              />
-              <ModeCard
-                title="Pet Mode"
-                icon="🐾"
-                description="Raise your desktop pet! Feed, play, and build affection with rich animations."
+                title={t('settings.petMode')}
+                mediaSrc="/assets/builtin/香企鹅/large/idle.mov"
+                mediaType="video"
+                mediaSize={200}
+                description={t('onboarding.petModeLongDesc')}
                 accent="#f59e0b"
                 onClick={() => onSelect('pet')}
+              />
+              <ModeCard
+                title={t('settings.codingMode')}
+                mediaSrc="/assets/builtin/诗歌剧/mini/top/working.gif"
+                mediaType="image"
+                mediaSize={80}
+                description={t('onboarding.codingModeLongDesc')}
+                accent="#3b82f6"
+                onClick={() => onSelect('coding')}
               />
             </div>
           </motion.div>
@@ -74,9 +80,11 @@ export function OnboardingModal({ open, onSelect }: OnboardingModalProps) {
   )
 }
 
-function ModeCard({ title, icon, description, accent, onClick }: {
+function ModeCard({ title, mediaSrc, mediaType, mediaSize = 50, description, accent, onClick }: {
   title: string
-  icon: string
+  mediaSrc: string
+  mediaType: 'image' | 'video'
+  mediaSize?: number
   description: string
   accent: string
   onClick: () => void
@@ -108,7 +116,37 @@ function ModeCard({ title, icon, description, accent, onClick }: {
         ;(e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.03)'
       }}
     >
-      <span style={{ fontSize: 36 }}>{icon}</span>
+      <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
+        {mediaType === 'video' ? (
+          <video
+            src={mediaSrc}
+            autoPlay
+            loop
+            muted
+            playsInline
+            style={{
+              width: mediaSize,
+              height: mediaSize,
+              objectFit: 'contain',
+              pointerEvents: 'none',
+              filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.45))',
+            }}
+          />
+        ) : (
+          <img
+            src={mediaSrc}
+            alt=""
+            style={{
+              width: mediaSize,
+              height: mediaSize,
+              objectFit: 'contain',
+              pointerEvents: 'none',
+              filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.45))',
+              imageRendering: 'pixelated',
+            }}
+          />
+        )}
+      </div>
       <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>{title}</span>
       <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', lineHeight: 1.5 }}>{description}</span>
     </motion.button>

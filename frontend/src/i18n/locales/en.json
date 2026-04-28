@@ -125,6 +125,8 @@
     "islandBgDesc": "Select or upload a background image, drag to select the crop area",
 
     "sound": "Sound",
+    "petSfx": "Character Voice",
+    "petSfxDesc": "Play character sounds during interactions",
     "completionSound": "Completion Sound",
     "completionSoundDesc": "Sound played when a task completes",
     "defaultSound": "Default",
@@ -175,6 +177,13 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "onboarding": {
+    "chooseModeTitle": "Choose Your Mode",
+    "chooseModeSubtitle": "You can switch between modes at any time in Settings.",
+    "codingModeLongDesc": "Monitor your AI agents. Hover the mascot to see agent status, sessions, and activity.",
+    "petModeLongDesc": "Raise your desktop pet! Feed, play, and build affection with rich animations."
   },
 
   "pet": {

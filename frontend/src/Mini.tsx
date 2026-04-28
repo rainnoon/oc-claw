@@ -18,7 +18,7 @@ import { OnboardingModal } from './components/OnboardingModal'
 import { PetContextMenu, PomodoroOverlay } from './components/PetContextMenu'
 import {
   type AppMode, type PetData, type PetAction, type PomodoroState,
-  loadAppMode, saveAppMode, loadPetData, savePetData, tickPetData,
+  saveAppMode, loadPetData, savePetData, tickPetData,
   defaultPetData, getAffectionTier, canWalk,
   POMODORO_COINS_PER_MIN, AFFECTION_ACTIVITY_PER_10MIN, AFFECTION_MAX,
   HUNGER_ACTIVITY_PER_HOUR, HUNGER_OFFLINE_FLOOR,
@@ -672,13 +672,15 @@ export default function Mini() {
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
+  const [petSfxEnabled, setPetSfxEnabled] = useState(true)
+  const petSfxEnabledRef = useRef(true)
   const [autoExpandOnTask, setAutoExpandOnTask] = useState(true)
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
   const [largeMascot, setLargeMascot] = useState(false)
   const largeMascotRef = useRef(false)
   largeMascotRef.current = largeMascot
-  const [largeMascotScale, setLargeMascotScale] = useState(3)
-  const largeMascotScaleRef = useRef(3)
+  const [largeMascotScale, setLargeMascotScale] = useState(5)
+  const largeMascotScaleRef = useRef(5)
   largeMascotScaleRef.current = largeMascotScale
   const [largePetAction, setLargePetAction] = useState<LargePetAction | null>(null)
   const largePetActionRef = useRef<LargePetAction | null>(null)
@@ -938,15 +940,44 @@ export default function Mini() {
     return () => { if (transientTimeoutRef.current) clearTimeout(transientTimeoutRef.current) }
   }, [appMode, currentPetAction])
 
+  // Pet mode always uses the builtin mascot character assets.
+  const PET_BUILTIN_BASE = '/assets/builtin/香企鹅'
+  const petBuiltinLargeActions = useMemo<Record<string, string>>(() => ({
+    idle: `${PET_BUILTIN_BASE}/large/idle.mov`,
+    hungry: `${PET_BUILTIN_BASE}/large/hungry.mov`,
+    eat: `${PET_BUILTIN_BASE}/large/eat.mov`,
+    walk: `${PET_BUILTIN_BASE}/large/walk.mov`,
+    walkout: `${PET_BUILTIN_BASE}/large/walkout.mov`,
+    peek: `${PET_BUILTIN_BASE}/large/peek.mov`,
+    headpat: `${PET_BUILTIN_BASE}/large/headpat.mov`,
+    grasp: `${PET_BUILTIN_BASE}/large/grasp.mov`,
+    angry: `${PET_BUILTIN_BASE}/large/angry.mov`,
+    question: `${PET_BUILTIN_BASE}/large/question.mov`,
+    farewell: `${PET_BUILTIN_BASE}/large/farewell.mov`,
+    watch: `${PET_BUILTIN_BASE}/large/watch.mov`,
+    music: `${PET_BUILTIN_BASE}/large/music.mov`,
+    dance: `${PET_BUILTIN_BASE}/large/dance.mov`,
+    study: `${PET_BUILTIN_BASE}/large/study.mov`,
+    work: `${PET_BUILTIN_BASE}/large/work.mov`,
+    rest: `${PET_BUILTIN_BASE}/large/rest.mov`,
+    milktea: `${PET_BUILTIN_BASE}/large/milktea.mov`,
+    spin: `${PET_BUILTIN_BASE}/large/spin.mov`,
+  }), [])
+
   // Pet mode: play audio SFX mapped to pet actions via audio.json
   const petAudioRef = useRef<HTMLAudioElement | null>(null)
   const petAudioMapRef = useRef<Record<string, string> | null>(null)
   useEffect(() => {
-    if (!miniChar?.largeActions) return
-    const sampleUrl = Object.values(miniChar.largeActions)[0]
-    if (!sampleUrl) return
-    const baseDir = sampleUrl.replace(/\/large\/.*$/, '')
-    const jsonUrl = `${baseDir}/audio.json`
+    const jsonUrl = appMode === 'pet'
+      ? `${PET_BUILTIN_BASE}/audio.json`
+      : (() => {
+          if (!miniChar?.largeActions) return ''
+          const sampleUrl = Object.values(miniChar.largeActions)[0]
+          if (!sampleUrl) return ''
+          const baseDir = sampleUrl.replace(/\/large\/.*$/, '')
+          return `${baseDir}/audio.json`
+        })()
+    if (!jsonUrl) return
     console.log('[pet-audio] fetching audio.json from:', jsonUrl)
     fetch(jsonUrl)
       .then(r => {
@@ -956,6 +987,7 @@ export default function Mini() {
       .then((map: Record<string, string> | null) => {
         if (!map) { console.warn('[pet-audio] audio.json empty or failed'); return }
         const resolved: Record<string, string> = {}
+        const baseDir = jsonUrl.replace(/\/audio\.json$/, '')
         for (const [action, file] of Object.entries(map)) {
           resolved[action] = `${baseDir}/audio/${file}`
         }
@@ -963,10 +995,12 @@ export default function Mini() {
         petAudioMapRef.current = resolved
       })
       .catch(e => console.error('[pet-audio] fetch error:', e))
-  }, [miniChar])
+  }, [miniChar, appMode])
 
   const petSfxPlayingRef = useRef(false)
   const playPetAudio = useCallback((action: PetAction) => {
+    if (appModeRef.current !== 'pet') return
+    if (!petSfxEnabledRef.current) return
     const FALLBACK_AUDIO: Record<string, string> = {
       angry: '/assets/builtin/香企鹅/audio/angry.mp3',
       grasp: '/assets/builtin/香企鹅/audio/angry.mp3',
@@ -1173,31 +1207,40 @@ export default function Mini() {
   }, [appMode])
 
   const handleSelectAppMode = useCallback(async (mode: AppMode) => {
-    setAppMode(mode)
     appModeRef.current = mode
-    setShowOnboarding(false)
     await saveAppMode(mode)
-    // Leaving pet mode: stop the pass-through poll first.
-    invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
-    // Restore window back to collapsed mascot size
-    try {
-      await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
-    } catch {}
     if (mode === 'pet') {
-      const data = await loadPetData()
-      const ticked = tickPetData(data)
-      setPetData(ticked)
-      petDataRef.current = ticked
-      await savePetData(ticked)
-      // Enable large mascot by default in pet mode
-      setLargeMascot(true)
       largeMascotRef.current = true
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       await store.set('large_mascot', true)
       await store.save()
-      // Expand to pet-context size with click-through poll
+      const data = await loadPetData()
+      const ticked = tickPetData(data)
+      petDataRef.current = ticked
+      await savePetData(ticked)
+      // Hide window content before resizing to avoid flashing the
+      // onboarding modal at the wrong window dimensions.
+      document.documentElement.style.opacity = '0'
+      // Reposition window, then update React state, then fade in
       await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: true, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
       await invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      setAppMode(mode)
+      setShowOnboarding(false)
+      setLargeMascot(true)
+      setPetData(ticked)
+      // Wait one frame for React to render the mascot, then reveal
+      requestAnimationFrame(() => {
+        document.documentElement.style.opacity = '1'
+      })
+    } else {
+      setAppMode(mode)
+      setShowOnboarding(false)
+      // Leaving pet mode: stop the pass-through poll first.
+      invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      // Restore window back to collapsed mascot size
+      try {
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+      } catch {}
     }
   }, [])
 
@@ -1369,7 +1412,7 @@ export default function Mini() {
       const storedLargeMascot = await store.get('large_mascot')
       let initialLargeMascot = typeof storedLargeMascot === 'boolean' ? storedLargeMascot : false
       const storedLargeMascotScale = await store.get('large_mascot_scale')
-      const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(1, storedLargeMascotScale)) : 3
+      const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(4, storedLargeMascotScale)) : 5
       setMascotPosition(initialMascotPosition)
       setMascotScale(initialMascotScale)
       setLargeMascot(initialLargeMascot)
@@ -1379,35 +1422,13 @@ export default function Mini() {
       largeMascotRef.current = initialLargeMascot
       largeMascotScaleRef.current = initialLargeMascotScale
 
-      // Check if onboarding is needed — if so, open full window instead of collapsed
-      const existingMode = await loadAppMode()
-      if (existingMode) {
-        setAppMode(existingMode)
-        appModeRef.current = existingMode
-        if (existingMode === 'pet') {
-          const data = await loadPetData()
-          const ticked = tickPetData(data)
-          setPetData(ticked)
-          petDataRef.current = ticked
-          await savePetData(ticked)
-          // Pet mode always uses large mascot
-          initialLargeMascot = true
-          setLargeMascot(true)
-          largeMascotRef.current = true
-        }
-        // Normal startup: collapsed mascot
-        await invoke('set_mini_expanded', { expanded: false, position: initialMascotPosition, efficiency: true, mascotScale: initialMascotScale, largeMascot: initialLargeMascot, largeMascotScale: initialLargeMascotScale }).catch(() => {})
-        if (existingMode === 'pet' && initialLargeMascot) {
-          // Expand window to pet-context size and start click-through poll
-          await invoke('set_pet_mode_window', { active: true, mascotScale: initialMascotScale, largeMascotScale: initialLargeMascotScale }).catch(() => {})
-        }
-      } else {
-        // First launch: expand to full screen for onboarding modal
-        try {
-          await invoke('set_mini_size', { restore: false, position: initialMascotPosition, keepOnTop: true, mascotScale: initialMascotScale })
-        } catch {}
-        setShowOnboarding(true)
-      }
+      // Always show mode onboarding on startup so user picks mode every launch.
+      setAppMode(null)
+      appModeRef.current = null
+      try {
+        await invoke('set_mini_size', { restore: false, position: initialMascotPosition, keepOnTop: true, mascotScale: initialMascotScale })
+      } catch {}
+      setShowOnboarding(true)
 
       await store.set('view_mode', 'efficiency')
       // Force-reset mascot custom position to avoid off-screen placement.
@@ -1710,7 +1731,7 @@ export default function Mini() {
   }, [agents])
 
   useEffect(() => {
-    if (appMode === 'pet') return // no agent polling in pet mode
+    if (appMode !== 'coding') return
     fetchAgents()
     pollHealth()
     const a = setInterval(fetchAgents, 5000)
@@ -1792,7 +1813,7 @@ export default function Mini() {
   }, [playOcCompletionSound])
 
   useEffect(() => {
-    if (!expanded) return
+    if (!expanded || appMode !== 'coding') return
     fetchAllSessions().then(() => drainPreviewQueue())
     const t1 = setInterval(() => {
       fetchAllSessions().then(() => drainPreviewQueue())
@@ -1804,7 +1825,7 @@ export default function Mini() {
         previewTimerRef.current = null
       }
     }
-  }, [expanded, fetchAllSessions, drainPreviewQueue])
+  }, [expanded, fetchAllSessions, drainPreviewQueue, appMode])
 
   // Load feature toggles
   useEffect(() => {
@@ -1830,6 +1851,8 @@ export default function Mini() {
       if (typeof ws === 'boolean') setWaitingSound(ws)
       const acc = await store.get('auto_close_completion')
       if (typeof acc === 'boolean') setAutoCloseCompletion(acc)
+      const psfx = await store.get('pet_sfx_enabled')
+      if (typeof psfx === 'boolean') { setPetSfxEnabled(psfx); petSfxEnabledRef.current = psfx }
       const aet = await store.get('auto_expand_on_task')
       if (typeof aet === 'boolean') {
         setAutoExpandOnTask(aet)
@@ -1838,13 +1861,13 @@ export default function Mini() {
       const dsa = await store.get('disable_sleep_anim')
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const lm = await store.get('large_mascot')
-      if (typeof lm === 'boolean') {
+      if (typeof lm === 'boolean' && appModeRef.current !== 'pet') {
         setLargeMascot(lm)
         largeMascotRef.current = lm
       }
       const lms = await store.get('large_mascot_scale')
       if (typeof lms === 'number') {
-        const clamped = Math.min(6, Math.max(1, lms))
+        const clamped = Math.min(6, Math.max(4, lms))
         setLargeMascotScale(clamped)
         largeMascotScaleRef.current = clamped
       }
@@ -1882,7 +1905,7 @@ export default function Mini() {
 
   // Poll Claude/Codex/Cursor sessions
   useEffect(() => {
-    if (appMode === 'pet') { setClaudeSessions([]); return }
+    if (appMode !== 'coding') { setClaudeSessions([]); return }
     if (!(enableClaudeCode || enableCodex || enableCursor)) {
       setClaudeSessions([])
       return
@@ -1929,7 +1952,7 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode, enableCodex, enableCursor])
+  }, [enableClaudeCode, enableCodex, enableCursor, appMode])
 
   // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
@@ -1948,7 +1971,7 @@ export default function Mini() {
   autoExpandOnTaskRef.current = autoExpandOnTask
   const autoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    if (appMode === 'pet') return
+    if (appMode !== 'coding') return
     if (!(enableClaudeCode || enableCodex || enableCursor)) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
       if (ev.payload?.waiting && viewModeRef.current === 'efficiency' && autoExpandOnTaskRef.current) {
@@ -1972,7 +1995,7 @@ export default function Mini() {
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [enableClaudeCode, enableCodex, enableCursor])
+  }, [enableClaudeCode, enableCodex, enableCursor, appMode])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
@@ -2982,11 +3005,14 @@ export default function Mini() {
     const c = characters.find((ch) => ch.largeActions && Object.keys(ch.largeActions).length > 0)
     return c?.largeActions
   }, [characters])
-  const hasAnyLargeActions = !!(miniChar?.largeActions && Object.keys(miniChar.largeActions).length > 0) || !!(fallbackLargeActions && Object.keys(fallbackLargeActions).length > 0)
+  const largeCharForRender = appMode === 'pet'
+    ? ({ name: '香企鹅', largeActions: petBuiltinLargeActions } as CharacterMeta)
+    : miniChar
+  const hasAnyLargeActions = !!(largeCharForRender?.largeActions && Object.keys(largeCharForRender.largeActions).length > 0) || !!(fallbackLargeActions && Object.keys(fallbackLargeActions).length > 0)
   const largeVideoBaseUrl = largeMascot
     ? appMode === 'pet'
-      ? getLargeVideoPetMode(miniChar ?? undefined, currentPetAction, fallbackLargeActions)
-      : getLargeVideo(miniChar ?? undefined, mainPetState, largePetAction, fallbackLargeActions)
+      ? getLargeVideoPetMode(largeCharForRender ?? undefined, currentPetAction, fallbackLargeActions)
+      : getLargeVideo(largeCharForRender ?? undefined, mainPetState, largePetAction, fallbackLargeActions)
     : undefined
   const largeVideoUrl = largeVideoBaseUrl ? `${largeVideoBaseUrl}?rev=alpha-fix-2` : undefined
   const largeVideoRef = useRef<HTMLVideoElement>(null)
@@ -5090,14 +5116,23 @@ export default function Mini() {
                         }}
                         largeMascotScale={largeMascotScale}
                         onChangeLargeMascotScale={async (v) => {
-                          setLargeMascotScale(v)
-                          largeMascotScaleRef.current = v
+                          const clamped = Math.min(6, Math.max(4, v))
+                          setLargeMascotScale(clamped)
+                          largeMascotScaleRef.current = clamped
                           const store = await getStore()
-                          await store.set('large_mascot_scale', v)
+                          await store.set('large_mascot_scale', clamped)
                           await store.save()
                         }}
                         appMode={appMode}
                         onChangeAppMode={handleSelectAppMode}
+                        petSfxEnabled={petSfxEnabled}
+                        onTogglePetSfxEnabled={async (v) => {
+                          setPetSfxEnabled(v)
+                          petSfxEnabledRef.current = v
+                          const store = await getStore()
+                          await store.set('pet_sfx_enabled', v)
+                          await store.save()
+                        }}
                       />
                     </div>
                   )}

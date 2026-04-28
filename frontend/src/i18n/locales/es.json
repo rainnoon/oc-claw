@@ -122,6 +122,8 @@
     "islandBgDesc": "Selecciona o sube una imagen de fondo, arrastra para seleccionar el área de recorte",
 
     "sound": "Sonido",
+    "petSfx": "Voz del personaje",
+    "petSfxDesc": "Reproducir sonidos del personaje durante las interacciones",
     "completionSound": "Sonido de finalización",
     "completionSoundDesc": "Sonido que se reproduce al completar una tarea",
     "defaultSound": "Predeterminado",
@@ -170,6 +172,13 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "onboarding": {
+    "chooseModeTitle": "Elige tu modo",
+    "chooseModeSubtitle": "Puedes cambiar de modo en cualquier momento desde Ajustes.",
+    "codingModeLongDesc": "Supervisa tus agentes de IA. Pasa el cursor por la mascota para ver estado, sesiones y actividad.",
+    "petModeLongDesc": "Cría tu mascota de escritorio. Dale comida, juega y sube afinidad con animaciones ricas."
   },
 
   "pet": {

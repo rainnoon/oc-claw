@@ -125,6 +125,8 @@
     "islandBgDesc": "选择或上传背景图片，拖动选择裁剪区域",
 
     "sound": "提示音",
+    "petSfx": "角色叫声",
+    "petSfxDesc": "互动时播放角色的声音",
     "completionSound": "完成提示音",
     "completionSoundDesc": "任务完成时播放的提示音",
     "defaultSound": "默认",
@@ -175,6 +177,13 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "onboarding": {
+    "chooseModeTitle": "选择你的模式",
+    "chooseModeSubtitle": "你可以随时在设置中切换模式。",
+    "codingModeLongDesc": "监控你的 AI Agent。悬停看板娘可查看状态、会话和活动。",
+    "petModeLongDesc": "养成你的桌面宠物！喂食、互动，并通过丰富动画提升好感。"
   },
 
   "pet": {
