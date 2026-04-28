@@ -19,7 +19,9 @@ export type PetAction =
   | 'farewell' // app closing
   | 'grasp'    // being dragged
   | 'angry'    // low affection click
-  | 'shy'      // high affection click
+  | 'spin'     // high affection click (replaces shy)
+  | 'milktea'  // random idle animation
+  | 'rest'     // idle when no user activity for 5min
   | 'peek'     // peeking from screen edge
   | 'walkout'  // walking out from screen edge after peek
 

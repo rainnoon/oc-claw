@@ -3773,6 +3773,30 @@ fn pet_context_schedule_restore_alpha(ns_win_ptr: *mut std::ffi::c_void) {
 /// 2) Frontmost app fallback (video/music bundle IDs)
 /// 3) Explicit player-state scripts for background music fallback
 #[tauri::command]
+async fn get_system_idle_time(app: tauri::AppHandle) -> Result<f64, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<f64>();
+        app.run_on_main_thread(move || {
+            #[link(name = "CoreGraphics", kind = "framework")]
+            extern "C" {
+                fn CGEventSourceSecondsSinceLastEventType(
+                    state_id: i32,
+                    event_type: u32,
+                ) -> f64;
+            }
+            let idle = unsafe { CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF) };
+            let _ = tx.send(idle);
+        }).map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(0.0)
+    }
+}
+
+#[tauri::command]
 async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
@@ -10252,7 +10276,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, get_now_playing])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, get_now_playing, get_system_idle_time])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

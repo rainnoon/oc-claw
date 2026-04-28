@@ -19,7 +19,7 @@ import { PetContextMenu, PomodoroOverlay } from './components/PetContextMenu'
 import {
   type AppMode, type PetData, type PetAction, type PomodoroState,
   loadAppMode, saveAppMode, loadPetData, savePetData, tickPetData,
-  defaultPetData, getAffectionTier,
+  defaultPetData, getAffectionTier, canWalk,
   POMODORO_COINS_PER_MIN, AFFECTION_ACTIVITY_PER_10MIN, AFFECTION_MAX,
   HUNGER_ACTIVITY_PER_HOUR, HUNGER_OFFLINE_FLOOR,
   applyHeadpat,
@@ -96,7 +96,7 @@ const MASCOT_BASE_SIZE = 43
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
 const LARGE_ACTION_DISPLAY_MS = 3_000
-const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'shy', 'walkout']
+const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'spin', 'milktea', 'walkout']
 
 // Priority: higher number = harder to interrupt
 function petActionPriority(action: PetAction): number {
@@ -328,7 +328,7 @@ function getMiniGif(char: CharacterMeta | undefined, petState: PetState | boolea
   return idleGifs[0] || allGifs[0]
 }
 
-type LargePetAction = 'work' | 'rest' | 'question' | 'grasp' | 'shy' | 'angry'
+type LargePetAction = 'work' | 'rest' | 'question' | 'grasp' | 'spin' | 'angry'
 
 // Pet mode action → largeActions video key mapping
 const PET_ACTION_VIDEO_MAP: Record<PetAction, string> = {
@@ -346,7 +346,9 @@ const PET_ACTION_VIDEO_MAP: Record<PetAction, string> = {
   farewell: 'farewell',
   grasp: 'grasp',
   angry: 'angry',
-  shy: 'shy',
+  spin: 'spin',
+  milktea: 'milktea',
+  rest: 'rest',
   peek: 'peek',
   walkout: 'walkout',
 }
@@ -738,6 +740,7 @@ export default function Mini() {
   const activityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [petContextMenuOpen, setPetContextMenuOpen] = useState(false)
   const petContextMenuOpenRef = useRef(false)
+  const [petMenuSide, setPetMenuSide] = useState<'left' | 'right'>('left')
 
   // Food rain effect (lives outside context menu so it persists after menu closes)
   interface FoodRainDrop { id: number; emoji: string; x: number; delay: number; duration: number; size: number }
@@ -840,7 +843,38 @@ export default function Mini() {
     }
   }, [appMode])
 
-  // Pet mode: after 5 min idle, randomly switch to sleep or walk
+  // Pet mode: check system idle time → rest (5min no activity & no media) or idle
+  const idleCheckRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(() => {
+    if (idleCheckRef.current) { clearInterval(idleCheckRef.current); idleCheckRef.current = null }
+    if (appMode !== 'pet') return
+    const check = async () => {
+      const cur = currentPetActionRef.current
+      if (petActionPriority(cur) >= petActionPriority('hungry')) return
+      if (TRANSIENT_PET_ACTIONS.includes(cur)) return
+      if (cur === 'walk' || cur === 'peek' || cur === 'walkout' || cur === 'grasp') return
+      try {
+        const [idleSec, media] = await Promise.all([
+          invoke<number>('get_system_idle_time'),
+          invoke<string>('get_now_playing'),
+        ])
+        const hasMedia = media === 'music' || media === 'video'
+        const userInactive = idleSec >= 300 && !hasMedia
+        if (userInactive && cur !== 'rest') {
+          setCurrentPetAction('rest')
+          currentPetActionRef.current = 'rest'
+        } else if (!userInactive && cur === 'rest') {
+          setCurrentPetAction('idle')
+          currentPetActionRef.current = 'idle'
+        }
+      } catch {}
+    }
+    check()
+    idleCheckRef.current = setInterval(check, 10_000)
+    return () => { if (idleCheckRef.current) clearInterval(idleCheckRef.current) }
+  }, [appMode])
+
+  // Pet mode: while idle, randomly trigger milktea/walk/dance every ~3 min
   const idleAutoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (idleAutoTimerRef.current) {
@@ -851,23 +885,44 @@ export default function Mini() {
     idleAutoTimerRef.current = setTimeout(() => {
       if (currentPetActionRef.current !== 'idle' || petActionPriority(currentPetActionRef.current) > 0) return
       const roll = Math.random()
-      const next: PetAction = roll < 0.33 ? 'sleep' : 'walk'
-      if (next === 'walk' && !canWalk(petDataRef.current)) {
-        setCurrentPetAction('sleep')
-        currentPetActionRef.current = 'sleep'
+      let next: PetAction
+      if (roll < 0.33) {
+        next = 'milktea'
+      } else if (roll < 0.66) {
+        next = 'walk'
       } else {
-        if (next === 'walk') {
-          walkAutoRef.current = true
-          // 50% chance of walking to edge → peek
-          walkToEdgeRef.current = roll >= 0.66
-        }
-        setCurrentPetAction(next)
-        currentPetActionRef.current = next
+        next = 'dance'
       }
-    }, 5 * 60 * 1000)
+      if (next === 'walk' && !canWalk(petDataRef.current)) {
+        next = 'milktea'
+      }
+      if (next === 'walk') {
+        walkAutoRef.current = true
+        walkToEdgeRef.current = Math.random() > 0.5
+      }
+      setCurrentPetAction(next)
+      currentPetActionRef.current = next
+    }, 3 * 60 * 1000)
     return () => {
       if (idleAutoTimerRef.current) clearTimeout(idleAutoTimerRef.current)
     }
+  }, [appMode, currentPetAction])
+
+  // Pet mode: safety timeout for transient actions (recover from stuck states)
+  const transientTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (transientTimeoutRef.current) { clearTimeout(transientTimeoutRef.current); transientTimeoutRef.current = null }
+    if (appMode !== 'pet' || !TRANSIENT_PET_ACTIONS.includes(currentPetAction)) return
+    transientTimeoutRef.current = setTimeout(() => {
+      if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
+        console.warn('[pet] transient action timed out:', currentPetActionRef.current)
+        const d = petDataRef.current
+        const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+        setCurrentPetAction(next)
+        currentPetActionRef.current = next
+      }
+    }, 15_000)
+    return () => { if (transientTimeoutRef.current) clearTimeout(transientTimeoutRef.current) }
   }, [appMode, currentPetAction])
 
   // Pet mode: activity affection gain (watch/music: +1 per 10 min)
@@ -2239,6 +2294,14 @@ export default function Mini() {
         e.preventDefault()
         e.stopPropagation()
         if (!petContextMenuOpenRef.current) {
+          const screenW = window.screen?.availWidth || 1920
+          const winW = window.innerWidth || 300
+          const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+          invoke('get_mini_origin').then((pos) => {
+            const [x] = pos as [number, number]
+            const mascotLeft = x + winW - mascotW
+            setPetMenuSide(mascotLeft < screenW / 2 ? 'right' : 'left')
+          }).catch(() => {})
           setPetContextMenuOpen(true)
           petContextMenuOpenRef.current = true
           invoke('set_pet_context_menu', { open: true }).catch(() => {})
@@ -2265,7 +2328,7 @@ export default function Mini() {
         if (localX < insetX || localX > visualSize - insetX || localY < insetY || localY > visualSize - insetY) return
       }
 
-      // Large mascot normal mode: drag to move window, click for angry/shy
+      // Large mascot normal mode: drag to move window, click for angry/spin
       if (!isMoveMode && largeMascotRef.current) {
         e.preventDefault()
         mascotDragActiveRef.current = true
@@ -2336,7 +2399,7 @@ export default function Mini() {
                 } else if (tier === 'shy') {
                   const updated = applyHeadpat(petDataRef.current)
                   handleUpdatePetData(updated)
-                  handleSetPetAction('shy')
+                  handleSetPetAction('spin')
                 } else {
                   const updated = applyHeadpat(petDataRef.current)
                   handleUpdatePetData(updated)
@@ -2344,14 +2407,13 @@ export default function Mini() {
                 }
               }
             } else {
-              // Coding mode: angry for the first 10 clicks per day, then shy
               const today = new Date().toDateString()
               if (largeDailyAngryDateRef.current !== today) {
                 largeDailyAngryDateRef.current = today
                 largeDailyAngryCountRef.current = 0
               }
               largeDailyAngryCountRef.current += 1
-              const action = largeDailyAngryCountRef.current <= LARGE_DAILY_ANGRY_LIMIT ? 'angry' : 'shy'
+              const action = largeDailyAngryCountRef.current <= LARGE_DAILY_ANGRY_LIMIT ? 'angry' : 'spin'
               setLargePetAction(action)
               largePetActionRef.current = action
               if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
@@ -2989,7 +3051,15 @@ export default function Mini() {
                 muted
                 playsInline
                 preload="auto"
-                onError={(e) => console.warn('[large-video] error:', (e.target as HTMLVideoElement).error?.message, 'src:', largeVideoUrl)}
+                onError={(e) => {
+                  console.warn('[large-video] error:', (e.target as HTMLVideoElement).error?.message, 'src:', largeVideoUrl)
+                  if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
+                    const d = petDataRef.current
+                    const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+                    setCurrentPetAction(next)
+                    currentPetActionRef.current = next
+                  }
+                }}
                 onEnded={() => {
                   if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
                     let next: PetAction
@@ -3073,6 +3143,7 @@ export default function Mini() {
                 currentAction={currentPetAction}
                 pomodoro={pomodoro}
                 mascotSize={largeMascotVisualSize}
+                side={petMenuSide}
                 onClose={closePetContextMenu}
                 onUpdatePetData={handleUpdatePetData}
                 onSetAction={(action) => {

@@ -18,6 +18,7 @@ interface PetContextMenuProps {
   currentAction: PetAction
   pomodoro: PomodoroState | null
   mascotSize: number
+  side?: 'left' | 'right'
   onClose: () => void
   onUpdatePetData: (data: PetData) => void
   onSetAction: (action: PetAction) => void
@@ -29,7 +30,7 @@ interface PetContextMenuProps {
 }
 
 export function PetContextMenu({
-  open, petData, currentAction, pomodoro, mascotSize,
+  open, petData, currentAction, pomodoro, mascotSize, side = 'left',
   onClose, onUpdatePetData, onSetAction,
   onStartPomodoro, onStopPomodoro, onOpenSettings, onFoodRain, onClaimGift,
 }: PetContextMenuProps) {
@@ -103,12 +104,12 @@ export function PetContextMenu({
         pointerEvents: 'none',
       }}
     >
-      {/* Status bar top right */}
+      {/* Status bar */}
       <div
         onPointerDown={e => e.stopPropagation()}
         style={{
         position: 'absolute',
-        right: 20,
+        ...(side === 'left' ? { right: 20 } : { left: 20 }),
         top: -70,
         pointerEvents: 'auto',
         display: 'flex',
@@ -156,14 +157,14 @@ export function PetContextMenu({
         </div>
       </div>
 
-      {/* Buttons to the left of mascot */}
+      {/* Buttons beside mascot */}
       <style>{`
         .pet-menu-scroll::-webkit-scrollbar { display: none; }
         .pet-menu-scroll { -ms-overflow-style: none; scrollbar-width: none; }
       `}</style>
       <div className="pet-menu-scroll" onPointerDown={e => e.stopPropagation()} style={{
         position: 'absolute',
-        right: mascotSize + 14,
+        ...(side === 'left' ? { right: mascotSize + 14 } : { left: mascotSize + 14 }),
         top: '50%',
         transform: 'translateY(-50%)',
         maxHeight: '90%',
@@ -188,7 +189,7 @@ export function PetContextMenu({
           {/* Vertical line with black shadow for contrast */}
           <div style={{
             position: 'absolute',
-            right: -12,
+            ...(side === 'left' ? { right: -12 } : { left: -12 }),
             top: 0,
             bottom: 0,
             width: 1.5,
@@ -200,31 +201,32 @@ export function PetContextMenu({
 
           {subPanel === 'main' ? (
             <>
-              <SideBtn label={giftAvailable ? 'Daily Gift' : 'Claimed'} onClick={handleClaimGift} disabled={!giftAvailable} active={giftAvailable} />
-              <SideBtn label="Actions" onClick={() => setSubPanel('actions')} />
-              <SideBtn label="Shop" onClick={() => setSubPanel('shop')} />
+              <SideBtn side={side} label={giftAvailable ? 'Daily Gift' : 'Claimed'} onClick={handleClaimGift} disabled={!giftAvailable} active={giftAvailable} />
+              <SideBtn side={side} label="Actions" onClick={() => setSubPanel('actions')} />
+              <SideBtn side={side} label="Shop" onClick={() => setSubPanel('shop')} />
               {pomodoro?.active ? (
-                <SideBtn label="Stop" onClick={onStopPomodoro} />
+                <SideBtn side={side} label="Stop" onClick={onStopPomodoro} />
               ) : (
-                <SideBtn label="Pomodoro" onClick={() => setSubPanel('pomodoro')} />
+                <SideBtn side={side} label="Pomodoro" onClick={() => setSubPanel('pomodoro')} />
               )}
-              <SideBtn label="Settings" onClick={onOpenSettings} />
-              {import.meta.env.DEV && <SideBtn label="Dev" onClick={() => setSubPanel('dev')} dim />}
+              <SideBtn side={side} label="Settings" onClick={onOpenSettings} />
+              {import.meta.env.DEV && <SideBtn side={side} label="Dev" onClick={() => setSubPanel('dev')} dim />}
             </>
           ) : (
             <>
-              <SideBtn label="Back" onClick={() => setSubPanel('main')} dim />
+              <SideBtn side={side} label="Back" onClick={() => setSubPanel('main')} dim />
               {subPanel === 'actions' && (
                 <>
-                  <SideBtn label="Sleep" onClick={() => handleAction('sleep')} active={currentAction === 'sleep'} />
-                  <SideBtn label="Watch" onClick={() => handleAction('watch')} active={currentAction === 'watch'} />
-                  <SideBtn label="Music" onClick={() => handleAction('music')} active={currentAction === 'music'} />
-                  <SideBtn label="Walk" onClick={() => handleAction('walk')} disabled={!canWalk(petData)} />
-                  <SideBtn label={`Pat ${petData.headpatToday}/5`} onClick={() => handleAction('headpat')} disabled={!canHeadpat(petData)} />
+                  <SideBtn side={side} label="Sleep" onClick={() => handleAction('sleep')} active={currentAction === 'sleep'} />
+                  <SideBtn side={side} label="Watch" onClick={() => handleAction('watch')} active={currentAction === 'watch'} />
+                  <SideBtn side={side} label="Music" onClick={() => handleAction('music')} active={currentAction === 'music'} />
+                  <SideBtn side={side} label="Walk" onClick={() => handleAction('walk')} disabled={!canWalk(petData)} />
+                  <SideBtn side={side} label={`Pat ${petData.headpatToday}/5`} onClick={() => handleAction('headpat')} disabled={!canHeadpat(petData)} />
                 </>
               )}
               {subPanel === 'shop' && FOODS.map(food => (
                 <SideBtn
+                  side={side}
                   key={food.id}
                   label={`${food.name} 🪙${food.price}`}
                   onClick={() => handleBuy(food.id)}
@@ -232,7 +234,7 @@ export function PetContextMenu({
                 />
               ))}
               {subPanel === 'pomodoro' && POMODORO_PRESETS.map(m => (
-                <SideBtn key={m} label={`${m} min`} onClick={() => onStartPomodoro(m)} />
+                <SideBtn side={side} key={m} label={`${m} min`} onClick={() => onStartPomodoro(m)} />
               ))}
               {subPanel === 'dev' && (
                 <div style={{
@@ -266,17 +268,18 @@ function StatBadge({ icon, value, color }: { icon: React.ReactNode; value: numbe
   )
 }
 
-function SideBtn({ label, onClick, disabled, active, dim }: {
+function SideBtn({ label, onClick, disabled, active, dim, side = 'left' }: {
   label: string; onClick: () => void
-  disabled?: boolean; active?: boolean; dim?: boolean
+  disabled?: boolean; active?: boolean; dim?: boolean; side?: 'left' | 'right'
 }) {
+  const isRight = side === 'right'
   return (
     <button
       onClick={disabled ? undefined : onClick}
       style={{
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'flex-end',
+        justifyContent: isRight ? 'flex-start' : 'flex-end',
         color: '#facc15',
         fontWeight: 900,
         letterSpacing: '1.5px',
@@ -324,7 +327,7 @@ function SideBtn({ label, onClick, disabled, active, dim }: {
           border: active ? '1.5px solid #000' : '1.5px solid #facc15',
           transform: 'rotate(45deg)',
           position: 'absolute',
-          right: -15,
+          ...(isRight ? { left: -15 } : { right: -15 }),
           background: active ? '#facc15' : '#111',
           boxShadow: active ? '0 0 0 1.5px #000, 0 0 6px #facc15' : '0 0 0 1.5px #facc15',
           transition: 'all 0.2s',
