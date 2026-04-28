@@ -227,6 +227,8 @@ export function PetContextMenu({
                   <SideBtn side={side} label={t('pet.watch')} onClick={() => handleAction('watch')} active={currentAction === 'watch'} />
                   <SideBtn side={side} label={t('pet.music')} onClick={() => handleAction('music')} active={currentAction === 'music'} />
                   <SideBtn side={side} label={t('pet.walk')} onClick={() => handleAction('walk')} disabled={!canWalk(petData)} />
+                  <SideBtn side={side} label={t('pet.milktea')} onClick={() => handleAction('milktea')} active={currentAction === 'milktea'} />
+                  <SideBtn side={side} label={t('pet.dance')} onClick={() => handleAction('dance')} active={currentAction === 'dance'} />
                   <SideBtn side={side} label={`${t('pet.pat')} ${petData.headpatToday}/5`} onClick={() => handleAction('headpat')} disabled={!canHeadpat(petData)} />
                 </>
               )}

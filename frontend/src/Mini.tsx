@@ -18,7 +18,7 @@ import { OnboardingModal } from './components/OnboardingModal'
 import { PetContextMenu, PomodoroOverlay } from './components/PetContextMenu'
 import {
   type AppMode, type PetData, type PetAction, type PomodoroState,
-  saveAppMode, loadPetData, savePetData, tickPetData,
+  loadAppMode, saveAppMode, loadPetData, savePetData, tickPetData,
   defaultPetData, getAffectionTier, canWalk,
   POMODORO_COINS_PER_MIN, AFFECTION_ACTIVITY_PER_10MIN, AFFECTION_MAX,
   HUNGER_ACTIVITY_PER_HOUR, HUNGER_OFFLINE_FLOOR,
@@ -889,7 +889,8 @@ export default function Mini() {
     return () => { if (idleCheckRef.current) clearInterval(idleCheckRef.current) }
   }, [appMode])
 
-  // Pet mode: while idle, randomly trigger milktea/walk/dance every ~3 min
+  // Pet mode: while idle, randomly trigger weighted actions every ~3 min.
+  // Keep spin out of idle random pool; spin is reserved for high-affection click.
   const idleAutoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (idleAutoTimerRef.current) {
@@ -899,15 +900,8 @@ export default function Mini() {
     if (appMode !== 'pet' || currentPetAction !== 'idle' || petActionPriority(currentPetAction) > 0) return
     idleAutoTimerRef.current = setTimeout(() => {
       if (currentPetActionRef.current !== 'idle' || petActionPriority(currentPetActionRef.current) > 0) return
-      const roll = Math.random()
-      let next: PetAction
-      if (roll < 0.33) {
-        next = 'milktea'
-      } else if (roll < 0.66) {
-        next = 'walk'
-      } else {
-        next = 'dance'
-      }
+      const weightedIdleActions: PetAction[] = ['walk', 'milktea', 'dance', 'dance']
+      let next = weightedIdleActions[Math.floor(Math.random() * weightedIdleActions.length)]
       if (next === 'walk' && !canWalk(petDataRef.current)) {
         next = 'milktea'
       }
@@ -1422,13 +1416,57 @@ export default function Mini() {
       largeMascotRef.current = initialLargeMascot
       largeMascotScaleRef.current = initialLargeMascotScale
 
-      // Always show mode onboarding on startup so user picks mode every launch.
-      setAppMode(null)
-      appModeRef.current = null
-      try {
-        await invoke('set_mini_size', { restore: false, position: initialMascotPosition, keepOnTop: true, mascotScale: initialMascotScale })
-      } catch {}
-      setShowOnboarding(true)
+      const existingMode = await loadAppMode()
+      if (existingMode === 'pet' || existingMode === 'coding') {
+        setAppMode(existingMode)
+        appModeRef.current = existingMode
+        setShowOnboarding(false)
+        if (existingMode === 'pet') {
+          const data = await loadPetData()
+          const ticked = tickPetData(data)
+          setPetData(ticked)
+          petDataRef.current = ticked
+          await savePetData(ticked)
+          initialLargeMascot = true
+          setLargeMascot(true)
+          largeMascotRef.current = true
+          await store.set('large_mascot', true)
+        }
+        await invoke('set_mini_expanded', {
+          expanded: false,
+          position: initialMascotPosition,
+          efficiency: true,
+          mascotScale: initialMascotScale,
+          largeMascot: existingMode === 'pet' ? true : initialLargeMascot,
+          largeMascotScale: initialLargeMascotScale,
+        }).catch(() => {})
+        if (existingMode === 'pet') {
+          await invoke('set_pet_mode_window', {
+            active: true,
+            mascotScale: initialMascotScale,
+            largeMascotScale: initialLargeMascotScale,
+          }).catch(() => {})
+        } else {
+          invoke('set_pet_mode_window', {
+            active: false,
+            mascotScale: initialMascotScale,
+            largeMascotScale: initialLargeMascotScale,
+          }).catch(() => {})
+        }
+      } else {
+        // First launch (or mode not chosen yet): show mode onboarding.
+        setAppMode(null)
+        appModeRef.current = null
+        try {
+          await invoke('set_mini_size', {
+            restore: false,
+            position: initialMascotPosition,
+            keepOnTop: true,
+            mascotScale: initialMascotScale,
+          })
+        } catch {}
+        setShowOnboarding(true)
+      }
 
       await store.set('view_mode', 'efficiency')
       // Force-reset mascot custom position to avoid off-screen placement.

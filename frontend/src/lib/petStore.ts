@@ -188,11 +188,15 @@ export function tickPetData(data: PetData): PetData {
 
 // ─── Daily gift ───
 
-export function canClaimDailyGift(_data: PetData): boolean {
-  // TODO: restore daily check after testing
-  // const today = new Date().toISOString().slice(0, 10)
-  // return data.lastDailyGift !== today
-  return true
+function localDateKey(d = new Date()): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+export function canClaimDailyGift(data: PetData): boolean {
+  return data.lastDailyGift !== localDateKey()
 }
 
 export function claimDailyGift(data: PetData): { data: PetData; amount: number } {
@@ -202,7 +206,7 @@ export function claimDailyGift(data: PetData): { data: PetData; amount: number }
     data: {
       ...data,
       coins: data.coins + amount,
-      lastDailyGift: new Date().toISOString().slice(0, 10),
+      lastDailyGift: localDateKey(),
     },
     amount,
   }
