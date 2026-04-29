@@ -4557,6 +4557,10 @@ async fn set_pet_mode_window(
                     let _ = win.set_position(tauri::LogicalPosition::new(x, y));
                 }
             }
+            if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = win.set_always_on_top(true);
+                let _ = win.show();
+            }
         }
 
         // Start the click-through poll thread.

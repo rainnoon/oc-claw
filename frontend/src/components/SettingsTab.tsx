@@ -228,12 +228,13 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
 
 export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petSfxEnabled, onTogglePetSfxEnabled }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void }) {
   const { t, i18n } = useTranslation()
+  const isWindowsPlatform = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
-  const [enableCodex, setEnableCodex] = useState(true)
+  const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
   const [codexHookStatus, setCodexHookStatus] = useState('')
-  const [enableCursor, setEnableCursor] = useState(true)
+  const [enableCursor, setEnableCursor] = useState(!isWindowsPlatform)
   const [cursorHookStatus, setCursorHookStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
   const [updateChecking, setUpdateChecking] = useState(false)
@@ -290,9 +291,17 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
       const cod = await store.get('enable_codex')
-      if (typeof cod === 'boolean') setEnableCodex(cod)
+      if (isWindowsPlatform) {
+        setEnableCodex(false)
+        await store.set('enable_codex', false)
+        await store.save()
+      } else if (typeof cod === 'boolean') setEnableCodex(cod)
       const cur = await store.get('enable_cursor')
-      if (typeof cur === 'boolean') setEnableCursor(cur)
+      if (isWindowsPlatform) {
+        setEnableCursor(false)
+        await store.set('enable_cursor', false)
+        await store.save()
+      } else if (typeof cur === 'boolean') setEnableCursor(cur)
     })()
     void checkForUpdate()
     if (showIslandBackgroundSettings) {
@@ -483,7 +492,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       )}
 
       {/* Pet mode: mascot size */}
-      {isPetMode && (
+      {isPetMode && !isWindowsPlatform && (
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -571,7 +580,9 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </div>
       </section>
 
-      {/* Cursor */}
+      {!isWindowsPlatform && (
+      <>
+      {/* Codex */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.codex', 'Codex')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -600,6 +611,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           </div>
         </div>
       </section>
+      </>
+      )}
 
       {/* 显示设置 */}
       <section className="flex flex-col gap-4">
@@ -648,6 +661,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               className="w-full accent-white/60 h-1"
             />
           </div>
+          {!isWindowsPlatform && (
           <div className="p-4 border-b border-white/5">
             <div className="flex items-center justify-between mb-2">
               <div className="flex flex-col gap-1">
@@ -666,6 +680,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               className="w-full accent-white/60 h-1"
             />
           </div>
+          )}
           {showIslandBackgroundSettings && (
             <div className="p-4">
               <div className="flex flex-col gap-1 mb-3">
@@ -780,6 +795,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
           </div>
+          {!isWindowsPlatform && (
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.codexSound', 'Codex Completion Sound')}</span>
@@ -787,6 +803,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={codexSoundEnabled} onChange={onToggleCodexSoundEnabled} />
           </div>
+          )}
+          {!isWindowsPlatform && (
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.cursorSound', 'Cursor Completion Sound')}</span>
@@ -794,6 +812,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={cursorSoundEnabled} onChange={onToggleCursorSoundEnabled} />
           </div>
+          )}
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.waitingSound')}</span>

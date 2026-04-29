@@ -96,7 +96,6 @@ const MASCOT_BASE_SIZE = 43
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
-const LARGE_ACTION_DISPLAY_MS = 3_000
 const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'spin', 'milktea', 'walkout']
 
 // Priority: higher number = harder to interrupt
@@ -111,7 +110,6 @@ function petActionPriority(action: PetAction): number {
     default: return 0
   }
 }
-const LARGE_DAILY_ANGRY_LIMIT = 10
 const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 1.8
 const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.5
 const MOVE_DRAG_THRESHOLD = 1
@@ -664,10 +662,12 @@ export default function Mini() {
     [resolveClaudeStatsSource],
   )
 
+  const isWindowsPlatform = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+
   // Feature toggles
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
-  const [enableCodex, setEnableCodex] = useState(true)
-  const [enableCursor, setEnableCursor] = useState(true)
+  const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
+  const [enableCursor, setEnableCursor] = useState(!isWindowsPlatform)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
@@ -688,8 +688,6 @@ export default function Mini() {
   const largePetActionRef = useRef<LargePetAction | null>(null)
   largePetActionRef.current = largePetAction
   const largeActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const largeDailyAngryCountRef = useRef(0)
-  const largeDailyAngryDateRef = useRef('')
   const [panelMaxHeight, setPanelMaxHeight] = useState(300)
   const panelMaxHeightRef = useRef(300)
   panelMaxHeightRef.current = panelMaxHeight
@@ -747,6 +745,17 @@ export default function Mini() {
   const petContextMenuOpenRef = useRef(false)
   const petContextMenuTransitionRef = useRef(false)
   const [petMenuSide, setPetMenuSide] = useState<'left' | 'right'>('left')
+
+  useEffect(() => {
+    if (!isWindowsPlatform || appMode !== 'coding' || !largeMascot) return
+    // Windows coding mode: disable large mascot to avoid close-time disappear regressions.
+    setLargeMascot(false)
+    largeMascotRef.current = false
+    load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+      await store.set('large_mascot', false)
+      await store.save()
+    }).catch(() => {})
+  }, [isWindowsPlatform, appMode, largeMascot])
 
   // Food rain effect (lives outside context menu so it persists after menu closes)
   interface FoodRainDrop { id: number; emoji: string; x: number; delay: number; duration: number; size: number }
@@ -1226,7 +1235,7 @@ export default function Mini() {
         setLargeMascot(true)
         setPetData(ticked)
         try {
-          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current })
+          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, keepOnTop: true })
         } catch {}
         return
       }
@@ -1247,13 +1256,20 @@ export default function Mini() {
     } else {
       setAppMode(mode)
       setShowOnboarding(false)
+      if (isWindowsPlatform && mode === 'coding') {
+        setLargeMascot(false)
+        largeMascotRef.current = false
+        const store = await load('settings.json', { defaults: {}, autoSave: true })
+        await store.set('large_mascot', false)
+        await store.save()
+      }
       // Leaving pet mode: stop the pass-through poll first.
-      invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      await invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
       // When switching mode from inside Settings, keep the settings-sized window.
       // Shrinking to collapsed size here compresses the settings UI for a few frames.
       if (settingsModeRef.current || settingsTransitioningRef.current) {
         try {
-          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current })
+          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, keepOnTop: true })
         } catch {}
         return
       }
@@ -1464,6 +1480,12 @@ export default function Mini() {
           setLargeMascot(true)
           largeMascotRef.current = true
           await store.set('large_mascot', true)
+        } else if (isWindowsPlatform) {
+          // Windows coding mode: force small mascot for stability.
+          initialLargeMascot = false
+          setLargeMascot(false)
+          largeMascotRef.current = false
+          await store.set('large_mascot', false)
         }
         await invoke('set_mini_expanded', {
           expanded: false,
@@ -1905,11 +1927,18 @@ export default function Mini() {
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
       const cod = await store.get('enable_codex')
-      setEnableCodex(cod !== false)
-      if (cc !== false || cod !== false) invoke('install_claude_hooks').catch(() => {})
+      const codEnabled = isWindowsPlatform ? false : cod !== false
+      setEnableCodex(codEnabled)
+      if (cc !== false || codEnabled) invoke('install_claude_hooks').catch(() => {})
       const cur = await store.get('enable_cursor')
-      setEnableCursor(cur !== false)
-      if (cur !== false) invoke('install_cursor_hooks').catch(() => {})
+      const curEnabled = isWindowsPlatform ? false : cur !== false
+      setEnableCursor(curEnabled)
+      if (curEnabled) invoke('install_cursor_hooks').catch(() => {})
+      if (isWindowsPlatform) {
+        await store.set('enable_codex', false)
+        await store.set('enable_cursor', false)
+        await store.save()
+      }
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
       const codsnd = await store.get('codex_sound_enabled')
@@ -1933,8 +1962,9 @@ export default function Mini() {
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const lm = await store.get('large_mascot')
       if (typeof lm === 'boolean' && appModeRef.current !== 'pet') {
-        setLargeMascot(lm)
-        largeMascotRef.current = lm
+        const largeEnabled = isWindowsPlatform && appModeRef.current === 'coding' ? false : lm
+        setLargeMascot(largeEnabled)
+        largeMascotRef.current = largeEnabled
       }
       const lms = await store.get('large_mascot_scale')
       if (typeof lms === 'number') {
@@ -2482,6 +2512,14 @@ export default function Mini() {
         }
         return
       }
+      // Coding mode: always expand immediately on click, independent of mascot size.
+      // This avoids pointerup/drag timing races on Windows.
+      if (!moveModeRef.current && appModeRef.current !== 'pet') {
+        hoverExpandedRef.current = false
+        setCompletionSessionId(null)
+        expand()
+        return
+      }
       if (e.button !== 0 || e.ctrlKey || collapsingRef.current) return
       const isMoveMode = moveModeRef.current
       const target = e.currentTarget as HTMLElement
@@ -2585,21 +2623,10 @@ export default function Mini() {
                 }
               }
             } else {
-              const today = new Date().toDateString()
-              if (largeDailyAngryDateRef.current !== today) {
-                largeDailyAngryDateRef.current = today
-                largeDailyAngryCountRef.current = 0
-              }
-              largeDailyAngryCountRef.current += 1
-              const action = largeDailyAngryCountRef.current <= LARGE_DAILY_ANGRY_LIMIT ? 'angry' : 'spin'
-              setLargePetAction(action)
-              largePetActionRef.current = action
-              if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
-              largeActionTimerRef.current = setTimeout(() => {
-                setLargePetAction(null)
-                largePetActionRef.current = null
-                largeActionTimerRef.current = null
-              }, LARGE_ACTION_DISPLAY_MS)
+              // Coding mode should open panel on click, regardless of large mascot size.
+              hoverExpandedRef.current = false
+              setCompletionSessionId(null)
+              expand()
             }
           }
         }
@@ -2767,9 +2794,9 @@ export default function Mini() {
           const cc = await store.get('enable_claudecode')
           setEnableClaudeCode(cc !== false)
           const cod = await store.get('enable_codex')
-          setEnableCodex(cod !== false)
+          setEnableCodex(isWindowsPlatform ? false : cod !== false)
           const cur = await store.get('enable_cursor')
-          setEnableCursor(cur !== false)
+          setEnableCursor(isWindowsPlatform ? false : cur !== false)
         } catch {}
         // Trigger immediate refresh so config changes are reflected right away.
         fetchAgents()
@@ -2960,9 +2987,9 @@ export default function Mini() {
         const cc = await store.get('enable_claudecode')
         setEnableClaudeCode(cc !== false)
         const cod = await store.get('enable_codex')
-        setEnableCodex(cod !== false)
+        setEnableCodex(isWindowsPlatform ? false : cod !== false)
         const cur = await store.get('enable_cursor')
-        setEnableCursor(cur !== false)
+        setEnableCursor(isWindowsPlatform ? false : cur !== false)
         fetchAgents()
         try {
           await syncExpandedWindowLayout(viewModeRef.current)
@@ -3080,10 +3107,11 @@ export default function Mini() {
     const c = characters.find((ch) => ch.largeActions && Object.keys(ch.largeActions).length > 0)
     return c?.largeActions
   }, [characters])
-  const largeCharForRender = appMode === 'pet'
+  const largeCharForRender = (appMode === 'pet' || appMode === 'coding')
     ? ({ name: '香企鹅', largeActions: petBuiltinLargeActions } as CharacterMeta)
     : miniChar
   const hasAnyLargeActions = !!(largeCharForRender?.largeActions && Object.keys(largeCharForRender.largeActions).length > 0) || !!(fallbackLargeActions && Object.keys(fallbackLargeActions).length > 0)
+  const showLargeMascotToggle = !isWindowsPlatform && (appMode === 'coding' || (appMode !== 'pet' && hasAnyLargeActions))
   const largeVideoBaseUrl = largeMascot
     ? appMode === 'pet'
       ? getLargeVideoPetMode(largeCharForRender ?? undefined, currentPetAction, fallbackLargeActions)
@@ -3102,20 +3130,31 @@ export default function Mini() {
   const activeBufferRef = useRef<0 | 1>(0)
   const [activeBuffer, setActiveBuffer] = useState<0 | 1>(0)
   const prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
-  const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
-  const useWindowsChromaKey = isWindows && !!largeVideoBaseUrl && largeVideoBaseUrl.includes('/large/webm/')
+  const useWindowsChromaKey = isWindowsPlatform && !!largeVideoBaseUrl && largeVideoBaseUrl.includes('/large/webm/')
 
   useEffect(() => {
-    if (!largeVideoUrl) return
-    if (prevLargeVideoUrlRef.current === largeVideoUrl) return
-
-    const allowAlternateFormatFallback = !(typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows'))
+    if (!largeVideoUrl) {
+      // No video to show — reset tracking so we load fresh when a URL
+      // appears (e.g. switching back to pet mode restores the same URL).
+      prevLargeVideoUrlRef.current = undefined
+      return
+    }
 
     const frontIdx = activeBufferRef.current
     const backIdx: 0 | 1 = frontIdx === 0 ? 1 : 0
     const front = frontIdx === 0 ? largeVideoRefA.current : largeVideoRefB.current
     const back = backIdx === 0 ? largeVideoRefA.current : largeVideoRefB.current
-    if (!front || !back) return
+    if (!front || !back) {
+      // Video elements not yet in the DOM (e.g. collapsed view hidden
+      // while panel is expanded for settings). Reset URL tracker so we
+      // retry loading when the elements remount.
+      prevLargeVideoUrlRef.current = undefined
+      return
+    }
+
+    if (prevLargeVideoUrlRef.current === largeVideoUrl) return
+
+    const allowAlternateFormatFallback = !(typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows'))
 
     const isFirstLoad = prevLargeVideoUrlRef.current === undefined
     prevLargeVideoUrlRef.current = largeVideoUrl
@@ -3191,7 +3230,7 @@ export default function Mini() {
       cancelled = true
       clearListeners()
     }
-  }, [largeVideoUrl])
+  }, [largeVideoUrl, expanded])
 
   const handleDeleteChar = useCallback(async (name: string) => {
     try {
@@ -3314,9 +3353,11 @@ export default function Mini() {
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
     if (!ctx) return
     let rafId = 0
+    let retryCount = 0
     const draw = () => {
       const front = activeBufferRef.current === 0 ? largeVideoRefA.current : largeVideoRefB.current
       if (front && front.readyState >= 2 && front.videoWidth > 0 && front.videoHeight > 0) {
+        retryCount = 0
         const targetSize = Math.max(1, Math.round(largeMascotVisualSize))
         if (canvas.width !== targetSize || canvas.height !== targetSize) {
           canvas.width = targetSize
@@ -3338,6 +3379,14 @@ export default function Mini() {
           }
         }
         ctx.putImageData(frame, 0, 0)
+      } else if (front && front.src && front.paused) {
+        // Video has a source but isn't playing — kick-start it.
+        // This handles cases where play() was called while the element
+        // was hidden (e.g. during settingsTransitioning display:none) and
+        // WebView2 silently rejected or stalled decoding.
+        // Throttle retries to ~2/sec to avoid spamming play().
+        retryCount++
+        if (retryCount % 30 === 0) front.play().catch(() => {})
       }
       rafId = requestAnimationFrame(draw)
     }
@@ -3345,7 +3394,9 @@ export default function Mini() {
     return () => {
       cancelAnimationFrame(rafId)
     }
-  }, [useWindowsChromaKey, largeMascot, largeMascotVisualSize, activeBuffer, largeVideoUrl])
+  // `expanded` is included so the rAF loop restarts when the collapsed view
+  // mounts (the canvas element is only in the DOM when !expanded).
+  }, [useWindowsChromaKey, largeMascot, largeMascotVisualSize, activeBuffer, largeVideoUrl, expanded])
 
   return (
     <div
@@ -3712,7 +3763,7 @@ export default function Mini() {
               >
                 {soundEnabled || codexSoundEnabled || cursorSoundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
               </button>
-              {!(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) && hasAnyLargeActions && (
+              {showLargeMascotToggle && (
                 <button
                   data-no-drag
                   onClick={async (e) => {
@@ -3736,7 +3787,7 @@ export default function Mini() {
               )}
             </div>
             <div className="flex items-center gap-4">
-              {!largeMascot && (
+              {appMode !== 'pet' && (
                 <button
                   data-no-drag
                   onClick={(e) => {
@@ -5005,7 +5056,7 @@ export default function Mini() {
                     ))}
                   </div>
                 </div>
-                {hasAnyLargeActions && appMode !== 'pet' && (
+                {showLargeMascotToggle && (
                   <button
                     data-no-drag
                     onClick={async (e) => {
@@ -5034,7 +5085,7 @@ export default function Mini() {
                       transition: 'all 0.2s',
                     }}
                   >
-                    {largeMascot ? '🐧 大看板娘' : '小看板娘'}
+                    {largeMascot ? '小看板娘' : '🐧 大看板娘'}
                   </button>
                 )}
                 <button
