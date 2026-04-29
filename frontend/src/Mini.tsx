@@ -745,6 +745,14 @@ export default function Mini() {
   const petContextMenuOpenRef = useRef(false)
   const petContextMenuTransitionRef = useRef(false)
   const [petMenuSide, setPetMenuSide] = useState<'left' | 'right'>('left')
+  // Pet-mode window inner width when the right-side menu is NOT open.
+  // The mascot anchors to `left: petBaseWinW - mascotW` so its on-screen
+  // position stays put even when the window widens for the menu. On
+  // high-DPI Windows the actual window is wider than `mascotW + 180`
+  // (because of `win_ui_scale`), so we cannot hard-code 180 here.
+  const [petBaseWinW, setPetBaseWinW] = useState<number | null>(null)
+  const petBaseWinWRef = useRef<number | null>(null)
+  useEffect(() => { petBaseWinWRef.current = petBaseWinW }, [petBaseWinW])
 
   useEffect(() => {
     if (!isWindowsPlatform || appMode !== 'coding' || !largeMascot) return
@@ -761,6 +769,29 @@ export default function Mini() {
   interface FoodRainDrop { id: number; emoji: string; x: number; delay: number; duration: number; size: number }
   const [foodRainDrops, setFoodRainDrops] = useState<FoodRainDrop[]>([])
   const foodRainIdRef = useRef(0)
+
+  // Capture the pet-mode window's "no-menu" inner width. The mascot's
+  // CSS `left:` is derived from this so it stays put when the right-side
+  // context menu temporarily widens the window.
+  useEffect(() => {
+    if (!(appMode === 'pet' && largeMascot)) {
+      setPetBaseWinW(null)
+      return
+    }
+    const update = () => {
+      if (petContextMenuOpenRef.current || petContextMenuTransitionRef.current) return
+      const w = window.innerWidth || 0
+      if (w > 0) setPetBaseWinW(w)
+    }
+    const id1 = requestAnimationFrame(() => requestAnimationFrame(update))
+    const id2 = window.setTimeout(update, 200)
+    window.addEventListener('resize', update)
+    return () => {
+      cancelAnimationFrame(id1)
+      window.clearTimeout(id2)
+      window.removeEventListener('resize', update)
+    }
+  }, [appMode, largeMascot])
 
 
   const [hiding, setHiding] = useState(false)
@@ -1114,12 +1145,12 @@ export default function Mini() {
         const [monitorX, , monitorW] = rect as [number, number, number, number]
         const monitorLeft = monitorX
         const monitorRight = monitorX + monitorW
-        const actualWinW = window.innerWidth || 300
+        const baseWinW = petBaseWinWRef.current ?? window.innerWidth ?? 300
         const mascotW = largeMascotRef.current
           ? MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
           : MASCOT_BASE_SIZE * mascotScaleRef.current
-        const mascotLeft = x + actualWinW - mascotW
-        const mascotRight = x + actualWinW
+        const mascotLeft = x + baseWinW - mascotW
+        const mascotRight = x + baseWinW
         const distLeft = mascotLeft - monitorLeft
         const distRight = monitorRight - mascotRight
         edgeDirection = distLeft <= distRight ? -1 : 1
@@ -1166,12 +1197,12 @@ export default function Mini() {
           const [monitorX, , monitorW] = rect as [number, number, number, number]
           const monitorLeft = monitorX
           const monitorRight = monitorX + monitorW
-          const actualWinW = window.innerWidth || 300
+          const baseWinW = petBaseWinWRef.current ?? window.innerWidth ?? 300
           const mascotW = largeMascotRef.current
             ? MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
             : MASCOT_BASE_SIZE * mascotScaleRef.current
-          const mascotRight = x + actualWinW
-          const mascotLeft = x + actualWinW - mascotW
+          const mascotRight = x + baseWinW
+          const mascotLeft = x + baseWinW - mascotW
           if (mascotLeft <= monitorLeft + EDGE_THRESHOLD) {
             if (walkTimerRef.current) clearInterval(walkTimerRef.current)
             walkTimerRef.current = null
@@ -1316,14 +1347,14 @@ export default function Mini() {
   const EDGE_THRESHOLD = 30
 
   const snapToPeekEdge = useCallback((edge: 'left' | 'right', currentX: number, monitorLeft: number, monitorRight: number) => {
-    const actualWinW = window.innerWidth || 300
+    const baseWinW = petBaseWinWRef.current ?? window.innerWidth ?? 300
     const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
     const visibleW = mascotW * PEEK_VISIBLE_FRACTION
     let targetX: number
     if (edge === 'right') {
-      targetX = monitorRight - visibleW - actualWinW + mascotW
+      targetX = monitorRight - visibleW - baseWinW + mascotW
     } else {
-      targetX = monitorLeft + visibleW - actualWinW
+      targetX = monitorLeft + visibleW - baseWinW
     }
     const dx = targetX - currentX
     if (Math.abs(dx) > 1) {
@@ -1340,10 +1371,10 @@ export default function Mini() {
       const [monitorX, , monitorW] = rect as [number, number, number, number]
       const monitorLeft = monitorX
       const monitorRight = monitorX + monitorW
-      const actualWinW = window.innerWidth || 300
+      const baseWinW = petBaseWinWRef.current ?? window.innerWidth ?? 300
       const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
-      const mascotRight = x + actualWinW
-      const mascotLeft = x + actualWinW - mascotW
+      const mascotRight = x + baseWinW
+      const mascotLeft = x + baseWinW - mascotW
       if (mascotLeft <= monitorLeft + EDGE_THRESHOLD) {
         peekEdgeRef.current = 'left'
         setCurrentPetAction('peek')
@@ -1432,9 +1463,9 @@ export default function Mini() {
     if (!petContextMenuOpenRef.current || petContextMenuTransitionRef.current) return
     petContextMenuTransitionRef.current = true
     try {
-      await invoke('set_pet_context_menu', { open: false }).catch(() => {})
       setPetContextMenuOpen(false)
       petContextMenuOpenRef.current = false
+      await invoke('set_pet_context_menu', { open: false }).catch(() => {})
     } finally {
       petContextMenuTransitionRef.current = false
     }
@@ -2506,7 +2537,7 @@ export default function Mini() {
         if (petContextMenuTransitionRef.current) return
         if (!petContextMenuOpenRef.current) {
           petContextMenuTransitionRef.current = true
-          const winW = window.innerWidth || 300
+          const winW = petBaseWinWRef.current ?? window.innerWidth ?? 300
           const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
           Promise.all([
             invoke('get_mini_origin'),
@@ -2518,8 +2549,6 @@ export default function Mini() {
             const mascotLeft = x + winW - mascotW
             const side = mascotLeft < monitorMid ? 'right' : 'left'
             setPetMenuSide(side)
-            // Open path: apply CSS anchor immediately to avoid one-frame shift
-            // while backend is resizing the native window.
             setPetContextMenuOpen(true)
             petContextMenuOpenRef.current = true
             await invoke('set_pet_context_menu', { open: true, side }).catch(() => {})
@@ -3459,8 +3488,18 @@ export default function Mini() {
             style={{
               position: (appMode === 'pet' && largeMascot) ? 'absolute' : 'relative',
               bottom: (appMode === 'pet' && largeMascot) ? 0 : undefined,
-              right: (appMode === 'pet' && largeMascot)
-                ? (petContextMenuOpen && petMenuSide === 'right' ? 180 : 0)
+              // Anchor mascot to a fixed window-x equal to the pet-mode
+              // window's "no-menu" inner width minus mascot CSS width.
+              // This matches the previous `right: 0` visual position but
+              // stays constant when the right-side menu temporarily
+              // widens the window, avoiding any race between React CSS
+              // commit and native window resize.
+              // Fallback to `right: 0` until petBaseWinW has been measured.
+              left: (appMode === 'pet' && largeMascot && petBaseWinW != null)
+                ? Math.max(0, Math.round(petBaseWinW - largeMascotVisualSize))
+                : undefined,
+              right: (appMode === 'pet' && largeMascot && petBaseWinW == null)
+                ? 0
                 : undefined,
               overflow: 'visible',
               cursor: moveMode ? 'grab' : 'pointer',
