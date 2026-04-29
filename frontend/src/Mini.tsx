@@ -745,6 +745,7 @@ export default function Mini() {
   const activityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [petContextMenuOpen, setPetContextMenuOpen] = useState(false)
   const petContextMenuOpenRef = useRef(false)
+  const petContextMenuTransitionRef = useRef(false)
   const [petMenuSide, setPetMenuSide] = useState<'left' | 'right'>('left')
 
   // Food rain effect (lives outside context menu so it persists after menu closes)
@@ -1396,11 +1397,16 @@ export default function Mini() {
     await savePetData(d)
   }, [])
 
-  const closePetContextMenu = useCallback(() => {
-    if (!petContextMenuOpenRef.current) return
-    setPetContextMenuOpen(false)
-    petContextMenuOpenRef.current = false
-    invoke('set_pet_context_menu', { open: false }).catch(() => {})
+  const closePetContextMenu = useCallback(async () => {
+    if (!petContextMenuOpenRef.current || petContextMenuTransitionRef.current) return
+    petContextMenuTransitionRef.current = true
+    try {
+      await invoke('set_pet_context_menu', { open: false }).catch(() => {})
+      setPetContextMenuOpen(false)
+      petContextMenuOpenRef.current = false
+    } finally {
+      petContextMenuTransitionRef.current = false
+    }
   }, [])
 
   const triggerFoodRain = useCallback((emoji: string) => {
@@ -2452,7 +2458,9 @@ export default function Mini() {
       if (isRightClick && appModeRef.current === 'pet' && largeMascotRef.current) {
         e.preventDefault()
         e.stopPropagation()
+        if (petContextMenuTransitionRef.current) return
         if (!petContextMenuOpenRef.current) {
+          petContextMenuTransitionRef.current = true
           const screenW = window.screen?.availWidth || 1920
           const winW = window.innerWidth || 300
           const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
@@ -2461,14 +2469,16 @@ export default function Mini() {
             const mascotLeft = x + winW - mascotW
             const side = mascotLeft < screenW / 2 ? 'right' : 'left'
             setPetMenuSide(side)
-            await invoke('set_pet_context_menu', { open: true, side }).catch(() => {})
+            // Open path: apply CSS anchor immediately to avoid one-frame shift
+            // while backend is resizing the native window.
             setPetContextMenuOpen(true)
             petContextMenuOpenRef.current = true
-          }).catch(() => {})
+            await invoke('set_pet_context_menu', { open: true, side }).catch(() => {})
+          }).catch(() => {}).finally(() => {
+            petContextMenuTransitionRef.current = false
+          })
         } else {
-          setPetContextMenuOpen(false)
-          petContextMenuOpenRef.current = false
-          invoke('set_pet_context_menu', { open: false }).catch(() => {})
+          void closePetContextMenu()
         }
         return
       }
@@ -3087,14 +3097,19 @@ export default function Mini() {
   // approach always flashes transparent between animations.
   const largeVideoRefA = useRef<HTMLVideoElement>(null)
   const largeVideoRefB = useRef<HTMLVideoElement>(null)
+  const largeVideoCanvasRef = useRef<HTMLCanvasElement>(null)
   // Which buffer (0=A, 1=B) is currently the *front* (visible, playing) video
   const activeBufferRef = useRef<0 | 1>(0)
   const [activeBuffer, setActiveBuffer] = useState<0 | 1>(0)
   const prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
+  const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+  const useWindowsChromaKey = isWindows && !!largeVideoBaseUrl && largeVideoBaseUrl.includes('/large/webm/')
 
   useEffect(() => {
     if (!largeVideoUrl) return
     if (prevLargeVideoUrlRef.current === largeVideoUrl) return
+
+    const allowAlternateFormatFallback = !(typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows'))
 
     const frontIdx = activeBufferRef.current
     const backIdx: 0 | 1 = frontIdx === 0 ? 1 : 0
@@ -3163,7 +3178,7 @@ export default function Mini() {
     }
 
     if (isFirstLoad) {
-      loadWithFallback(front, largeVideoUrl, true, () => {}, () => {})
+      loadWithFallback(front, largeVideoUrl, allowAlternateFormatFallback, () => {}, () => {})
       return () => {
         cancelled = true
         clearListeners()
@@ -3171,7 +3186,7 @@ export default function Mini() {
     }
 
     // Keep current front visible, preload next on back, swap only after next plays.
-    loadWithFallback(back, largeVideoUrl, true, () => finishSwap(backIdx), () => {})
+    loadWithFallback(back, largeVideoUrl, allowAlternateFormatFallback, () => finishSwap(backIdx), () => {})
     return () => {
       cancelled = true
       clearListeners()
@@ -3292,6 +3307,46 @@ export default function Mini() {
   const collapsedStatusBorder = largeMascot ? 1.1 : 1.5
   const largeMascotVisualSize = collapsedMascotSize * largeMascotScale
 
+  useEffect(() => {
+    if (!useWindowsChromaKey || !largeMascot) return
+    const canvas = largeVideoCanvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return
+    let rafId = 0
+    const draw = () => {
+      const front = activeBufferRef.current === 0 ? largeVideoRefA.current : largeVideoRefB.current
+      if (front && front.readyState >= 2 && front.videoWidth > 0 && front.videoHeight > 0) {
+        const targetSize = Math.max(1, Math.round(largeMascotVisualSize))
+        if (canvas.width !== targetSize || canvas.height !== targetSize) {
+          canvas.width = targetSize
+          canvas.height = targetSize
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(front, 0, 0, canvas.width, canvas.height)
+        const frame = ctx.getImageData(0, 0, canvas.width, canvas.height)
+        const data = frame.data
+        // Chroma key black-ish pixels to transparent as a Windows fallback
+        // when WebView2 drops VP9 alpha during decode.
+        for (let i = 0; i < data.length; i += 4) {
+          const maxRgb = Math.max(data[i], data[i + 1], data[i + 2])
+          if (maxRgb <= 12) {
+            data[i + 3] = 0
+          } else if (maxRgb < 28) {
+            const softAlpha = Math.round(((maxRgb - 12) / 16) * 255)
+            if (softAlpha < data[i + 3]) data[i + 3] = softAlpha
+          }
+        }
+        ctx.putImageData(frame, 0, 0)
+      }
+      rafId = requestAnimationFrame(draw)
+    }
+    rafId = requestAnimationFrame(draw)
+    return () => {
+      cancelAnimationFrame(rafId)
+    }
+  }, [useWindowsChromaKey, largeMascot, largeMascotVisualSize, activeBuffer, largeVideoUrl])
+
   return (
     <div
       style={{
@@ -3346,6 +3401,18 @@ export default function Mini() {
           >
             {largeMascot && largeVideoUrl ? (
               <div style={{ position: 'relative', width: largeMascotVisualSize, height: largeMascotVisualSize }}>
+              {useWindowsChromaKey && (
+                <canvas
+                  ref={largeVideoCanvasRef}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    pointerEvents: 'none',
+                  }}
+                />
+              )}
               {/* Double-buffer: front buffer stays visible while back buffer preloads.
                   Swap only after back buffer is already playing to avoid blank frames. */}
               {[0, 1].map((idx) => {
@@ -3397,6 +3464,7 @@ export default function Mini() {
                       objectFit: 'contain',
                       pointerEvents: 'none',
                       visibility: isFront ? 'visible' : 'hidden',
+                      opacity: useWindowsChromaKey ? 0 : 1,
                       transform:
                         (currentPetAction === 'walk' && walkFlipped) ? 'scaleX(-1)'
                         : ((currentPetAction === 'peek' || currentPetAction === 'walkout') && peekEdgeRef.current === 'left') ? 'scaleX(-1)'

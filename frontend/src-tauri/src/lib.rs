@@ -4535,9 +4535,33 @@ async fn set_pet_mode_window(
                 }
             }).map_err(|e| e.to_string())?;
         }
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(Some(monitor)) = win.current_monitor() {
+                let scale = monitor.scale_factor();
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                    let current_x = pos.x as f64 / scale;
+                    let current_y = pos.y as f64 / scale;
+                    let current_w = size.width as f64 / scale;
+                    let current_h = size.height as f64 / scale;
+                    let sw = monitor.size().width as f64 / scale;
+                    let sh = monitor.size().height as f64 / scale;
+                    let left_pad = 180.0;
+                    let top_pad = 100.0;
+                    let win_w = (current_w + left_pad).min(sw);
+                    let win_h = (current_h + top_pad).min(sh);
+                    // Keep bottom-right corner fixed so mascot stays anchored.
+                    let x = (current_x + current_w - win_w).max(0.0).min(sw - win_w);
+                    let y = current_y.max(0.0).min(sh - win_h);
+                    let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+                }
+            }
+        }
 
         // Start the click-through poll thread.
         PET_PASSTHROUGH_ACTIVE.store(true, Ordering::SeqCst);
+        #[cfg(target_os = "macos")]
         if !PET_PASSTHROUGH_THREAD_ALIVE.load(Ordering::SeqCst) {
             let app2 = app.clone();
             std::thread::spawn(move || pet_passthrough_poll(app2, mascot_scale, large_mascot_scale));
@@ -4572,6 +4596,23 @@ async fn set_pet_mode_window(
                     }
                 }
             }).map_err(|e| e.to_string())?;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(Some(monitor)) = win.current_monitor() {
+                let scale = monitor.scale_factor();
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                    let current_x = pos.x as f64 / scale;
+                    let current_y = pos.y as f64 / scale;
+                    let current_w = size.width as f64 / scale;
+                    let (win_w, win_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+                    // Collapse towards bottom-right corner.
+                    let x = current_x + current_w - win_w;
+                    let y = current_y;
+                    let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+                }
+            }
         }
     }
     Ok(())
@@ -4640,9 +4681,12 @@ async fn set_pet_context_menu(app: tauri::AppHandle, open: bool, side: Option<St
                     if let Ok(ns_win) = win_clone.ns_window() {
                         let obj = unsafe { &*(ns_win as *mut AnyObject) };
                         if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
-                            if let Some((x, y, w, h)) = *saved {
+                            if let Some((_x, _y, w, h)) = *saved {
+                                let current: NSRect = unsafe { msg_send![obj, frame] };
                                 let frame = NSRect::new(
-                                    NSPoint::new(x, y),
+                                    // Keep current position (user may have dragged while menu open),
+                                    // only restore size.
+                                    NSPoint::new(current.origin.x, current.origin.y),
                                     NSSize::new(w, h),
                                 );
                                 unsafe {
@@ -4650,7 +4694,7 @@ async fn set_pet_context_menu(app: tauri::AppHandle, open: bool, side: Option<St
                                     let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
                                 }
                                 if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
-                                    *f = Some((x, y, w, h));
+                                    *f = Some((current.origin.x, current.origin.y, w, h));
                                 }
                                 *saved = None;
                                 pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
@@ -4660,6 +4704,54 @@ async fn set_pet_context_menu(app: tauri::AppHandle, open: bool, side: Option<St
                     let _ = tx.send(());
                 });
                 let _ = rx.recv();
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let right_pad = 180.0_f64;
+        if open && side.as_deref() == Some("right") {
+            if let Some(win) = app.get_webview_window("mini") {
+                if let Ok(Some(monitor)) = win.current_monitor() {
+                    let scale = monitor.scale_factor();
+                    if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                        let current_x = pos.x as f64 / scale;
+                        let current_y = pos.y as f64 / scale;
+                        let current_w = size.width as f64 / scale;
+                        let current_h = size.height as f64 / scale;
+                        if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                            if saved.is_none() {
+                                *saved = Some((current_x, current_y, current_w, current_h));
+                            }
+                        }
+                        // Widen rightward — left edge stays fixed, mascot keeps
+                        // screen position via CSS right: 180.
+                        let new_w = current_w + right_pad;
+                        let _ = win.set_size(tauri::LogicalSize::new(new_w, current_h));
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((current_x, current_y, new_w, current_h));
+                        }
+                    }
+                }
+            }
+        } else if !open {
+            if let Some(win) = app.get_webview_window("mini") {
+                if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                    if let Some((_x, _y, w, h)) = *saved {
+                        let (current_x, current_y) = match (win.outer_position(), win.current_monitor()) {
+                            (Ok(pos), Ok(Some(monitor))) => {
+                                let scale = monitor.scale_factor();
+                                (pos.x as f64 / scale, pos.y as f64 / scale)
+                            }
+                            _ => (0.0, 0.0),
+                        };
+                        let _ = win.set_size(tauri::LogicalSize::new(w, h));
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((current_x, current_y, w, h));
+                        }
+                        *saved = None;
+                    }
+                }
             }
         }
     }
@@ -10127,6 +10219,19 @@ fn build_asset_response(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    {
+        // WebView2 hardware video decode can drop VP9 alpha; force software decode.
+        let key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+        let flag = "--disable-accelerated-video-decode";
+        let merged = match std::env::var(key) {
+            Ok(existing) if !existing.contains(flag) && !existing.trim().is_empty() => format!("{} {}", existing, flag),
+            Ok(existing) if existing.contains(flag) => existing,
+            _ => flag.to_string(),
+        };
+        std::env::set_var(key, merged);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .register_uri_scheme_protocol("localasset", |ctx, req| {
