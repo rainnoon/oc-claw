@@ -146,6 +146,20 @@ The hook script also maps tool info from Cursor's event-specific fields to gener
 - `afterFileEdit` → `tool: "Edit"`, `toolInput: {"file_path": ..., "content": ...}`
 - `beforeReadFile` → `tool: "Read"`, `toolInput: {"file_path": ...}`
 
+## Pet Mode — Video Animation Transitions
+
+The large mascot in pet mode uses `.mov` video files (H.264 with alpha) for each animation state (idle, peek, walkout, dance, etc.). When switching animations:
+
+1. **`vid.load()` clears the frame buffer immediately.** A single `<video>` element will flash blank/transparent between animations because the new video's first frame hasn't decoded yet. This is NOT a timing issue fixable with `useLayoutEffect` — `load()` destroys the old frame synchronously, period.
+2. **Canvas snapshot does not work for `.mov` with alpha.** WebKit's `drawImage()` from a `<video>` playing a `.mov` with alpha transparency is unreliable — the captured frame is often blank or corrupted.
+3. **The fix is double-buffered video.** Two `<video>` elements (A and B) are stacked. Only the front buffer is visible (`visibility`). On animation change, the new source loads into the back buffer. Once `onLoadedData` fires (first frame decoded), they swap — back becomes front, old front is paused. The old animation stays visible the entire time with zero blank frames.
+4. **Key implementation details in `Mini.tsx`:**
+   - `largeVideoRefA` / `largeVideoRefB`: the two video element refs
+   - `activeBufferRef` (imperative) + `activeBuffer` (state): track which is front
+   - First load goes directly to the front buffer (no swap needed)
+   - `onEnded` / `onError` callbacks filter by `isFront` to ignore events from the back buffer
+   - Back buffer uses `visibility: hidden` (not `display: none`) so the browser still decodes frames
+
 # OpenClaw Data Format
 
 When modifying anything related to OpenClaw session activity detection, health polling, or JSONL parsing:

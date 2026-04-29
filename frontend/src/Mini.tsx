@@ -3075,18 +3075,64 @@ export default function Mini() {
       : getLargeVideo(largeCharForRender ?? undefined, mainPetState, largePetAction, fallbackLargeActions)
     : undefined
   const largeVideoUrl = largeVideoBaseUrl ? `${largeVideoBaseUrl}?rev=alpha-fix-2` : undefined
-  const largeVideoRef = useRef<HTMLVideoElement>(null)
+  // Double-buffer video: two stacked <video> elements swap roles on each
+  // animation change. The old video stays visible until the new one's first
+  // frame is decoded (onLoadedData), eliminating blank-frame flicker.
+  // vid.load() clears the frame buffer immediately, so a single-element
+  // approach always flashes transparent between animations.
+  const largeVideoRefA = useRef<HTMLVideoElement>(null)
+  const largeVideoRefB = useRef<HTMLVideoElement>(null)
+  // Which buffer (0=A, 1=B) is currently the *front* (visible, playing) video
+  const activeBufferRef = useRef<0 | 1>(0)
+  const [activeBuffer, setActiveBuffer] = useState<0 | 1>(0)
   const prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
+  // Expose active video element for external code that reads largeVideoRef
+  const largeVideoRef = activeBuffer === 0 ? largeVideoRefA : largeVideoRefB
 
   useEffect(() => {
-    const vid = largeVideoRef.current
-    if (!vid || !largeVideoUrl) return
+    if (!largeVideoUrl) return
     if (prevLargeVideoUrlRef.current === largeVideoUrl) return
+    const isFirstLoad = prevLargeVideoUrlRef.current === undefined
     prevLargeVideoUrlRef.current = largeVideoUrl
-    const src = vid.querySelector('source')
+
+    if (isFirstLoad) {
+      // First load: just play on the current front buffer, no swap needed
+      const front = activeBufferRef.current === 0 ? largeVideoRefA.current : largeVideoRefB.current
+      if (front) {
+        const src = front.querySelector('source')
+        if (src) src.src = largeVideoUrl
+        front.load()
+        front.play().catch(() => {})
+      }
+      return
+    }
+
+    // Subsequent loads: load into the back buffer, swap when ready
+    const backIdx: 0 | 1 = activeBufferRef.current === 0 ? 1 : 0
+    const back = backIdx === 0 ? largeVideoRefA.current : largeVideoRefB.current
+    if (!back) return
+
+    const src = back.querySelector('source')
     if (src) src.src = largeVideoUrl
-    vid.load()
-    vid.play().catch(() => {})
+
+    const onReady = () => {
+      back.removeEventListener('loadeddata', onReady)
+      back.removeEventListener('error', onErr)
+      // Swap: back becomes front
+      activeBufferRef.current = backIdx
+      setActiveBuffer(backIdx)
+      back.play().catch(() => {})
+      // Pause old front to free resources
+      const old = backIdx === 0 ? largeVideoRefB.current : largeVideoRefA.current
+      if (old) { old.pause() }
+    }
+    const onErr = () => {
+      back.removeEventListener('loadeddata', onReady)
+      back.removeEventListener('error', onErr)
+    }
+    back.addEventListener('loadeddata', onReady)
+    back.addEventListener('error', onErr)
+    back.load()
   }, [largeVideoUrl])
 
   const handleDeleteChar = useCallback(async (name: string) => {
@@ -3255,56 +3301,74 @@ export default function Mini() {
                 : {}),
             }}
           >
-            {largeMascot && largeVideoUrl ? (
-              <video
-                ref={largeVideoRef}
-                autoPlay
-                loop={!(appMode === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetAction))}
-                muted
-                playsInline
-                preload="auto"
-                onError={(e) => {
-                  console.warn('[large-video] error:', (e.target as HTMLVideoElement).error?.message, 'src:', largeVideoUrl)
-                  if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
-                    const d = petDataRef.current
-                    const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
-                    setCurrentPetAction(next)
-                    currentPetActionRef.current = next
-                  }
-                }}
-                onEnded={() => {
-                  if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
-                    if (currentPetActionRef.current === 'farewell') {
-                      invoke('exit_app').catch(() => {})
-                      return
-                    }
-                    let next: PetAction
-                    if (currentPetActionRef.current === 'dance' && danceFromMusicRef.current) {
-                      danceFromMusicRef.current = false
-                      next = 'music'
-                    } else {
-                      const d = petDataRef.current
-                      next = d.hunger < 30 ? 'hungry' : 'idle'
-                    }
-                    setCurrentPetAction(next)
-                    currentPetActionRef.current = next
-                  }
-                }}
-                style={{
-                  width: largeMascotVisualSize,
-                  height: largeMascotVisualSize,
-                  objectFit: 'contain',
-                  pointerEvents: 'none',
-                  transform:
-                    (currentPetAction === 'walk' && walkFlipped) ? 'scaleX(-1)'
-                    : ((currentPetAction === 'peek' || currentPetAction === 'walkout') && peekEdgeRef.current === 'left') ? 'scaleX(-1)'
-                    : undefined,
-                }}
-                draggable={false}
-              >
-                <source src={largeVideoUrl} type={getLargeVideoType(largeVideoUrl)} />
-              </video>
-            ) : miniGif ? (
+            {largeMascot && largeVideoUrl ? (<>
+              {/* Double-buffer: two stacked <video> elements. The front buffer
+                  plays the current animation; the back buffer preloads the next
+                  animation off-screen. They swap only after onLoadedData fires on
+                  the back buffer, so there is never a blank frame. */}
+              {[0, 1].map((idx) => {
+                const isFront = activeBuffer === idx
+                const ref = idx === 0 ? largeVideoRefA : largeVideoRefB
+                return (
+                  <video
+                    key={idx}
+                    ref={ref}
+                    autoPlay={isFront}
+                    loop={!(appMode === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetAction))}
+                    muted
+                    playsInline
+                    preload="auto"
+                    onError={(e) => {
+                      if (!isFront) return
+                      console.warn('[large-video] error:', (e.target as HTMLVideoElement).error?.message, 'src:', largeVideoUrl)
+                      if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
+                        const d = petDataRef.current
+                        const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+                        setCurrentPetAction(next)
+                        currentPetActionRef.current = next
+                      }
+                    }}
+                    onEnded={() => {
+                      if (!isFront) return
+                      if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
+                        if (currentPetActionRef.current === 'farewell') {
+                          invoke('exit_app').catch(() => {})
+                          return
+                        }
+                        let next: PetAction
+                        if (currentPetActionRef.current === 'dance' && danceFromMusicRef.current) {
+                          danceFromMusicRef.current = false
+                          next = 'music'
+                        } else {
+                          const d = petDataRef.current
+                          next = d.hunger < 30 ? 'hungry' : 'idle'
+                        }
+                        setCurrentPetAction(next)
+                        currentPetActionRef.current = next
+                      }
+                    }}
+                    style={{
+                      position: isFront ? undefined : 'absolute',
+                      top: isFront ? undefined : 0,
+                      left: isFront ? undefined : 0,
+                      width: largeMascotVisualSize,
+                      height: largeMascotVisualSize,
+                      objectFit: 'contain',
+                      pointerEvents: 'none',
+                      // Back buffer hidden off-screen but still decoding
+                      visibility: isFront ? 'visible' : 'hidden',
+                      transform:
+                        (currentPetAction === 'walk' && walkFlipped) ? 'scaleX(-1)'
+                        : ((currentPetAction === 'peek' || currentPetAction === 'walkout') && peekEdgeRef.current === 'left') ? 'scaleX(-1)'
+                        : undefined,
+                    }}
+                    draggable={false}
+                  >
+                    <source src={isFront ? largeVideoUrl : ''} type={getLargeVideoType(largeVideoUrl)} />
+                  </video>
+                )
+              })}
+            </>) : miniGif ? (
               disableSleepAnim && mainPetState === 'idle' ? (
                 <FrozenImg src={miniGif} style={{ width: collapsedMascotSize, height: collapsedMascotSize, objectFit: 'contain', pointerEvents: 'none' }} draggable={false} />
               ) : mainPetState === 'compacting' ? (
