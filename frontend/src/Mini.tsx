@@ -3273,7 +3273,7 @@ export default function Mini() {
             display: (appMode === 'pet' && largeMascot) ? 'block' : 'flex',
             alignItems: (appMode === 'pet' && largeMascot) ? undefined : 'flex-start',
             justifyContent: (appMode === 'pet' && largeMascot) ? undefined : 'center',
-            background: viewMode === 'efficiency' ? 'rgba(0,0,0,0.01)' : undefined,
+            background: (viewMode === 'efficiency' && appMode !== 'pet') ? 'rgba(0,0,0,0.01)' : undefined,
             pointerEvents: 'auto',
           }}
         >
