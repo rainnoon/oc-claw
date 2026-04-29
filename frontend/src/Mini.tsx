@@ -1258,10 +1258,14 @@ export default function Mini() {
       setShowOnboarding(false)
       setLargeMascot(true)
       setPetData(ticked)
-      // Wait one frame for React to render the mascot, then reveal
-      requestAnimationFrame(() => {
-        document.documentElement.style.opacity = '1'
-      })
+      // Wait for React to render the mascot and chroma key canvas to draw, then reveal.
+      // Windows needs extra frames for the canvas chroma key loop to process the first frame.
+      const reveal = () => { document.documentElement.style.opacity = '1' }
+      if (isWindowsPlatform) {
+        setTimeout(reveal, 150)
+      } else {
+        requestAnimationFrame(reveal)
+      }
     } else {
       setAppMode(mode)
       setShowOnboarding(false)
@@ -2795,7 +2799,7 @@ export default function Mini() {
       setShowSettingsOverlay(false)
       setSettingsTransitioning(true)
     }
-    const delay = wasSettings ? 280 : 480
+    const delay = isWindowsPlatform ? 150 : wasSettings ? 280 : 480
     setTimeout(async () => {
       settingsModeRef.current = false
       setSettingsMode(false)
@@ -3275,9 +3279,15 @@ export default function Mini() {
   const closedNotchWidth = 44
   const closedNotchHeight = 10
   const openClipPath = 'inset(0 0 0 0 round 0 0 24px 24px)'
-  const closedClipPath = `inset(0 calc(50% - ${closedNotchWidth / 2}px) calc(100% - ${closedNotchHeight}px) calc(50% - ${closedNotchWidth / 2}px) round 0 0 8px 8px)`
-  const panelClipTransition = 'clip-path 0.42s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1)'
-  const panelChromeTransition = 'opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
+  const closedClipPath = isWindowsPlatform
+    ? 'inset(0 0 100% 0)'
+    : `inset(0 calc(50% - ${closedNotchWidth / 2}px) calc(100% - ${closedNotchHeight}px) calc(50% - ${closedNotchWidth / 2}px) round 0 0 8px 8px)`
+  const panelClipTransition = isWindowsPlatform
+    ? 'clip-path 0.12s ease-out, box-shadow 0.12s ease-out'
+    : 'clip-path 0.42s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1)'
+  const panelChromeTransition = isWindowsPlatform
+    ? 'opacity 0.1s ease-out'
+    : 'opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
   const panelRef = useRef<HTMLDivElement>(null)
 
   const lastResizeHeightRef = useRef(0)
@@ -3698,8 +3708,8 @@ export default function Mini() {
             transition: panelClipTransition,
           }}
         >
-          {/* Closed header: geometric anchor for clip-path collapse target. */}
-          {!showPanel && (
+          {/* Closed header: geometric anchor for clip-path collapse target (macOS notch only). */}
+          {!showPanel && !isWindowsPlatform && (
             <div
               style={{
                 position: 'absolute',

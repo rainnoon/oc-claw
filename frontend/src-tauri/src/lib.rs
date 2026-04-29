@@ -10512,6 +10512,8 @@ pub fn run() {
             }
 
             // Start Cursor socket server (shares ClaudeState for unified session tracking)
+            // Cursor integration is disabled on Windows, so skip the server there.
+            #[cfg(not(target_os = "windows"))]
             {
                 let claude_state = app.state::<ClaudeState>();
                 let sessions_arc = Arc::clone(&claude_state.sessions);

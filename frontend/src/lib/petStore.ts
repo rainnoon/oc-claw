@@ -29,6 +29,7 @@ export interface FoodItem {
   id: string
   name: string
   icon: string
+  iconWin?: string
   hunger: number
   affection: number
   price: number
@@ -75,8 +76,8 @@ export const DAILY_GIFT_MAX = 60
 export const POMODORO_COINS_PER_MIN = 1
 
 export const FOODS: FoodItem[] = [
-  { id: 'meat', name: '肉', icon: '🍖', hunger: 15, affection: 0, price: 8 },
-  { id: 'boba', name: '奶茶', icon: '🧋', hunger: 8, affection: 3, price: 6 },
+  { id: 'meat', name: '肉', icon: '🍖', iconWin: '🥩', hunger: 15, affection: 0, price: 8 },
+  { id: 'boba', name: '奶茶', icon: '🧋', iconWin: '🥛', hunger: 8, affection: 3, price: 6 },
 ]
 
 export const POMODORO_PRESETS = [15, 25, 45, 60] // minutes

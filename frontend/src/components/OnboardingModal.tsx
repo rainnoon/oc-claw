@@ -1,4 +1,5 @@
 import { motion, AnimatePresence } from 'motion/react'
+import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AppMode } from '../lib/petStore'
 
@@ -122,28 +123,7 @@ function ModeCard({ title, mediaSrc, mediaType, mediaSize = 50, description, acc
     >
       <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
         {mediaType === 'video' ? (
-          <video
-            src={mediaSrc}
-            autoPlay
-            loop
-            muted
-            playsInline
-            onError={(e) => {
-              const v = e.currentTarget
-              if (v.src.includes('/large/webm/')) {
-                v.src = v.src.replace('/large/webm/', '/large/mov/').replace(/\.webm(\?.*)?$/, '.mov$1')
-                v.load()
-                v.play().catch(() => {})
-              }
-            }}
-            style={{
-              width: mediaSize,
-              height: mediaSize,
-              objectFit: 'contain',
-              pointerEvents: 'none',
-              filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.45))',
-            }}
-          />
+          <ChromaKeyVideo src={mediaSrc} size={mediaSize} />
         ) : (
           <img
             src={mediaSrc}
@@ -162,5 +142,95 @@ function ModeCard({ title, mediaSrc, mediaType, mediaSize = 50, description, acc
       <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>{title}</span>
       <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', lineHeight: 1.5 }}>{description}</span>
     </motion.button>
+  )
+}
+
+function ChromaKeyVideo({ src, size }: { src: string; size: number }) {
+  const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    if (!isWindows) return
+    const canvas = canvasRef.current
+    const video = videoRef.current
+    if (!canvas || !video) return
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return
+    let rafId = 0
+    const draw = () => {
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        if (canvas.width !== size || canvas.height !== size) {
+          canvas.width = size
+          canvas.height = size
+        }
+        ctx.clearRect(0, 0, size, size)
+        ctx.drawImage(video, 0, 0, size, size)
+        const frame = ctx.getImageData(0, 0, size, size)
+        const data = frame.data
+        for (let i = 0; i < data.length; i += 4) {
+          const maxRgb = Math.max(data[i], data[i + 1], data[i + 2])
+          if (maxRgb <= 12) {
+            data[i + 3] = 0
+          } else if (maxRgb < 28) {
+            const softAlpha = Math.round(((maxRgb - 12) / 16) * 255)
+            if (softAlpha < data[i + 3]) data[i + 3] = softAlpha
+          }
+        }
+        ctx.putImageData(frame, 0, 0)
+      }
+      rafId = requestAnimationFrame(draw)
+    }
+    rafId = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(rafId)
+  }, [isWindows, size])
+
+  const handleError = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const v = e.currentTarget
+    if (v.src.includes('/large/webm/')) {
+      v.src = v.src.replace('/large/webm/', '/large/mov/').replace(/\.webm(\?.*)?$/, '.mov$1')
+      v.load()
+      v.play().catch(() => {})
+    }
+  }
+
+  if (!isWindows) {
+    return (
+      <video
+        src={src}
+        autoPlay loop muted playsInline
+        onError={handleError}
+        style={{
+          width: size, height: size,
+          objectFit: 'contain', pointerEvents: 'none',
+          filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.45))',
+        }}
+      />
+    )
+  }
+
+  return (
+    <div style={{ position: 'relative', width: size, height: size }}>
+      <canvas
+        ref={canvasRef}
+        width={size} height={size}
+        style={{
+          width: size, height: size,
+          pointerEvents: 'none',
+          filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.45))',
+        }}
+      />
+      <video
+        ref={videoRef}
+        src={src}
+        autoPlay loop muted playsInline
+        onError={handleError}
+        style={{
+          position: 'absolute', top: 0, left: 0,
+          width: size, height: size,
+          opacity: 0, pointerEvents: 'none',
+        }}
+      />
+    </div>
   )
 }

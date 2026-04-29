@@ -89,7 +89,8 @@ export function PetContextMenu({
     const updated = applyFeed(petData, food)
     if (updated === petData) return
     onUpdatePetData(updated)
-    onFoodRain?.(food.icon)
+    const isWin = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+    onFoodRain?.((isWin && food.iconWin) ? food.iconWin : food.icon)
     onSetAction('eat')
     onPlayAudio?.('eat')
   }, [petData, onUpdatePetData, onSetAction, onFoodRain, onPlayAudio])
@@ -234,15 +235,19 @@ export function PetContextMenu({
                   <SideBtn side={side} label={`${t('pet.pat')} ${petData.headpatToday}/5`} onClick={() => handleAction('headpat')} disabled={!canHeadpat(petData)} />
                 </>
               )}
-              {subPanel === 'shop' && FOODS.map(food => (
-                <SideBtn
-                  side={side}
-                  key={food.id}
-                  label={`${food.name} 🪙${food.price}`}
-                  onClick={() => handleBuy(food.id)}
-                  disabled={petData.coins < food.price}
-                />
-              ))}
+              {subPanel === 'shop' && FOODS.map(food => {
+                const isWin = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+                const icon = (isWin && food.iconWin) ? food.iconWin : food.icon
+                return (
+                  <SideBtn
+                    side={side}
+                    key={food.id}
+                    label={`${icon} ${food.name} 💰${food.price}`}
+                    onClick={() => handleBuy(food.id)}
+                    disabled={petData.coins < food.price}
+                  />
+                )
+              })}
               {subPanel === 'pomodoro' && (
                 <>
                   {POMODORO_PRESETS.map(m => (
