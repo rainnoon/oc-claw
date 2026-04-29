@@ -3922,7 +3922,78 @@ async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
         }).map_err(|e| e.to_string())?;
         rx.recv().map_err(|e| e.to_string())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let result = tokio::task::spawn_blocking(|| -> Result<String, String> {
+            use windows::Media::Control::{
+                GlobalSystemMediaTransportControlsSessionManager,
+                GlobalSystemMediaTransportControlsSessionPlaybackStatus,
+            };
+
+            let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+                .map_err(|e| format!("GSMTC RequestAsync failed: {}", e))?
+                .get()
+                .map_err(|e| format!("GSMTC get manager failed: {}", e))?;
+
+            let sessions = match manager.GetSessions() {
+                Ok(s) => s,
+                Err(_) => return Ok("none".into()),
+            };
+
+            let count = sessions.Size().unwrap_or(0);
+            let mut best: Option<&str> = None;
+            for i in 0..count {
+                let session: windows::Media::Control::GlobalSystemMediaTransportControlsSession =
+                    match sessions.GetAt(i) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+
+                let source = session.SourceAppUserModelId()
+                    .map(|s| s.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+
+                let info = match session.GetPlaybackInfo() {
+                    Ok(i) => i,
+                    Err(_) => continue,
+                };
+                let status = match info.PlaybackStatus() {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                log::info!(
+                    "[now_playing/gsmtc] source={} status={:?}",
+                    source, status.0
+                );
+
+                if status != GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing {
+                    continue;
+                }
+
+                let kind = if is_video_app_win(&source) || is_browser_win(&source) {
+                    "video"
+                } else if is_music_app_win(&source) {
+                    "music"
+                } else {
+                    "music"
+                };
+
+                if kind == "video" {
+                    best = Some("video");
+                    break;
+                }
+                if best.is_none() {
+                    best = Some(kind);
+                }
+            }
+            Ok(best.unwrap_or("none").into())
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking join error: {}", e))?;
+        result
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Ok("none".into())
     }
@@ -4525,6 +4596,47 @@ fn is_browser(bid: &str) -> bool {
         "company.thebrowser.browser", "com.operasoftware.opera",
     ];
     BROWSERS.iter().any(|b| bid.contains(b))
+}
+
+#[cfg(target_os = "windows")]
+fn is_music_app_win(id: &str) -> bool {
+    const MUSIC_APPS: &[&str] = &[
+        "spotify", "zune", "zunemusic",
+        "cloudmusic", "163music", "netease", "\u{7f51}\u{6613}\u{4e91}",
+        "qqmusic", "qq\u{97f3}\u{4e50}",
+        "kugou", "\u{9177}\u{72d7}", "kuwo", "\u{9177}\u{6211}",
+        "foobar2000", "aimp", "musicbee",
+        "itunes", "applemusic", "cider",
+        "\u{6c7d}\u{6c34}\u{97f3}\u{4e50}", "soda",
+    ];
+    MUSIC_APPS.iter().any(|m| id.contains(m))
+}
+
+#[cfg(target_os = "windows")]
+fn is_video_app_win(id: &str) -> bool {
+    const VIDEO_APPS: &[&str] = &[
+        "potplayer", "vlc", "mpv",
+        "plex", "mpc-hc", "mpc-be",
+        "kmplayer", "iina", "films",
+        "bilibili", "\u{54d4}\u{54e9}\u{54d4}\u{54e9}",
+        "disney", "netflix", "hbo",
+        "douyin", "\u{6296}\u{97f3}", "tiktok",
+        "iqiyi", "\u{7231}\u{5947}\u{827a}",
+        "youku", "\u{4f18}\u{9177}",
+        "mgtv", "\u{8292}\u{679c}",
+        "dandanplay",
+    ];
+    VIDEO_APPS.iter().any(|v| id.contains(v))
+}
+
+#[cfg(target_os = "windows")]
+fn is_browser_win(id: &str) -> bool {
+    const BROWSERS: &[&str] = &[
+        "chrome", "firefox", "msedge",
+        "brave", "vivaldi", "opera",
+        "arc",
+    ];
+    BROWSERS.iter().any(|b| id.contains(b))
 }
 
 /// Expand the mini window to pet-context size and start a cursor-position poll
