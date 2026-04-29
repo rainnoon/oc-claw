@@ -28,6 +28,7 @@ interface PetContextMenuProps {
   onOpenSettings: () => void
   onFoodRain?: (emoji: string) => void
   onClaimGift?: (amount: number) => void
+  onStar?: () => void
   onQuit?: () => void
   onPlayAudio?: (action: PetAction) => void
 }
@@ -35,7 +36,7 @@ interface PetContextMenuProps {
 export function PetContextMenu({
   open, petData, currentAction, pomodoro, mascotSize, side = 'left',
   onClose, onUpdatePetData, onSetAction,
-  onStartPomodoro, onStopPomodoro, onOpenSettings, onFoodRain, onClaimGift, onQuit, onPlayAudio,
+  onStartPomodoro, onStopPomodoro, onOpenSettings, onFoodRain, onClaimGift, onStar, onQuit, onPlayAudio,
 }: PetContextMenuProps) {
   const [subPanel, setSubPanel] = useState<SubPanel>('main')
   const menuRef = useRef<HTMLDivElement>(null)
@@ -215,6 +216,7 @@ export function PetContextMenu({
                 <SideBtn side={side} label={t('pet.pomodoro')} onClick={() => setSubPanel('pomodoro')} />
               )}
               <SideBtn side={side} label={t('mini.settings')} onClick={onOpenSettings} />
+              {onStar && <SideBtn side={side} label="star" onClick={onStar} dim />}
               {onQuit && <SideBtn side={side} label={t('pet.quit')} onClick={onQuit} dim />}
               {import.meta.env.DEV && <SideBtn side={side} label="Dev" onClick={() => setSubPanel('dev')} dim />}
             </>

@@ -3378,6 +3378,10 @@ export default function Mini() {
                   closePetContextMenu()
                   enterSettings()
                 }}
+                onStar={() => {
+                  closePetContextMenu()
+                  invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' }).catch(() => {})
+                }}
                 onFoodRain={triggerFoodRain}
                 onPlayAudio={playPetAudio}
                 onQuit={() => {

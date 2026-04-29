@@ -3831,11 +3831,11 @@ async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
             let cli_status = nowplaying_cli_status();
 
             let result = if let Some((playing, ref source)) = cli_status {
-                if !playing {
-                    "none"
-                } else if source.contains("openclaw") || source.contains("ooclaw") {
-                    // Ignore our own SFX audio
-                    "none"
+                if !playing || source.contains("openclaw") || source.contains("ooclaw") {
+                    // Not playing, or our own pet SFX hijacked the Now Playing session.
+                    // Fall back to AppleScript to check if a real music app is still playing,
+                    // because nowplaying-cli only reports one source at a time.
+                    if is_any_music_app_playing() { "music" } else { "none" }
                 } else if is_music_app(source) {
                     "music"
                 } else if is_video_app(source) || is_browser(source) {
