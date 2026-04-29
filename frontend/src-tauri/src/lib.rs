@@ -4743,6 +4743,11 @@ async fn set_pet_mode_window(
             let app2 = app.clone();
             std::thread::spawn(move || pet_passthrough_poll(app2, mascot_scale, large_mascot_scale));
         }
+        #[cfg(target_os = "windows")]
+        if !PET_PASSTHROUGH_THREAD_ALIVE.load(Ordering::SeqCst) {
+            let app2 = app.clone();
+            std::thread::spawn(move || pet_passthrough_poll_windows(app2, mascot_scale, large_mascot_scale));
+        }
     } else {
         // Stop the poll thread.
         PET_PASSTHROUGH_ACTIVE.store(false, Ordering::SeqCst);
@@ -5038,6 +5043,117 @@ fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_s
             }
         }
     });
+    PET_PASSTHROUGH_THREAD_ALIVE.store(false, Ordering::SeqCst);
+}
+
+/// Windows equivalent of `pet_passthrough_poll`. Polls the global cursor
+/// position (via Win32 `GetCursorPos`) every 20 ms and toggles the mini
+/// webview's `set_ignore_cursor_events` so clicks outside the mascot
+/// hit-box pass through to whatever is behind, while clicks on the mascot
+/// itself reach the webview. When the pet context menu is open the entire
+/// window is interactive so menu buttons receive clicks.
+#[cfg(target_os = "windows")]
+fn pet_passthrough_poll_windows(app: tauri::AppHandle, mascot_scale: f64, large_mascot_scale: f64) {
+    use std::time::Duration;
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    PET_PASSTHROUGH_THREAD_ALIVE.store(true, Ordering::SeqCst);
+    // mascot dimensions in logical pixels (matches CSS px on Windows WebView2).
+    let (mascot_w_logical, mascot_h_logical) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+    let hit_w = mascot_w_logical * (1.8 / 3.0);
+    let hit_h = mascot_h_logical * (2.5 / 3.0);
+    let inset_x_logical = (mascot_w_logical - hit_w) / 2.0;
+    let inset_y_logical = (mascot_h_logical - hit_h) / 2.0;
+    let edge_threshold_logical = 30.0_f64;
+
+    let mut last_state: Option<bool> = None;
+
+    while PET_PASSTHROUGH_ACTIVE.load(Ordering::SeqCst) {
+        let menu_open = PET_CONTEXT_MENU_OPEN.load(Ordering::SeqCst);
+
+        let should_be_interactive = if menu_open {
+            true
+        } else {
+            // Read cursor position and window geometry in physical pixels.
+            let cursor = unsafe {
+                let mut pt = POINT::default();
+                if GetCursorPos(&mut pt).is_ok() {
+                    Some((pt.x as f64, pt.y as f64))
+                } else {
+                    None
+                }
+            };
+            let win = app.get_webview_window("mini");
+            match (win, cursor) {
+                (Some(win), Some((cx, cy))) => {
+                    let pos = win.outer_position().ok();
+                    let size = win.outer_size().ok();
+                    let scale = win.scale_factor().unwrap_or(1.0);
+                    let monitor = win.current_monitor().ok().flatten();
+                    if let (Some(pos), Some(size)) = (pos, size) {
+                        let fx = pos.x as f64;
+                        let fy = pos.y as f64;
+                        let fw = size.width as f64;
+                        let fh = size.height as f64;
+
+                        // Mascot is anchored at `left: petBaseWinW - mascotW` and `bottom: 0`,
+                        // i.e. the right-bottom corner of the no-menu window. When the menu
+                        // is closed, fw == petBaseWinW so the mascot's right edge in screen
+                        // physical px is fx + fw and its bottom is fy + fh.
+                        let mascot_w = mascot_w_logical * scale;
+                        let mascot_h = mascot_h_logical * scale;
+                        let inset_x = inset_x_logical * scale;
+                        let inset_y = inset_y_logical * scale;
+                        let edge_threshold = edge_threshold_logical * scale;
+
+                        let mascot_right = fx + fw;
+                        let mascot_left = mascot_right - mascot_w;
+                        let mascot_bottom = fy + fh;
+                        let mascot_top = mascot_bottom - mascot_h;
+
+                        let near_edge = if let Some(monitor) = monitor {
+                            let mp = monitor.position();
+                            let ms = monitor.size();
+                            let monitor_left = mp.x as f64;
+                            let monitor_right = monitor_left + ms.width as f64;
+                            mascot_left < monitor_left + edge_threshold
+                                || mascot_right > monitor_right - edge_threshold
+                        } else {
+                            false
+                        };
+
+                        let ix = if near_edge { 0.0 } else { inset_x };
+                        let iy = if near_edge { 0.0 } else { inset_y };
+                        let hit_left = mascot_left + ix;
+                        let hit_right = mascot_right - ix;
+                        let hit_top = mascot_top + iy;
+                        let hit_bottom = mascot_bottom - iy;
+
+                        cx >= hit_left && cx <= hit_right
+                            && cy >= hit_top && cy <= hit_bottom
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        };
+
+        if last_state != Some(should_be_interactive) {
+            if let Some(win) = app.get_webview_window("mini") {
+                let _ = win.set_ignore_cursor_events(!should_be_interactive);
+            }
+            last_state = Some(should_be_interactive);
+        }
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Re-enable click events on exit so the window stays usable when leaving pet mode.
+    if let Some(win) = app.get_webview_window("mini") {
+        let _ = win.set_ignore_cursor_events(false);
+    }
     PET_PASSTHROUGH_THREAD_ALIVE.store(false, Ordering::SeqCst);
 }
 
