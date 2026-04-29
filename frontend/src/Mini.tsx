@@ -374,11 +374,13 @@ function getLargeVideo(char: CharacterMeta | undefined, petState: PetState, over
   return la['rest'] || la['work']
 }
 
-function getLargeVideoType(url: string): string | undefined {
-  const lower = url.split('?')[0].split('#')[0].toLowerCase()
-  if (lower.endsWith('.mov')) return 'video/quicktime; codecs="hvc1"'
-  if (lower.endsWith('.mp4')) return 'video/mp4; codecs="hvc1"'
-  if (lower.endsWith('.webm')) return 'video/webm; codecs="vp9"'
+function getAlternateLargeVideoUrl(url: string): string | undefined {
+  if (url.includes('/large/webm/') && url.endsWith('.webm')) {
+    return url.replace('/large/webm/', '/large/mov/').replace(/\.webm$/, '.mov')
+  }
+  if (url.includes('/large/mov/') && url.endsWith('.mov')) {
+    return url.replace('/large/mov/', '/large/webm/').replace(/\.mov$/, '.webm')
+  }
   return undefined
 }
 
@@ -936,27 +938,30 @@ export default function Mini() {
 
   // Pet mode always uses the builtin mascot character assets.
   const PET_BUILTIN_BASE = '/assets/builtin/香企鹅'
+  const preferWebmLarge = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+  const largeFolder = preferWebmLarge ? 'webm' : 'mov'
+  const largeExt = preferWebmLarge ? 'webm' : 'mov'
   const petBuiltinLargeActions = useMemo<Record<string, string>>(() => ({
-    idle: `${PET_BUILTIN_BASE}/large/idle.mov`,
-    hungry: `${PET_BUILTIN_BASE}/large/hungry.mov`,
-    eat: `${PET_BUILTIN_BASE}/large/eat.mov`,
-    walk: `${PET_BUILTIN_BASE}/large/walk.mov`,
-    walkout: `${PET_BUILTIN_BASE}/large/walkout.mov`,
-    peek: `${PET_BUILTIN_BASE}/large/peek.mov`,
-    headpat: `${PET_BUILTIN_BASE}/large/headpat.mov`,
-    grasp: `${PET_BUILTIN_BASE}/large/grasp.mov`,
-    angry: `${PET_BUILTIN_BASE}/large/angry.mov`,
-    question: `${PET_BUILTIN_BASE}/large/question.mov`,
-    farewell: `${PET_BUILTIN_BASE}/large/farewell.mov`,
-    watch: `${PET_BUILTIN_BASE}/large/watch.mov`,
-    music: `${PET_BUILTIN_BASE}/large/music.mov`,
-    dance: `${PET_BUILTIN_BASE}/large/dance.mov`,
-    study: `${PET_BUILTIN_BASE}/large/study.mov`,
-    work: `${PET_BUILTIN_BASE}/large/work.mov`,
-    rest: `${PET_BUILTIN_BASE}/large/rest.mov`,
-    milktea: `${PET_BUILTIN_BASE}/large/milktea.mov`,
-    spin: `${PET_BUILTIN_BASE}/large/spin.mov`,
-  }), [])
+    idle: `${PET_BUILTIN_BASE}/large/${largeFolder}/idle.${largeExt}`,
+    hungry: `${PET_BUILTIN_BASE}/large/${largeFolder}/hungry.${largeExt}`,
+    eat: `${PET_BUILTIN_BASE}/large/${largeFolder}/eat.${largeExt}`,
+    walk: `${PET_BUILTIN_BASE}/large/${largeFolder}/walk.${largeExt}`,
+    walkout: `${PET_BUILTIN_BASE}/large/${largeFolder}/walkout.${largeExt}`,
+    peek: `${PET_BUILTIN_BASE}/large/${largeFolder}/peek.${largeExt}`,
+    headpat: `${PET_BUILTIN_BASE}/large/${largeFolder}/headpat.${largeExt}`,
+    grasp: `${PET_BUILTIN_BASE}/large/${largeFolder}/grasp.${largeExt}`,
+    angry: `${PET_BUILTIN_BASE}/large/${largeFolder}/angry.${largeExt}`,
+    question: `${PET_BUILTIN_BASE}/large/${largeFolder}/question.${largeExt}`,
+    farewell: `${PET_BUILTIN_BASE}/large/${largeFolder}/farewell.${largeExt}`,
+    watch: `${PET_BUILTIN_BASE}/large/${largeFolder}/watch.${largeExt}`,
+    music: `${PET_BUILTIN_BASE}/large/${largeFolder}/music.${largeExt}`,
+    dance: `${PET_BUILTIN_BASE}/large/${largeFolder}/dance.${largeExt}`,
+    study: `${PET_BUILTIN_BASE}/large/${largeFolder}/study.${largeExt}`,
+    work: `${PET_BUILTIN_BASE}/large/${largeFolder}/work.${largeExt}`,
+    rest: `${PET_BUILTIN_BASE}/large/${largeFolder}/rest.${largeExt}`,
+    milktea: `${PET_BUILTIN_BASE}/large/${largeFolder}/milktea.${largeExt}`,
+    spin: `${PET_BUILTIN_BASE}/large/${largeFolder}/spin.${largeExt}`,
+  }), [PET_BUILTIN_BASE, largeExt, largeFolder])
 
   // Pet mode: play audio SFX mapped to pet actions via audio.json
   const petAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -3086,53 +3091,90 @@ export default function Mini() {
   const activeBufferRef = useRef<0 | 1>(0)
   const [activeBuffer, setActiveBuffer] = useState<0 | 1>(0)
   const prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
-  // Expose active video element for external code that reads largeVideoRef
-  const largeVideoRef = activeBuffer === 0 ? largeVideoRefA : largeVideoRefB
 
   useEffect(() => {
     if (!largeVideoUrl) return
     if (prevLargeVideoUrlRef.current === largeVideoUrl) return
+
+    const frontIdx = activeBufferRef.current
+    const backIdx: 0 | 1 = frontIdx === 0 ? 1 : 0
+    const front = frontIdx === 0 ? largeVideoRefA.current : largeVideoRefB.current
+    const back = backIdx === 0 ? largeVideoRefA.current : largeVideoRefB.current
+    if (!front || !back) return
+
     const isFirstLoad = prevLargeVideoUrlRef.current === undefined
     prevLargeVideoUrlRef.current = largeVideoUrl
 
-    if (isFirstLoad) {
-      // First load: just play on the current front buffer, no swap needed
-      const front = activeBufferRef.current === 0 ? largeVideoRefA.current : largeVideoRefB.current
-      if (front) {
-        const src = front.querySelector('source')
-        if (src) src.src = largeVideoUrl
-        front.load()
-        front.play().catch(() => {})
+    let cancelled = false
+    const listeners: Array<() => void> = []
+    const addOnce = (el: HTMLVideoElement, event: 'playing' | 'error', fn: () => void) => {
+      el.addEventListener(event, fn, { once: true })
+      listeners.push(() => el.removeEventListener(event, fn))
+    }
+    const clearListeners = () => {
+      for (const off of listeners) off()
+      listeners.length = 0
+    }
+    const finishSwap = (newFront: 0 | 1) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (cancelled) return
+          activeBufferRef.current = newFront
+          setActiveBuffer(newFront)
+          const old = newFront === 0 ? largeVideoRefB.current : largeVideoRefA.current
+          if (old) {
+            old.pause()
+            old.currentTime = 0
+          }
+        })
+      })
+    }
+    const loadWithFallback = (
+      target: HTMLVideoElement,
+      url: string,
+      allowFallback: boolean,
+      onReady: () => void,
+      onFailed: () => void,
+    ) => {
+      clearListeners()
+      const ready = () => {
+        clearListeners()
+        onReady()
       }
-      return
+      const failed = () => {
+        clearListeners()
+        if (cancelled) return
+        if (allowFallback) {
+          const alt = getAlternateLargeVideoUrl(url)
+          if (alt && alt !== url) {
+            loadWithFallback(target, alt, false, onReady, onFailed)
+            return
+          }
+        }
+        onFailed()
+      }
+      addOnce(target, 'playing', ready)
+      addOnce(target, 'error', failed)
+      target.currentTime = 0
+      target.src = url
+      target.load()
+      target.play().catch(() => {})
     }
 
-    // Subsequent loads: load into the back buffer, swap when ready
-    const backIdx: 0 | 1 = activeBufferRef.current === 0 ? 1 : 0
-    const back = backIdx === 0 ? largeVideoRefA.current : largeVideoRefB.current
-    if (!back) return
-
-    const src = back.querySelector('source')
-    if (src) src.src = largeVideoUrl
-
-    const onReady = () => {
-      back.removeEventListener('loadeddata', onReady)
-      back.removeEventListener('error', onErr)
-      // Swap: back becomes front
-      activeBufferRef.current = backIdx
-      setActiveBuffer(backIdx)
-      back.play().catch(() => {})
-      // Pause old front to free resources
-      const old = backIdx === 0 ? largeVideoRefB.current : largeVideoRefA.current
-      if (old) { old.pause() }
+    if (isFirstLoad) {
+      loadWithFallback(front, largeVideoUrl, true, () => {}, () => {})
+      return () => {
+        cancelled = true
+        clearListeners()
+      }
     }
-    const onErr = () => {
-      back.removeEventListener('loadeddata', onReady)
-      back.removeEventListener('error', onErr)
+
+    // Keep current front visible, preload next on back, swap only after next plays.
+    loadWithFallback(back, largeVideoUrl, true, () => finishSwap(backIdx), () => {})
+    return () => {
+      cancelled = true
+      clearListeners()
     }
-    back.addEventListener('loadeddata', onReady)
-    back.addEventListener('error', onErr)
-    back.load()
   }, [largeVideoUrl])
 
   const handleDeleteChar = useCallback(async (name: string) => {
@@ -3301,11 +3343,10 @@ export default function Mini() {
                 : {}),
             }}
           >
-            {largeMascot && largeVideoUrl ? (<>
-              {/* Double-buffer: two stacked <video> elements. The front buffer
-                  plays the current animation; the back buffer preloads the next
-                  animation off-screen. They swap only after onLoadedData fires on
-                  the back buffer, so there is never a blank frame. */}
+            {largeMascot && largeVideoUrl ? (
+              <div style={{ position: 'relative', width: largeMascotVisualSize, height: largeMascotVisualSize }}>
+              {/* Double-buffer: front buffer stays visible while back buffer preloads.
+                  Swap only after back buffer is already playing to avoid blank frames. */}
               {[0, 1].map((idx) => {
                 const isFront = activeBuffer === idx
                 const ref = idx === 0 ? largeVideoRefA : largeVideoRefB
@@ -3348,27 +3389,24 @@ export default function Mini() {
                       }
                     }}
                     style={{
-                      position: isFront ? undefined : 'absolute',
-                      top: isFront ? undefined : 0,
-                      left: isFront ? undefined : 0,
-                      width: largeMascotVisualSize,
-                      height: largeMascotVisualSize,
+                      position: 'absolute',
+                      inset: 0,
+                      width: '100%',
+                      height: '100%',
                       objectFit: 'contain',
                       pointerEvents: 'none',
-                      // Back buffer hidden off-screen but still decoding
-                      visibility: isFront ? 'visible' : 'hidden',
+                      opacity: isFront ? 1 : 0,
+                      transition: 'opacity 80ms linear',
                       transform:
                         (currentPetAction === 'walk' && walkFlipped) ? 'scaleX(-1)'
                         : ((currentPetAction === 'peek' || currentPetAction === 'walkout') && peekEdgeRef.current === 'left') ? 'scaleX(-1)'
                         : undefined,
                     }}
                     draggable={false}
-                  >
-                    <source src={isFront ? largeVideoUrl : ''} type={getLargeVideoType(largeVideoUrl)} />
-                  </video>
+                  />
                 )
               })}
-            </>) : miniGif ? (
+            </div>) : miniGif ? (
               disableSleepAnim && mainPetState === 'idle' ? (
                 <FrozenImg src={miniGif} style={{ width: collapsedMascotSize, height: collapsedMascotSize, objectFit: 'contain', pointerEvents: 'none' }} draggable={false} />
               ) : mainPetState === 'compacting' ? (

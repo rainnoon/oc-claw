@@ -9,6 +9,10 @@ interface OnboardingModalProps {
 
 export function OnboardingModal({ open, onSelect }: OnboardingModalProps) {
   const { t } = useTranslation()
+  const preferWebm = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+  const petPreviewSrc = preferWebm
+    ? '/assets/builtin/香企鹅/large/webm/idle.webm'
+    : '/assets/builtin/香企鹅/large/mov/idle.mov'
   return (
     <AnimatePresence>
       {open && (
@@ -56,7 +60,7 @@ export function OnboardingModal({ open, onSelect }: OnboardingModalProps) {
             <div style={{ display: 'flex', gap: 16, width: '100%', marginTop: 8 }}>
               <ModeCard
                 title={t('settings.petMode')}
-                mediaSrc="/assets/builtin/香企鹅/large/idle.mov"
+                mediaSrc={petPreviewSrc}
                 mediaType="video"
                 mediaSize={200}
                 description={t('onboarding.petModeLongDesc')}
@@ -124,6 +128,14 @@ function ModeCard({ title, mediaSrc, mediaType, mediaSize = 50, description, acc
             loop
             muted
             playsInline
+            onError={(e) => {
+              const v = e.currentTarget
+              if (v.src.includes('/large/webm/')) {
+                v.src = v.src.replace('/large/webm/', '/large/mov/').replace(/\.webm(\?.*)?$/, '.mov$1')
+                v.load()
+                v.play().catch(() => {})
+              }
+            }}
             style={{
               width: mediaSize,
               height: mediaSize,
