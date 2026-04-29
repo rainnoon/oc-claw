@@ -3350,6 +3350,67 @@ async fn get_mini_origin(app: tauri::AppHandle) -> Result<(f64, f64), String> {
     Err("failed to get origin".into())
 }
 
+/// Return the monitor rect (x, y, w, h) in logical pixels for the monitor
+/// the mini window currently lives on.  Used by the front-end to detect
+/// screen edges correctly on multi-monitor setups.
+#[tauri::command]
+async fn get_mini_monitor_rect(app: tauri::AppHandle) -> Result<(f64, f64, f64, f64), String> {
+    let win = app.get_webview_window("mini").ok_or("mini not found")?;
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let win_clone = win.clone();
+        app.run_on_main_thread(move || {
+            use objc2::runtime::{AnyClass, AnyObject};
+            use objc2::msg_send;
+            use objc2_foundation::NSRect;
+            if let Ok(ns_win) = win_clone.ns_window() {
+                let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                let screen_frame: NSRect = unsafe {
+                    let screen: *mut AnyObject = msg_send![obj, screen];
+                    if screen.is_null() {
+                        let cls = match AnyClass::get(c"NSScreen") {
+                            Some(c) => c,
+                            None => return,
+                        };
+                        let main_screen: *mut AnyObject = msg_send![cls, mainScreen];
+                        if main_screen.is_null() {
+                            return;
+                        }
+                        msg_send![&*main_screen, frame]
+                    } else {
+                        msg_send![&*screen, frame]
+                    }
+                };
+                let _ = tx.send((
+                    screen_frame.origin.x,
+                    screen_frame.origin.y,
+                    screen_frame.size.width,
+                    screen_frame.size.height,
+                ));
+            }
+        }).map_err(|e| e.to_string())?;
+        if let Ok(rect) = rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            return Ok(rect);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let pos = monitor.position();
+            let size = monitor.size();
+            let scale = win.scale_factor().unwrap_or(1.0);
+            return Ok((
+                pos.x as f64 / scale,
+                pos.y as f64 / scale,
+                size.width as f64 / scale,
+                size.height as f64 / scale,
+            ));
+        }
+    }
+    Err("failed to get monitor rect".into())
+}
+
 /// Set the mini window's origin in logical coordinates.
 /// macOS: bottom-left origin. Windows: top-left origin.
 #[tauri::command]
@@ -10525,7 +10586,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, get_now_playing, get_system_idle_time])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, get_now_playing, get_system_idle_time])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

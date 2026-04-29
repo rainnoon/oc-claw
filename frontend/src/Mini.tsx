@@ -1106,19 +1106,23 @@ export default function Mini() {
 
     if (isToEdge) {
       // Determine which edge is closer, then walk toward it
-      invoke('get_mini_origin').then((pos) => {
+      Promise.all([
+        invoke('get_mini_origin'),
+        invoke('get_mini_monitor_rect'),
+      ]).then(([pos, rect]) => {
         const [x] = pos as [number, number]
-        const screenW = window.screen?.availWidth || 1920
+        const [monitorX, , monitorW] = rect as [number, number, number, number]
+        const monitorLeft = monitorX
+        const monitorRight = monitorX + monitorW
         const actualWinW = window.innerWidth || 300
         const mascotW = largeMascotRef.current
           ? MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
           : MASCOT_BASE_SIZE * mascotScaleRef.current
         const mascotLeft = x + actualWinW - mascotW
         const mascotRight = x + actualWinW
-        const distLeft = mascotLeft
-        const distRight = screenW - mascotRight
+        const distLeft = mascotLeft - monitorLeft
+        const distRight = monitorRight - mascotRight
         edgeDirection = distLeft <= distRight ? -1 : 1
-        // face the direction of travel
         setWalkFlipped(edgeDirection === 1)
       }).catch(() => {})
     }
@@ -1154,29 +1158,34 @@ export default function Mini() {
       edgeCheckCounter += WALK_INTERVAL
       if (edgeCheckCounter >= 300) {
         edgeCheckCounter = 0
-        invoke('get_mini_origin').then((pos) => {
+        Promise.all([
+          invoke('get_mini_origin'),
+          invoke('get_mini_monitor_rect'),
+        ]).then(([pos, rect]) => {
           const [x] = pos as [number, number]
-          const screenW = window.screen?.availWidth || 1920
+          const [monitorX, , monitorW] = rect as [number, number, number, number]
+          const monitorLeft = monitorX
+          const monitorRight = monitorX + monitorW
           const actualWinW = window.innerWidth || 300
           const mascotW = largeMascotRef.current
             ? MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
             : MASCOT_BASE_SIZE * mascotScaleRef.current
           const mascotRight = x + actualWinW
           const mascotLeft = x + actualWinW - mascotW
-          if (mascotLeft <= EDGE_THRESHOLD) {
+          if (mascotLeft <= monitorLeft + EDGE_THRESHOLD) {
             if (walkTimerRef.current) clearInterval(walkTimerRef.current)
             walkTimerRef.current = null
             peekEdgeRef.current = 'left'
             setCurrentPetAction('peek')
             currentPetActionRef.current = 'peek'
-            snapToPeekEdge('left', x)
-          } else if (mascotRight >= screenW - EDGE_THRESHOLD) {
+            snapToPeekEdge('left', x, monitorLeft, monitorRight)
+          } else if (mascotRight >= monitorRight - EDGE_THRESHOLD) {
             if (walkTimerRef.current) clearInterval(walkTimerRef.current)
             walkTimerRef.current = null
             peekEdgeRef.current = 'right'
             setCurrentPetAction('peek')
             currentPetActionRef.current = 'peek'
-            snapToPeekEdge('right', x)
+            snapToPeekEdge('right', x, monitorLeft, monitorRight)
           }
         }).catch(() => {})
       }
@@ -1302,18 +1311,15 @@ export default function Mini() {
   const PEEK_VISIBLE_FRACTION = 0.95
   const EDGE_THRESHOLD = 30
 
-  const snapToPeekEdge = useCallback((edge: 'left' | 'right', currentX: number) => {
-    const screenW = window.screen?.availWidth || 1920
+  const snapToPeekEdge = useCallback((edge: 'left' | 'right', currentX: number, monitorLeft: number, monitorRight: number) => {
     const actualWinW = window.innerWidth || 300
     const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
     const visibleW = mascotW * PEEK_VISIBLE_FRACTION
     let targetX: number
     if (edge === 'right') {
-      // mascotLeft = targetX + actualWinW - mascotW  should equal  screenW - visibleW
-      targetX = screenW - visibleW - actualWinW + mascotW
+      targetX = monitorRight - visibleW - actualWinW + mascotW
     } else {
-      // mascotRight = targetX + actualWinW  should equal  visibleW
-      targetX = visibleW - actualWinW
+      targetX = monitorLeft + visibleW - actualWinW
     }
     const dx = targetX - currentX
     if (Math.abs(dx) > 1) {
@@ -1322,23 +1328,28 @@ export default function Mini() {
   }, [])
 
   const checkEdgeAndSetPeek = useCallback(() => {
-    invoke('get_mini_origin').then((pos) => {
+    Promise.all([
+      invoke('get_mini_origin'),
+      invoke('get_mini_monitor_rect'),
+    ]).then(([pos, rect]) => {
       const [x] = pos as [number, number]
-      const screenW = window.screen?.availWidth || 1920
+      const [monitorX, , monitorW] = rect as [number, number, number, number]
+      const monitorLeft = monitorX
+      const monitorRight = monitorX + monitorW
       const actualWinW = window.innerWidth || 300
       const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
       const mascotRight = x + actualWinW
       const mascotLeft = x + actualWinW - mascotW
-      if (mascotLeft <= EDGE_THRESHOLD) {
+      if (mascotLeft <= monitorLeft + EDGE_THRESHOLD) {
         peekEdgeRef.current = 'left'
         setCurrentPetAction('peek')
         currentPetActionRef.current = 'peek'
-        snapToPeekEdge('left', x)
-      } else if (mascotRight >= screenW - EDGE_THRESHOLD) {
+        snapToPeekEdge('left', x, monitorLeft, monitorRight)
+      } else if (mascotRight >= monitorRight - EDGE_THRESHOLD) {
         peekEdgeRef.current = 'right'
         setCurrentPetAction('peek')
         currentPetActionRef.current = 'peek'
-        snapToPeekEdge('right', x)
+        snapToPeekEdge('right', x, monitorLeft, monitorRight)
       } else {
         const d = petDataRef.current
         const action: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
@@ -2491,13 +2502,17 @@ export default function Mini() {
         if (petContextMenuTransitionRef.current) return
         if (!petContextMenuOpenRef.current) {
           petContextMenuTransitionRef.current = true
-          const screenW = window.screen?.availWidth || 1920
           const winW = window.innerWidth || 300
           const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
-          invoke('get_mini_origin').then(async (pos) => {
+          Promise.all([
+            invoke('get_mini_origin'),
+            invoke('get_mini_monitor_rect'),
+          ]).then(async ([pos, rect]) => {
             const [x] = pos as [number, number]
+            const [monitorX, , monitorW] = rect as [number, number, number, number]
+            const monitorMid = monitorX + monitorW / 2
             const mascotLeft = x + winW - mascotW
-            const side = mascotLeft < screenW / 2 ? 'right' : 'left'
+            const side = mascotLeft < monitorMid ? 'right' : 'left'
             setPetMenuSide(side)
             // Open path: apply CSS anchor immediately to avoid one-frame shift
             // while backend is resizing the native window.
@@ -3461,6 +3476,10 @@ export default function Mini() {
                     width: '100%',
                     height: '100%',
                     pointerEvents: 'none',
+                    transform:
+                      (currentPetAction === 'walk' && walkFlipped) ? 'scaleX(-1)'
+                      : ((currentPetAction === 'peek' || currentPetAction === 'walkout') && peekEdgeRef.current === 'left') ? 'scaleX(-1)'
+                      : undefined,
                   }}
                 />
               )}
