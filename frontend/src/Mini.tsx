@@ -676,6 +676,10 @@ export default function Mini() {
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
   const [petSfxEnabled, setPetSfxEnabled] = useState(true)
   const petSfxEnabledRef = useRef(true)
+  // Pet mode: random idle action trigger interval, in minutes (0.5 – 30, default 2).
+  const [petIdleIntervalMin, setPetIdleIntervalMin] = useState(2)
+  const petIdleIntervalMinRef = useRef(2)
+  useEffect(() => { petIdleIntervalMinRef.current = petIdleIntervalMin }, [petIdleIntervalMin])
   const [autoExpandOnTask, setAutoExpandOnTask] = useState(true)
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
   const [largeMascot, setLargeMascot] = useState(false)
@@ -932,8 +936,9 @@ export default function Mini() {
     return () => { if (idleCheckRef.current) clearInterval(idleCheckRef.current) }
   }, [appMode])
 
-  // Pet mode: while idle, randomly trigger weighted actions every ~3 min.
-  // Keep spin out of idle random pool; spin is reserved for high-affection click.
+  // Pet mode: while idle, randomly trigger weighted actions on a user-tunable
+  // interval (default 2 min, range 0.5–30 min). Keep spin out of the random
+  // pool; spin is reserved for high-affection click.
   const idleAutoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (idleAutoTimerRef.current) {
@@ -941,6 +946,7 @@ export default function Mini() {
       idleAutoTimerRef.current = null
     }
     if (appMode !== 'pet' || currentPetAction !== 'idle' || petActionPriority(currentPetAction) > 0) return
+    const intervalMs = Math.max(30_000, Math.round(petIdleIntervalMin * 60_000))
     idleAutoTimerRef.current = setTimeout(() => {
       if (currentPetActionRef.current !== 'idle' || petActionPriority(currentPetActionRef.current) > 0) return
       const weightedIdleActions: PetAction[] = ['walk', 'milktea', 'dance', 'dance']
@@ -954,11 +960,11 @@ export default function Mini() {
       }
       setCurrentPetAction(next)
       currentPetActionRef.current = next
-    }, 3 * 60 * 1000)
+    }, intervalMs)
     return () => {
       if (idleAutoTimerRef.current) clearTimeout(idleAutoTimerRef.current)
     }
-  }, [appMode, currentPetAction])
+  }, [appMode, currentPetAction, petIdleIntervalMin])
 
   // Pet mode: safety timeout for transient actions (recover from stuck states)
   const transientTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1038,9 +1044,18 @@ export default function Mini() {
   }, [miniChar, appMode])
 
   const petSfxPlayingRef = useRef(false)
+  // Throttle grasp/drag audio: at most one play per 10s window so rapid
+  // re-grabs of the mascot don't spam the angry voice clip.
+  const lastGraspAudioAtRef = useRef(0)
+  const GRASP_AUDIO_THROTTLE_MS = 10_000
   const playPetAudio = useCallback((action: PetAction) => {
     if (appModeRef.current !== 'pet') return
     if (!petSfxEnabledRef.current) return
+    if (action === 'grasp') {
+      const now = Date.now()
+      if (now - lastGraspAudioAtRef.current < GRASP_AUDIO_THROTTLE_MS) return
+      lastGraspAudioAtRef.current = now
+    }
     const FALLBACK_AUDIO: Record<string, string> = {
       angry: '/assets/builtin/香企鹅/audio/angry.mp3',
       grasp: '/assets/builtin/香企鹅/audio/angry.mp3',
@@ -1999,6 +2014,12 @@ export default function Mini() {
       if (typeof acc === 'boolean') setAutoCloseCompletion(acc)
       const psfx = await store.get('pet_sfx_enabled')
       if (typeof psfx === 'boolean') { setPetSfxEnabled(psfx); petSfxEnabledRef.current = psfx }
+      const piim = await store.get('pet_idle_interval_min')
+      if (typeof piim === 'number' && Number.isFinite(piim)) {
+        const clamped = Math.min(30, Math.max(0.5, piim))
+        setPetIdleIntervalMin(clamped)
+        petIdleIntervalMinRef.current = clamped
+      }
       const aet = await store.get('auto_expand_on_task')
       if (typeof aet === 'boolean') {
         setAutoExpandOnTask(aet)
@@ -5484,6 +5505,15 @@ export default function Mini() {
                           petSfxEnabledRef.current = v
                           const store = await getStore()
                           await store.set('pet_sfx_enabled', v)
+                          await store.save()
+                        }}
+                        petIdleIntervalMin={petIdleIntervalMin}
+                        onChangePetIdleIntervalMin={async (v) => {
+                          const clamped = Math.min(30, Math.max(0.5, v))
+                          setPetIdleIntervalMin(clamped)
+                          petIdleIntervalMinRef.current = clamped
+                          const store = await getStore()
+                          await store.set('pet_idle_interval_min', clamped)
                           await store.save()
                         }}
                       />
