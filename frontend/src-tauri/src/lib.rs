@@ -3831,8 +3831,10 @@ async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
             let cli_status = nowplaying_cli_status();
 
             let result = if let Some((playing, ref source)) = cli_status {
-                if !playing || source.contains("openclaw") || source.contains("ooclaw") {
+                if !playing || source.contains("openclaw") || source.contains("ooclaw") || source.contains("com.apple.webkit") {
                     // Not playing, or our own pet SFX hijacked the Now Playing session.
+                    // WebView audio (HTML5 Audio / <video>) reports as "com.apple.WebKit.GPU",
+                    // not the host app's bundle ID, so we must also filter that.
                     // Fall back to AppleScript to check if a real music app is still playing,
                     // because nowplaying-cli only reports one source at a time.
                     if is_any_music_app_playing() { "music" } else { "none" }

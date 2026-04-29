@@ -3116,18 +3116,19 @@ export default function Mini() {
       listeners.length = 0
     }
     const finishSwap = (newFront: 0 | 1) => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (cancelled) return
-          activeBufferRef.current = newFront
-          setActiveBuffer(newFront)
-          const old = newFront === 0 ? largeVideoRefB.current : largeVideoRefA.current
-          if (old) {
-            old.pause()
-            old.currentTime = 0
-          }
-        })
-      })
+      if (cancelled) return
+      activeBufferRef.current = newFront
+      setActiveBuffer(newFront)
+      // Only pause the old buffer — do NOT clear its src synchronously.
+      // setActiveBuffer triggers an async React render that sets visibility:hidden,
+      // but removeAttribute('src') + load() would clear the frame buffer
+      // *before* React hides the element, causing a blank flash.
+      // The stale content is safe: the old buffer is hidden, and loadWithFallback
+      // will replace its src before it becomes front again.
+      const old = newFront === 0 ? largeVideoRefB.current : largeVideoRefA.current
+      if (old) {
+        old.pause()
+      }
     }
     const loadWithFallback = (
       target: HTMLVideoElement,
@@ -3395,8 +3396,7 @@ export default function Mini() {
                       height: '100%',
                       objectFit: 'contain',
                       pointerEvents: 'none',
-                      opacity: isFront ? 1 : 0,
-                      transition: 'opacity 80ms linear',
+                      visibility: isFront ? 'visible' : 'hidden',
                       transform:
                         (currentPetAction === 'walk' && walkFlipped) ? 'scaleX(-1)'
                         : ((currentPetAction === 'peek' || currentPetAction === 'walkout') && peekEdgeRef.current === 'left') ? 'scaleX(-1)'

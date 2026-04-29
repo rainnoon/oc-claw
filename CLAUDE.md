@@ -152,13 +152,17 @@ The large mascot in pet mode uses `.mov` video files (H.264 with alpha) for each
 
 1. **`vid.load()` clears the frame buffer immediately.** A single `<video>` element will flash blank/transparent between animations because the new video's first frame hasn't decoded yet. This is NOT a timing issue fixable with `useLayoutEffect` — `load()` destroys the old frame synchronously, period.
 2. **Canvas snapshot does not work for `.mov` with alpha.** WebKit's `drawImage()` from a `<video>` playing a `.mov` with alpha transparency is unreliable — the captured frame is often blank or corrupted.
-3. **The fix is double-buffered video.** Two `<video>` elements (A and B) are stacked. Only the front buffer is visible (`visibility`). On animation change, the new source loads into the back buffer. Once `onLoadedData` fires (first frame decoded), they swap — back becomes front, old front is paused. The old animation stays visible the entire time with zero blank frames.
-4. **Key implementation details in `Mini.tsx`:**
+3. **The fix is double-buffered video.** Two `<video>` elements (A and B) are stacked. Only the front buffer is visible (`visibility`). On animation change, the new source loads into the back buffer. Once the `playing` event fires (new video is playing), they swap — back becomes front, old front is paused. The old animation stays visible the entire time with zero blank frames.
+4. **NEVER clear the old buffer's source during swap.** `removeAttribute('src') + load()` clears the frame buffer synchronously, but `setActiveBuffer()` triggers an async React render. The execution order is: (1) queue React render, (2) clear frame buffer immediately, (3) React renders `visibility: hidden`. Between steps 2 and 3 the old buffer is still visible but its frame is gone → blank flash. Only call `old.pause()` in `finishSwap`. The stale content doesn't matter — the buffer is hidden, and `loadWithFallback` will replace its src before it becomes front again.
+5. **Use `visibility`, not `opacity` transitions.** `opacity` with a crossfade means both buffers are partially transparent during the transition. Any frame buffer clearing during that window is visible. `visibility: hidden/visible` is an instant swap with no intermediate state.
+6. **WebView audio registers as `com.apple.WebKit.GPU` in Now Playing.** Pet SFX played via `new Audio()` in the WebView reports `clientBundleIdentifier` as `com.apple.WebKit.GPU`, not the host app's `com.openclaw.ooclaw`. The `get_now_playing` filter in `lib.rs` must also match `com.apple.webkit` to avoid SFX triggering the music animation.
+7. **Key implementation details in `Mini.tsx`:**
    - `largeVideoRefA` / `largeVideoRefB`: the two video element refs
    - `activeBufferRef` (imperative) + `activeBuffer` (state): track which is front
    - First load goes directly to the front buffer (no swap needed)
    - `onEnded` / `onError` callbacks filter by `isFront` to ignore events from the back buffer
    - Back buffer uses `visibility: hidden` (not `display: none`) so the browser still decodes frames
+   - `loadWithFallback` tries the primary URL, then falls back to alternate format (mov↔webm) on error
 
 # OpenClaw Data Format
 
