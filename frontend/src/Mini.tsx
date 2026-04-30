@@ -1381,6 +1381,19 @@ export default function Mini() {
     } else {
       setAppMode(mode)
       setShowOnboarding(false)
+      // First time entering coding mode (no persisted preference): default
+      // to the large mascot so new users see it out of the box. Existing
+      // users who have explicitly toggled the size are left alone.
+      if (mode === 'coding') {
+        const store = await load('settings.json', { defaults: {}, autoSave: true })
+        const existingLM = await store.get('large_mascot')
+        if (typeof existingLM !== 'boolean') {
+          setLargeMascot(true)
+          largeMascotRef.current = true
+          await store.set('large_mascot', true)
+          await store.save()
+        }
+      }
       // When switching mode from inside Settings, keep the settings window
       // completely untouched. enterSettings already disabled pet pass-
       // through, and any extra native resize/move call (even an
@@ -1583,13 +1596,20 @@ export default function Mini() {
       const storedMascotScale = await store.get('mascot_scale')
       const initialMascotScale = typeof storedMascotScale === 'number' ? clampMascotScale(storedMascotScale) : 1
       const storedLargeMascot = await store.get('large_mascot')
-      let initialLargeMascot = typeof storedLargeMascot === 'boolean' ? storedLargeMascot : false
       const storedLargeMascotScale = await store.get('large_mascot_scale')
       const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(4, storedLargeMascotScale)) : 5
       const existingMode = await loadAppMode()
       // Avoid startup flicker: decide large/small mascot from the persisted mode
       // BEFORE applying initial React/native window state. Otherwise we briefly
       // render the stored small mascot and then switch to large in pet mode.
+      // Default to large mascot for both pet and coding modes when the user
+      // has no explicit preference yet; respect the stored boolean otherwise.
+      let initialLargeMascot: boolean
+      if (typeof storedLargeMascot === 'boolean') {
+        initialLargeMascot = storedLargeMascot
+      } else {
+        initialLargeMascot = existingMode === 'coding' || existingMode === 'pet'
+      }
       if (existingMode === 'pet') {
         initialLargeMascot = true
       }
