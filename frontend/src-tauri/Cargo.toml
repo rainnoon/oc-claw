@@ -1,6 +1,6 @@
 [package]
 name = "oc_claw"
-version = "1.8.0"
+version = "1.8.1"
 description = "OpenClaw Desktop Pet"
 authors = ["you"]
 license = "MIT"
@@ -31,6 +31,7 @@ percent-encoding = "2"
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 libc = "0.2"
 objc2 = "0.6"
+block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSApplication", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray"] }
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
@@ -38,7 +39,7 @@ notify = { version = "6", default-features = false, features = ["macos_kqueue"] 
 [target.'cfg(target_os = "windows")'.dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 notify = { version = "6" }
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Media_Audio", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Graphics_Gdi"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Media_Audio", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Graphics_Gdi", "Media_Control", "Foundation", "Foundation_Collections"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }

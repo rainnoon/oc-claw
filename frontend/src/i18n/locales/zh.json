@@ -125,6 +125,12 @@
     "islandBgDesc": "选择或上传背景图片，拖动选择裁剪区域",
 
     "sound": "提示音",
+    "petSfx": "角色叫声",
+    "petSfxDesc": "互动时播放角色的声音",
+    "petBehavior": "行为",
+    "petIdleInterval": "随机动作间隔",
+    "petIdleIntervalDesc": "角色处于待机时随机触发动作的频率",
+    "minutesShort": "分钟",
     "completionSound": "完成提示音",
     "completionSoundDesc": "任务完成时播放的提示音",
     "defaultSound": "默认",
@@ -161,6 +167,12 @@
     "checkUpdate": "检查更新",
     "exitApp": "退出应用",
 
+    "appMode": "模式",
+    "codingMode": "编程模式",
+    "codingModeDesc": "监控多 Agent 会话、Token 统计与任务提醒",
+    "petMode": "桌宠模式",
+    "petModeDesc": "丰富动作、养成系统与互动玩法",
+
     "language": "语言",
     "languageDesc": "选择界面显示语言",
     "langZh": "中文",
@@ -169,6 +181,33 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "onboarding": {
+    "chooseModeTitle": "选择你的模式",
+    "chooseModeSubtitle": "你可以随时在设置中切换模式。",
+    "codingModeLongDesc": "监控你的 AI Agent。悬停看板娘可查看状态、会话和活动。",
+    "petModeLongDesc": "养成你的桌面宠物！喂食、互动，并通过丰富动画提升好感。"
+  },
+
+  "pet": {
+    "dailyGift": "每日礼物",
+    "claimed": "已领取",
+    "actions": "动作",
+    "shop": "商店",
+    "stop": "停止",
+    "pomodoro": "番茄钟",
+    "quit": "退出",
+    "sleep": "睡觉",
+    "watch": "看视频",
+    "music": "听音乐",
+    "walk": "散步",
+    "milktea": "奶茶",
+    "spin": "转圈",
+    "dance": "跳舞",
+    "pat": "摸头",
+    "min": "分钟",
+    "go": "开始"
   },
 
   "updateModal": {

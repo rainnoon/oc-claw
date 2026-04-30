@@ -146,6 +146,26 @@ The hook script also maps tool info from Cursor's event-specific fields to gener
 - `afterFileEdit` → `tool: "Edit"`, `toolInput: {"file_path": ..., "content": ...}`
 - `beforeReadFile` → `tool: "Read"`, `toolInput: {"file_path": ...}`
 
+## Pet Mode — Video Animation Transitions
+
+The large mascot in pet mode uses `.mov` video files (H.264 with alpha) for each animation state (idle, peek, walkout, dance, etc.). When switching animations:
+
+1. **`vid.load()` clears the frame buffer immediately.** A single `<video>` element will flash blank/transparent between animations because the new video's first frame hasn't decoded yet. This is NOT a timing issue fixable with `useLayoutEffect` — `load()` destroys the old frame synchronously, period.
+2. **Canvas snapshot does not work for `.mov` with alpha.** WebKit's `drawImage()` from a `<video>` playing a `.mov` with alpha transparency is unreliable — the captured frame is often blank or corrupted.
+3. **The fix is double-buffered video.** Two `<video>` elements (A and B) are stacked. Only the front buffer is visible (`visibility`). On animation change, the new source loads into the back buffer. Once the `playing` event fires (new video is playing), they swap — back becomes front, old front is paused. The old animation stays visible the entire time with zero blank frames.
+4. **NEVER clear the old buffer's source during swap.** `removeAttribute('src') + load()` clears the frame buffer synchronously, but `setActiveBuffer()` triggers an async React render. The execution order is: (1) queue React render, (2) clear frame buffer immediately, (3) React renders `visibility: hidden`. Between steps 2 and 3 the old buffer is still visible but its frame is gone → blank flash. Only call `old.pause()` in `finishSwap`. The stale content doesn't matter — the buffer is hidden, and `loadWithFallback` will replace its src before it becomes front again.
+5. **Use `visibility`, not `opacity` transitions.** `opacity` with a crossfade means both buffers are partially transparent during the transition. Any frame buffer clearing during that window is visible. `visibility: hidden/visible` is an instant swap with no intermediate state.
+6. **WebView audio registers as `com.apple.WebKit.GPU` in Now Playing.** Pet SFX played via `new Audio()` in the WebView reports `clientBundleIdentifier` as `com.apple.WebKit.GPU`, not the host app's `com.openclaw.ooclaw`. The `get_now_playing` filter in `lib.rs` must also match `com.apple.webkit` to avoid SFX triggering the music animation.
+7. **Key implementation details in `Mini.tsx`:**
+   - `largeVideoRefA` / `largeVideoRefB`: the two video element refs
+   - `activeBufferRef` (imperative) + `activeBuffer` (state): track which is front
+   - First load goes directly to the front buffer (no swap needed)
+   - `onEnded` / `onError` callbacks filter by `isFront` to ignore events from the back buffer
+   - Back buffer uses `visibility: hidden` (not `display: none`) so the browser still decodes frames
+   - `loadWithFallback` tries the primary URL, then falls back to alternate format (mov↔webm) on error
+8. **Canvas/video elements only exist in the collapsed view (`!expanded`).** The video loading effect and the Windows chroma-key canvas rAF loop both depend on refs that are only assigned when the collapsed mascot view is rendered. If their dependency arrays don't include `expanded`, the effects run while `expanded=true` (refs are null, canvas not in DOM), bail out, and then **never re-run** when `expanded` becomes false and elements mount — because `expanded` wasn't a dependency. This causes the character to be completely invisible on Windows (where `<video>` has `opacity:0` and only the canvas paints via chroma-key). Clicking the mascot triggers an animation URL change which re-runs the effects as a side effect, making it appear to "fix itself". Both effects (`largeVideoUrl` loader and `useWindowsChromaKey` canvas loop) must include `expanded` in their dependency arrays. The video loading effect must also reset `prevLargeVideoUrlRef` when refs are null so the dedup check doesn't skip the load on the next run.
+9. **WebView2 may reject `video.play()` when the element's ancestor has `display:none`.** During `settingsTransitioning`, the mascot div is `display:none` in pet mode. If the video loading effect fires at this point, `play()` silently fails and the video stays paused even after the parent becomes visible. The canvas rAF loop includes a self-healing retry: if the front video has a `src` but is paused and not yet decoded (`readyState < 2`), it retries `play()` every ~500ms.
+
 # OpenClaw Data Format
 
 When modifying anything related to OpenClaw session activity detection, health polling, or JSONL parsing:
@@ -184,6 +204,7 @@ Mini.tsx has multiple polling loops (`fetchAgents` 5s, `pollHealth` 1s, `fetchAl
 2. **Async polling functions need a busy lock** (e.g. `pollHealthBusyRef`). Without it, the 1s interval stacks SSH requests, overwhelming the multiplexed socket and causing cascading "stale socket" failures. If the previous call hasn't returned, skip the current tick.
 3. **Both `exitSettings()` and `collapse()` must trigger `fetchAgents()` immediately.** Users can close settings via the back button (`exitSettings`) OR by clicking outside (`collapse`). If only `exitSettings` calls `fetchAgents`, clicking outside causes a 5-8s delay before config changes are detected.
 4. **`settingsModeRef.current` must be set to `false` BEFORE calling `fetchAgents()`**, otherwise the settings-mode guard inside `fetchAgents` will skip the call.
+5. **Do not gate settings-close blur handling on `expanded` in pet mode.** In pet mode, opening settings keeps `expanded === false`; if blur handlers early-return on `!expanded`, clicking desktop will never call `exitSettings()`, leaving the settings-close restore path unapplied and causing mascot disappear/position drift.
 
 # App Updates & Releases
 
@@ -304,3 +325,42 @@ Windows OpenSSH does NOT support `ControlMaster` / `ControlPath` (Unix domain so
 - Prefer simple, minimal fixes.
 - Do not over-engineer solutions.
 - Do not suggest unnecessary refactors unless explicitly asked.
+
+# Converting transparent WebM to MOV (HEVC with Alpha)
+
+WebKit/Tauri WebView requires HEVC with Alpha in `.mov` container for transparent video playback. Direct `ffmpeg` conversion from VP9 WebM often produces `yuv420p` output without alpha. Use a two-step process:
+
+### Step 1: WebM → ProRes 4444 (intermediate, preserves alpha)
+
+```bash
+ffmpeg -c:v libvpx-vp9 -i input.webm -c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le -an intermediate.mov
+```
+
+**CRITICAL**: The `-c:v libvpx-vp9` input decoder flag MUST come BEFORE `-i`. Without it, ffmpeg uses its default VP9 decoder which silently drops the alpha channel (produces `yuv420p` instead of `yuva420p`), resulting in black backgrounds. Verify the intermediate has alpha with:
+
+```bash
+python3 -c "from PIL import Image; img=Image.open('/dev/stdin'); print('Alpha:', img.split()[3].getextrema())" < <(ffmpeg -c:v libvpx-vp9 -i input.webm -vframes 1 -pix_fmt rgba -f image2pipe -vcodec png - 2>/dev/null)
+```
+
+### Step 2: ProRes 4444 → HEVC with Alpha (via Apple's avconvert)
+
+```bash
+avconvert --source intermediate.mov --output output.mov -p PresetHEVCHighestQualityWithAlpha
+```
+
+### Verification
+
+```bash
+# Should show "HEVC with Alpha"
+mdls -name kMDItemCodecs output.mov
+
+# Should show has_b_frames: 2, level: 120, color_space: bt709
+ffprobe -v quiet -show_streams output.mov
+```
+
+### Why not direct ffmpeg?
+
+- `ffmpeg -c:v hevc_videotoolbox -alpha_quality 1 -tag:v hvc1` often drops the alpha channel (outputs `yuv420p` instead of `yuva`)
+- Apple's `avconvert` is the only reliable way to produce HEVC with Alpha that WebKit renders correctly
+- The ProRes 4444 intermediate step ensures the alpha channel is preserved through the pipeline
+- ffmpeg's default VP9 decoder does NOT handle WebM alpha — you MUST use `-c:v libvpx-vp9` as input decoder

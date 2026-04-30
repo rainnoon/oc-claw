@@ -122,6 +122,12 @@
     "islandBgDesc": "背景画像を選択またはアップロードし、ドラッグで切り抜き範囲を選択",
 
     "sound": "サウンド",
+    "petSfx": "キャラクターボイス",
+    "petSfxDesc": "インタラクション時にキャラクターの声を再生",
+    "petBehavior": "動作",
+    "petIdleInterval": "ランダム動作の間隔",
+    "petIdleIntervalDesc": "アイドル中にランダムな動作が発生する頻度",
+    "minutesShort": "分",
     "completionSound": "完了サウンド",
     "completionSoundDesc": "タスク完了時に再生するサウンド",
     "defaultSound": "デフォルト",
@@ -156,6 +162,12 @@
     "checkUpdate": "アップデートを確認",
     "exitApp": "アプリを終了",
 
+    "appMode": "モード",
+    "codingMode": "コーディングモード",
+    "codingModeDesc": "マルチエージェント監視、トークン統計＆タスク通知",
+    "petMode": "ペットモード",
+    "petModeDesc": "豊富なアクション、育成システム＆インタラクティブ",
+
     "language": "言語",
     "languageDesc": "表示言語を選択",
     "langZh": "中文",
@@ -164,6 +176,33 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "onboarding": {
+    "chooseModeTitle": "モードを選択",
+    "chooseModeSubtitle": "設定からいつでもモードを切り替えられます。",
+    "codingModeLongDesc": "AIエージェントを監視。マスコットにホバーして状態・セッション・活動を確認。",
+    "petModeLongDesc": "デスクトップペットを育成！餌やり・遊び・豊富なアニメで親密度アップ。"
+  },
+
+  "pet": {
+    "dailyGift": "デイリーギフト",
+    "claimed": "受取済み",
+    "actions": "アクション",
+    "shop": "ショップ",
+    "stop": "ストップ",
+    "pomodoro": "ポモドーロ",
+    "quit": "終了",
+    "sleep": "スリープ",
+    "watch": "動画視聴",
+    "music": "音楽",
+    "walk": "お散歩",
+    "milktea": "ミルクティー",
+    "spin": "スピン",
+    "dance": "ダンス",
+    "pat": "なでなで",
+    "min": "分",
+    "go": "GO"
   },
 
   "character": {

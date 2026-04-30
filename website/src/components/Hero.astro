@@ -15,13 +15,19 @@ const { lang = 'en' } = Astro.props;
     <h1>OC-Claw</h1>
   </div>
   <div class="btn-wrap">
-    <a id="download-btn" href="https://github.com/rainnoon/oc-claw/releases/download/v1.8.0/oc-claw_1.8.0_aarch64.dmg" class="btn" download>
+    <a id="download-btn" href="https://github.com/rainnoon/oc-claw/releases/download/v1.8.1/oc-claw_1.8.1_aarch64.dmg" class="btn" download>
       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
         <polyline points="7 10 12 15 17 10"/>
         <line x1="12" y1="15" x2="12" y2="3"/>
       </svg>
       <span id="download-label">{tr(lang, 'hero.download.mac')}</span>
+    </a>
+    <a href="https://github.com/rainnoon/oc-claw" target="_blank" rel="noopener" class="btn btn-secondary">
+      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+      </svg>
+      <span>{tr(lang, 'hero.star')}</span>
     </a>
   </div>
   <p class="tagline" id="hero-tagline">{tr(lang, 'hero.tagline')}</p>
@@ -69,7 +75,7 @@ const { lang = 'en' } = Astro.props;
     const btn = document.getElementById('download-btn');
     const label = document.getElementById('download-label');
     if (btn && label && navigator.userAgent.includes('Windows')) {
-      btn.setAttribute('href', 'https://github.com/rainnoon/oc-claw/releases/download/v1.6.2/oc-claw_1.6.2_x64-setup.exe');
+      btn.setAttribute('href', 'https://github.com/rainnoon/oc-claw/releases/download/v1.8.1/oc-claw_1.8.1_x64-setup.exe');
       label.textContent = winLabel;
       const mockup = document.querySelector('.v6-macbook');
       if (mockup) mockup.style.display = 'none';

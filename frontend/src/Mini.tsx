@@ -14,6 +14,18 @@ import { ClaudeStatsView } from './components/ClaudeStatsView'
 import { getStore, DEFAULT_CHAR, DEFAULT_CHAR_NAME, loadCharacters, loadOcConnections, saveOcConnections } from './lib/store'
 import { saveAgentCharMap } from './lib/agents'
 import type { AgentMetrics, OcConnection } from './lib/types'
+import { OnboardingModal } from './components/OnboardingModal'
+import { PetContextMenu, PomodoroOverlay } from './components/PetContextMenu'
+import {
+  type AppMode, type PetData, type PetAction, type PomodoroState,
+  loadAppMode, saveAppMode, loadPetData, savePetData, tickPetData,
+  loadAppModeVersion, saveAppModeVersion, isAppModeOnboardingStale,
+  APP_MODE_ONBOARDING_VERSION,
+  defaultPetData, getAffectionTier, canWalk,
+  POMODORO_COINS_PER_MIN, AFFECTION_ACTIVITY_PER_10MIN, AFFECTION_MAX,
+  HUNGER_ACTIVITY_PER_HOUR, HUNGER_OFFLINE_FLOOR,
+  applyHeadpat,
+} from './lib/petStore'
 
 interface CharacterMeta {
   name: string
@@ -23,6 +35,7 @@ interface CharacterMeta {
   restGifs: string[]
   miniActions?: Record<string, string[]>
   largeActions?: Record<string, string>
+  audioMap?: Record<string, string>
 }
 
 interface AgentInfo {
@@ -85,10 +98,28 @@ const MASCOT_BASE_SIZE = 43
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
-const LARGE_ACTION_DISPLAY_MS = 3_000
-const LARGE_DAILY_ANGRY_LIMIT = 10
-const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 1.8
-const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.5
+const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'spin', 'milktea', 'walkout']
+
+// Priority: higher number = harder to interrupt
+function petActionPriority(action: PetAction): number {
+  switch (action) {
+    case 'grasp': return 100
+    case 'study': case 'work': return 90
+    case 'peek': case 'walkout': return 75
+    case 'hungry': return 70
+    case 'watch': return 50
+    case 'music': return 40
+    default: return 0
+  }
+}
+// Hitbox ratio for large mascot interactions.
+// Keep in sync with Rust `pet_passthrough_poll` so cursor shape and click
+// interactivity don't disagree at the mascot edge.
+const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 2.4
+const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.8
+// Peek hit-area width as a fraction of the mascot visual size. Shared by the
+// click hitbox check and the visual cursor strip so they always agree.
+const PEEK_HIT_WIDTH_RATIO = 0.5
 const MOVE_DRAG_THRESHOLD = 1
 
 function clampMascotScale(value: number): number {
@@ -304,7 +335,39 @@ function getMiniGif(char: CharacterMeta | undefined, petState: PetState | boolea
   return idleGifs[0] || allGifs[0]
 }
 
-type LargePetAction = 'work' | 'rest' | 'question' | 'grasp' | 'shy' | 'angry'
+type LargePetAction = 'work' | 'rest' | 'question' | 'grasp' | 'spin' | 'angry'
+
+// Pet mode action → largeActions video key mapping
+const PET_ACTION_VIDEO_MAP: Record<PetAction, string> = {
+  idle: 'idle',
+  sleep: 'rest',
+  work: 'work',
+  study: 'study',
+  watch: 'watch',
+  music: 'music',
+  walk: 'walk',
+  dance: 'dance',
+  eat: 'eat',
+  hungry: 'hungry',
+  headpat: 'headpat',
+  farewell: 'farewell',
+  grasp: 'grasp',
+  angry: 'angry',
+  spin: 'spin',
+  milktea: 'milktea',
+  rest: 'rest',
+  peek: 'peek',
+  walkout: 'walkout',
+}
+
+function getLargeVideoPetMode(char: CharacterMeta | undefined, petAction: PetAction, fallbackLargeActions?: Record<string, string>): string | undefined {
+  const la = char?.largeActions && Object.keys(char.largeActions).length > 0
+    ? char.largeActions
+    : fallbackLargeActions
+  if (!la || Object.keys(la).length === 0) return undefined
+  const key = PET_ACTION_VIDEO_MAP[petAction] || 'idle'
+  return la[key] || la['idle'] || la['rest'] || Object.values(la)[0]
+}
 
 function getLargeVideo(char: CharacterMeta | undefined, petState: PetState, overrideAction: string | null, fallbackLargeActions?: Record<string, string>): string | undefined {
   const la = char?.largeActions && Object.keys(char.largeActions).length > 0
@@ -317,11 +380,13 @@ function getLargeVideo(char: CharacterMeta | undefined, petState: PetState, over
   return la['rest'] || la['work']
 }
 
-function getLargeVideoType(url: string): string | undefined {
-  const lower = url.split('?')[0].split('#')[0].toLowerCase()
-  if (lower.endsWith('.mov')) return 'video/quicktime; codecs="hvc1"'
-  if (lower.endsWith('.mp4')) return 'video/mp4; codecs="hvc1"'
-  if (lower.endsWith('.webm')) return 'video/webm; codecs="vp9"'
+function getAlternateLargeVideoUrl(url: string): string | undefined {
+  if (url.includes('/large/webm/') && url.endsWith('.webm')) {
+    return url.replace('/large/webm/', '/large/mov/').replace(/\.webm$/, '.mov')
+  }
+  if (url.includes('/large/mov/') && url.endsWith('.mov')) {
+    return url.replace('/large/mov/', '/large/webm/').replace(/\.mov$/, '.webm')
+  }
   return undefined
 }
 
@@ -605,30 +670,36 @@ export default function Mini() {
     [resolveClaudeStatsSource],
   )
 
+  const isWindowsPlatform = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+
   // Feature toggles
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
-  const [enableCodex, setEnableCodex] = useState(true)
-  const [enableCursor, setEnableCursor] = useState(true)
+  const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
+  const [enableCursor, setEnableCursor] = useState(!isWindowsPlatform)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
+  const [petSfxEnabled, setPetSfxEnabled] = useState(true)
+  const petSfxEnabledRef = useRef(true)
+  // Pet mode: random idle action trigger interval, in minutes (0.5 – 30, default 2).
+  const [petIdleIntervalMin, setPetIdleIntervalMin] = useState(2)
+  const petIdleIntervalMinRef = useRef(2)
+  useEffect(() => { petIdleIntervalMinRef.current = petIdleIntervalMin }, [petIdleIntervalMin])
   const [autoExpandOnTask, setAutoExpandOnTask] = useState(true)
   const [disableSleepAnim, setDisableSleepAnim] = useState(true)
   const [largeMascot, setLargeMascot] = useState(false)
   const largeMascotRef = useRef(false)
   largeMascotRef.current = largeMascot
-  const [largeMascotScale, setLargeMascotScale] = useState(3)
-  const largeMascotScaleRef = useRef(3)
+  const [largeMascotScale, setLargeMascotScale] = useState(5)
+  const largeMascotScaleRef = useRef(5)
   largeMascotScaleRef.current = largeMascotScale
   const [largePetAction, setLargePetAction] = useState<LargePetAction | null>(null)
   const largePetActionRef = useRef<LargePetAction | null>(null)
   largePetActionRef.current = largePetAction
   const largeActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const largeDailyAngryCountRef = useRef(0)
-  const largeDailyAngryDateRef = useRef('')
   const [panelMaxHeight, setPanelMaxHeight] = useState(300)
   const panelMaxHeightRef = useRef(300)
   panelMaxHeightRef.current = panelMaxHeight
@@ -659,6 +730,82 @@ export default function Mini() {
     isCreateModalOpenRef.current = v
     _setIsCreateModalOpen(v)
   }
+  // ─── Pet / Nurture mode state ───
+  const [appMode, setAppMode] = useState<AppMode | null>(null)
+  const appModeRef = useRef<AppMode | null>(null)
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [petData, setPetData] = useState<PetData>(defaultPetData())
+  const petDataRef = useRef<PetData>(defaultPetData())
+  petDataRef.current = petData
+  const [currentPetAction, setCurrentPetAction] = useState<PetAction>('idle')
+  const currentPetActionRef = useRef<PetAction>('idle')
+  currentPetActionRef.current = currentPetAction
+  const [walkFlipped, setWalkFlipped] = useState(false)
+  const walkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const walkAutoRef = useRef(false)
+  // When true, auto-walk heads straight to a screen edge (no flipping)
+  const walkToEdgeRef = useRef(false)
+  // 'left' = peeking from left edge (video flipped), 'right' = right edge
+  const peekEdgeRef = useRef<'left' | 'right'>('right')
+  const [pomodoro, setPomodoro] = useState<PomodoroState | null>(null)
+  const pomodoroRef = useRef<PomodoroState | null>(null)
+  pomodoroRef.current = pomodoro
+  const pomodoroIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const petTickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const activityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [petContextMenuOpen, setPetContextMenuOpen] = useState(false)
+  const petContextMenuOpenRef = useRef(false)
+  const petContextMenuTransitionRef = useRef(false)
+  const [petMenuSide, setPetMenuSide] = useState<'left' | 'right'>('left')
+  // Pet-mode window inner width when the right-side menu is NOT open.
+  // The mascot anchors to `left: petBaseWinW - mascotW` so its on-screen
+  // position stays put even when the window widens for the menu. On
+  // high-DPI Windows the actual window is wider than `mascotW + 180`
+  // (because of `win_ui_scale`), so we cannot hard-code 180 here.
+  const [petBaseWinW, setPetBaseWinW] = useState<number | null>(null)
+  const petBaseWinWRef = useRef<number | null>(null)
+  useEffect(() => { petBaseWinWRef.current = petBaseWinW }, [petBaseWinW])
+
+  useEffect(() => {
+    if (!isWindowsPlatform || appMode !== 'coding' || !largeMascot) return
+    // Windows coding mode: disable large mascot to avoid close-time disappear regressions.
+    setLargeMascot(false)
+    largeMascotRef.current = false
+    load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+      await store.set('large_mascot', false)
+      await store.save()
+    }).catch(() => {})
+  }, [isWindowsPlatform, appMode, largeMascot])
+
+  // Food rain effect (lives outside context menu so it persists after menu closes)
+  interface FoodRainDrop { id: number; emoji: string; x: number; delay: number; duration: number; size: number }
+  const [foodRainDrops, setFoodRainDrops] = useState<FoodRainDrop[]>([])
+  const foodRainIdRef = useRef(0)
+
+  // Capture the pet-mode window's "no-menu" inner width. The mascot's
+  // CSS `left:` is derived from this so it stays put when the right-side
+  // context menu temporarily widens the window.
+  useEffect(() => {
+    if (!(appMode === 'pet' && largeMascot)) {
+      setPetBaseWinW(null)
+      return
+    }
+    const update = () => {
+      if (petContextMenuOpenRef.current || petContextMenuTransitionRef.current) return
+      const w = window.innerWidth || 0
+      if (w > 0) setPetBaseWinW(w)
+    }
+    const id1 = requestAnimationFrame(() => requestAnimationFrame(update))
+    const id2 = window.setTimeout(update, 200)
+    window.addEventListener('resize', update)
+    return () => {
+      cancelAnimationFrame(id1)
+      window.clearTimeout(id2)
+      window.removeEventListener('resize', update)
+    }
+  }, [appMode, largeMascot])
+
+
   const [hiding, setHiding] = useState(false)
   const [pinned, setPinned] = useState(false)
   const pinnedRef = useRef(false)
@@ -720,6 +867,701 @@ export default function Mini() {
     }
   }, [loadMiniChar])
 
+  // Pet mode data loaded inside main init effect below (no separate effect)
+
+  // React to hunger changes (e.g. from Dev slider) — switch to/from hungry
+  useEffect(() => {
+    if (appMode !== 'pet') return
+    if (petData.hunger < 30 && petActionPriority(currentPetAction) < petActionPriority('hungry')) {
+      setCurrentPetAction('hungry')
+      currentPetActionRef.current = 'hungry'
+    } else if (petData.hunger >= 30 && currentPetAction === 'hungry') {
+      setCurrentPetAction('idle')
+      currentPetActionRef.current = 'idle'
+    }
+  }, [appMode, petData.hunger])
+
+  // Pet mode: periodic tick for hunger/affection decay (every 5 min)
+  useEffect(() => {
+    if (appMode !== 'pet') return
+    const tick = async () => {
+      const ticked = tickPetData(petDataRef.current)
+      setPetData(ticked)
+      petDataRef.current = ticked
+      await savePetData(ticked)
+      // Auto-select hungry animation when hunger drops (overrides lower-priority actions)
+      if (ticked.hunger < 30 && petActionPriority(currentPetActionRef.current) < petActionPriority('hungry')) {
+        setCurrentPetAction('hungry')
+        currentPetActionRef.current = 'hungry'
+      }
+    }
+    petTickIntervalRef.current = setInterval(tick, 5 * 60 * 1000)
+    return () => {
+      if (petTickIntervalRef.current) clearInterval(petTickIntervalRef.current)
+    }
+  }, [appMode])
+
+  // Pet mode always forces large mascot
+  useEffect(() => {
+    if (appMode === 'pet' && !largeMascot) {
+      setLargeMascot(true)
+      largeMascotRef.current = true
+      load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
+        await store.set('large_mascot', true)
+        await store.save()
+      })
+    }
+  }, [appMode, largeMascot])
+
+  // Pet mode: check system idle time → rest (5min no activity & no media) or idle
+  const idleCheckRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Shared now-playing cache/lock for pet-mode polling.
+  // We have two loops querying media state (2s media auto-detect + 10s idle check).
+  // Without a shared busy guard, slow backend responses can overlap and pile up,
+  // which can cause noticeable startup stutter on macOS.
+  const nowPlayingBusyRef = useRef(false)
+  const nowPlayingCachedRef = useRef<'none' | 'music' | 'video'>('none')
+  const nowPlayingCachedAtRef = useRef(0)
+  const getNowPlayingSafe = useCallback(async (maxAgeMs: number): Promise<'none' | 'music' | 'video'> => {
+    const now = Date.now()
+    if (maxAgeMs > 0 && now - nowPlayingCachedAtRef.current <= maxAgeMs) {
+      return nowPlayingCachedRef.current
+    }
+    if (nowPlayingBusyRef.current) {
+      return nowPlayingCachedRef.current
+    }
+    nowPlayingBusyRef.current = true
+    try {
+      const media = await invoke<string>('get_now_playing')
+      const normalized: 'none' | 'music' | 'video' =
+        media === 'video' ? 'video' : media === 'music' ? 'music' : 'none'
+      nowPlayingCachedRef.current = normalized
+      nowPlayingCachedAtRef.current = Date.now()
+      return normalized
+    } catch {
+      return nowPlayingCachedRef.current
+    } finally {
+      nowPlayingBusyRef.current = false
+    }
+  }, [])
+  useEffect(() => {
+    if (idleCheckRef.current) { clearInterval(idleCheckRef.current); idleCheckRef.current = null }
+    if (appMode !== 'pet') return
+    const check = async () => {
+      const cur = currentPetActionRef.current
+      if (petActionPriority(cur) >= petActionPriority('hungry')) return
+      if (TRANSIENT_PET_ACTIONS.includes(cur)) return
+      if (cur === 'walk' || cur === 'peek' || cur === 'walkout' || cur === 'grasp') return
+      try {
+        const [idleSec, media] = await Promise.all([
+          invoke<number>('get_system_idle_time'),
+          getNowPlayingSafe(4_000),
+        ])
+        const hasMedia = media === 'music' || media === 'video'
+        const userInactive = idleSec >= 300 && !hasMedia
+        if (userInactive && cur !== 'rest') {
+          setCurrentPetAction('rest')
+          currentPetActionRef.current = 'rest'
+        } else if (!userInactive && cur === 'rest') {
+          setCurrentPetAction('idle')
+          currentPetActionRef.current = 'idle'
+        }
+      } catch {}
+    }
+    check()
+    idleCheckRef.current = setInterval(check, 10_000)
+    return () => { if (idleCheckRef.current) clearInterval(idleCheckRef.current) }
+  }, [appMode, getNowPlayingSafe])
+
+  // Pet mode: while idle, randomly trigger weighted actions on a user-tunable
+  // interval (default 2 min, range 0.5–30 min). Keep spin out of the random
+  // pool; spin is reserved for high-affection click.
+  const idleAutoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (idleAutoTimerRef.current) {
+      clearTimeout(idleAutoTimerRef.current)
+      idleAutoTimerRef.current = null
+    }
+    if (appMode !== 'pet' || currentPetAction !== 'idle' || petActionPriority(currentPetAction) > 0) return
+    const intervalMs = Math.max(30_000, Math.round(petIdleIntervalMin * 60_000))
+    idleAutoTimerRef.current = setTimeout(() => {
+      if (currentPetActionRef.current !== 'idle' || petActionPriority(currentPetActionRef.current) > 0) return
+      const weightedIdleActions: PetAction[] = ['walk', 'milktea', 'dance', 'dance']
+      let next = weightedIdleActions[Math.floor(Math.random() * weightedIdleActions.length)]
+      if (next === 'walk' && !canWalk(petDataRef.current)) {
+        next = 'milktea'
+      }
+      if (next === 'walk') {
+        walkAutoRef.current = true
+        walkToEdgeRef.current = Math.random() > 0.5
+      }
+      setCurrentPetAction(next)
+      currentPetActionRef.current = next
+    }, intervalMs)
+    return () => {
+      if (idleAutoTimerRef.current) clearTimeout(idleAutoTimerRef.current)
+    }
+  }, [appMode, currentPetAction, petIdleIntervalMin])
+
+  // Pet mode: safety timeout for transient actions (recover from stuck states)
+  const transientTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (transientTimeoutRef.current) { clearTimeout(transientTimeoutRef.current); transientTimeoutRef.current = null }
+    if (appMode !== 'pet' || !TRANSIENT_PET_ACTIONS.includes(currentPetAction)) return
+    transientTimeoutRef.current = setTimeout(() => {
+      if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
+        console.warn('[pet] transient action timed out:', currentPetActionRef.current)
+        const d = petDataRef.current
+        const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+        setCurrentPetAction(next)
+        currentPetActionRef.current = next
+      }
+    }, 15_000)
+    return () => { if (transientTimeoutRef.current) clearTimeout(transientTimeoutRef.current) }
+  }, [appMode, currentPetAction])
+
+  // Pet mode always uses the builtin mascot character assets.
+  const PET_BUILTIN_BASE = '/assets/builtin/香企鹅'
+  const preferWebmLarge = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+  const largeFolder = preferWebmLarge ? 'webm' : 'mov'
+  const largeExt = preferWebmLarge ? 'webm' : 'mov'
+  const petBuiltinLargeActions = useMemo<Record<string, string>>(() => ({
+    idle: `${PET_BUILTIN_BASE}/large/${largeFolder}/idle.${largeExt}`,
+    hungry: `${PET_BUILTIN_BASE}/large/${largeFolder}/hungry.${largeExt}`,
+    eat: `${PET_BUILTIN_BASE}/large/${largeFolder}/eat.${largeExt}`,
+    walk: `${PET_BUILTIN_BASE}/large/${largeFolder}/walk.${largeExt}`,
+    walkout: `${PET_BUILTIN_BASE}/large/${largeFolder}/walkout.${largeExt}`,
+    peek: `${PET_BUILTIN_BASE}/large/${largeFolder}/peek.${largeExt}`,
+    headpat: `${PET_BUILTIN_BASE}/large/${largeFolder}/headpat.${largeExt}`,
+    grasp: `${PET_BUILTIN_BASE}/large/${largeFolder}/grasp.${largeExt}`,
+    angry: `${PET_BUILTIN_BASE}/large/${largeFolder}/angry.${largeExt}`,
+    question: `${PET_BUILTIN_BASE}/large/${largeFolder}/question.${largeExt}`,
+    farewell: `${PET_BUILTIN_BASE}/large/${largeFolder}/farewell.${largeExt}`,
+    watch: `${PET_BUILTIN_BASE}/large/${largeFolder}/watch.${largeExt}`,
+    music: `${PET_BUILTIN_BASE}/large/${largeFolder}/music.${largeExt}`,
+    dance: `${PET_BUILTIN_BASE}/large/${largeFolder}/dance.${largeExt}`,
+    study: `${PET_BUILTIN_BASE}/large/${largeFolder}/study.${largeExt}`,
+    work: `${PET_BUILTIN_BASE}/large/${largeFolder}/work.${largeExt}`,
+    rest: `${PET_BUILTIN_BASE}/large/${largeFolder}/rest.${largeExt}`,
+    milktea: `${PET_BUILTIN_BASE}/large/${largeFolder}/milktea.${largeExt}`,
+    spin: `${PET_BUILTIN_BASE}/large/${largeFolder}/spin.${largeExt}`,
+  }), [PET_BUILTIN_BASE, largeExt, largeFolder])
+
+  // Pet mode: play audio SFX mapped to pet actions via audio.json
+  const petAudioRef = useRef<HTMLAudioElement | null>(null)
+  const petAudioMapRef = useRef<Record<string, string> | null>(null)
+  useEffect(() => {
+    const jsonUrl = appMode === 'pet'
+      ? `${PET_BUILTIN_BASE}/audio.json`
+      : (() => {
+          if (!miniChar?.largeActions) return ''
+          const sampleUrl = Object.values(miniChar.largeActions)[0]
+          if (!sampleUrl) return ''
+          const baseDir = sampleUrl.replace(/\/large\/.*$/, '')
+          return `${baseDir}/audio.json`
+        })()
+    if (!jsonUrl) return
+    console.log('[pet-audio] fetching audio.json from:', jsonUrl)
+    fetch(jsonUrl)
+      .then(r => {
+        console.log('[pet-audio] fetch status:', r.status, r.ok)
+        return r.ok ? r.json() : null
+      })
+      .then((map: Record<string, string> | null) => {
+        if (!map) { console.warn('[pet-audio] audio.json empty or failed'); return }
+        const resolved: Record<string, string> = {}
+        const baseDir = jsonUrl.replace(/\/audio\.json$/, '')
+        for (const [action, file] of Object.entries(map)) {
+          resolved[action] = `${baseDir}/audio/${file}`
+        }
+        console.log('[pet-audio] loaded audioMap:', resolved)
+        petAudioMapRef.current = resolved
+      })
+      .catch(e => console.error('[pet-audio] fetch error:', e))
+  }, [miniChar, appMode])
+
+  const petSfxPlayingRef = useRef(false)
+  // Throttle grasp/drag audio: at most one play per 10s window so rapid
+  // re-grabs of the mascot don't spam the angry voice clip.
+  const lastGraspAudioAtRef = useRef(0)
+  const GRASP_AUDIO_THROTTLE_MS = 10_000
+  const playPetAudio = useCallback((action: PetAction) => {
+    if (appModeRef.current !== 'pet') return
+    if (!petSfxEnabledRef.current) return
+    if (action === 'grasp') {
+      const now = Date.now()
+      if (now - lastGraspAudioAtRef.current < GRASP_AUDIO_THROTTLE_MS) return
+      lastGraspAudioAtRef.current = now
+    }
+    const FALLBACK_AUDIO: Record<string, string> = {
+      angry: '/assets/builtin/香企鹅/audio/angry.mp3',
+      grasp: '/assets/builtin/香企鹅/audio/angry.mp3',
+      headpat: '/assets/builtin/香企鹅/audio/cute.mp3',
+      farewell: '/assets/builtin/香企鹅/audio/cute.mp3',
+      spin: '/assets/builtin/香企鹅/audio/happy.mp3',
+      walkout: '/assets/builtin/香企鹅/audio/happy.mp3',
+      eat: '/assets/builtin/香企鹅/audio/happy.mp3',
+    }
+    const map = petAudioMapRef.current || FALLBACK_AUDIO
+    const src = map[action]
+    if (!src) return
+    if (petAudioRef.current) {
+      petAudioRef.current.pause()
+      petAudioRef.current.currentTime = 0
+    }
+    const audio = new Audio(src)
+    audio.volume = 0.6
+    petAudioRef.current = audio
+    petSfxPlayingRef.current = true
+    audio.addEventListener('ended', () => { petSfxPlayingRef.current = false })
+    audio.addEventListener('pause', () => { petSfxPlayingRef.current = false })
+    audio.addEventListener('error', () => { petSfxPlayingRef.current = false })
+    audio.play().catch(() => { petSfxPlayingRef.current = false })
+  }, [])
+
+  // Pet mode: activity affection gain (watch/music: +1 per 10 min)
+  useEffect(() => {
+    if (appMode !== 'pet') return
+    if (currentPetAction !== 'watch' && currentPetAction !== 'music') {
+      if (activityTimerRef.current) clearInterval(activityTimerRef.current)
+      activityTimerRef.current = null
+      return
+    }
+    activityTimerRef.current = setInterval(async () => {
+      const d = { ...petDataRef.current }
+      d.affection = Math.min(AFFECTION_MAX, d.affection + AFFECTION_ACTIVITY_PER_10MIN)
+      d.hunger = Math.max(HUNGER_OFFLINE_FLOOR, d.hunger - HUNGER_ACTIVITY_PER_HOUR / 6)
+      setPetData(d)
+      petDataRef.current = d
+      await savePetData(d)
+    }, 10 * 60 * 1000)
+    return () => {
+      if (activityTimerRef.current) clearInterval(activityTimerRef.current)
+    }
+  }, [appMode, currentPetAction])
+
+  // Pet mode: randomly trigger dance during music (avg every ~5 min)
+  const musicDanceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const danceFromMusicRef = useRef(false)
+  useEffect(() => {
+    if (musicDanceTimerRef.current) {
+      clearInterval(musicDanceTimerRef.current)
+      musicDanceTimerRef.current = null
+    }
+    if (appMode !== 'pet' || currentPetAction !== 'music') return
+    musicDanceTimerRef.current = setInterval(() => {
+      if (currentPetActionRef.current !== 'music') return
+      if (Math.random() < 0.1) {
+        danceFromMusicRef.current = true
+        setCurrentPetAction('dance')
+        currentPetActionRef.current = 'dance'
+      }
+    }, 30_000)
+    return () => {
+      if (musicDanceTimerRef.current) clearInterval(musicDanceTimerRef.current)
+    }
+  }, [appMode, currentPetAction])
+
+  // Walk animation: move the window and flip direction every 3 seconds.
+  // In "walk to edge" mode, walk straight to the nearest screen edge → peek.
+  useEffect(() => {
+    if (walkTimerRef.current) {
+      clearInterval(walkTimerRef.current)
+      walkTimerRef.current = null
+    }
+    if (currentPetAction !== 'walk') {
+      setWalkFlipped(false)
+      return
+    }
+    const WALK_SPEED = 2
+    const WALK_INTERVAL = 30
+    const FLIP_AFTER = 3000
+    const AUTO_WALK_DURATION = 6000
+    const isAuto = walkAutoRef.current
+    const isToEdge = walkToEdgeRef.current
+    walkAutoRef.current = false
+    walkToEdgeRef.current = false
+    let elapsed = 0
+    let totalElapsed = 0
+    let direction = -1
+    let edgeDirection = 0
+    let edgeCheckCounter = 0
+    setWalkFlipped(false)
+
+    if (isToEdge) {
+      // Determine which edge is closer, then walk toward it
+      Promise.all([
+        invoke('get_mini_origin'),
+        invoke('get_mini_monitor_rect'),
+      ]).then(([pos, rect]) => {
+        const [x] = pos as [number, number]
+        const [monitorX, , monitorW] = rect as [number, number, number, number]
+        const monitorLeft = monitorX
+        const monitorRight = monitorX + monitorW
+        const baseWinW = petBaseWinWRef.current ?? window.innerWidth ?? 300
+        const mascotW = largeMascotRef.current
+          ? MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+          : MASCOT_BASE_SIZE * mascotScaleRef.current
+        const mascotLeft = x + baseWinW - mascotW
+        const mascotRight = x + baseWinW
+        const distLeft = mascotLeft - monitorLeft
+        const distRight = monitorRight - mascotRight
+        edgeDirection = distLeft <= distRight ? -1 : 1
+        setWalkFlipped(edgeDirection === 1)
+      }).catch(() => {})
+    }
+
+    walkTimerRef.current = setInterval(() => {
+      elapsed += WALK_INTERVAL
+      totalElapsed += WALK_INTERVAL
+
+      if (isToEdge) {
+        // Walk straight toward the edge without flipping
+        const dir = edgeDirection || -1
+        invoke('move_mini_by', { dx: dir * WALK_SPEED, dy: 0 }).catch(() => {})
+      } else {
+        // Normal oscillating walk
+        if (isAuto && totalElapsed >= AUTO_WALK_DURATION) {
+          if (walkTimerRef.current) clearInterval(walkTimerRef.current)
+          walkTimerRef.current = null
+          const d = petDataRef.current
+          const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+          setCurrentPetAction(next)
+          currentPetActionRef.current = next
+          return
+        }
+        if (elapsed >= FLIP_AFTER) {
+          elapsed = 0
+          direction *= -1
+          setWalkFlipped(prev => !prev)
+        }
+        invoke('move_mini_by', { dx: direction * WALK_SPEED, dy: 0 }).catch(() => {})
+      }
+
+      // Check screen edge every ~300ms
+      edgeCheckCounter += WALK_INTERVAL
+      if (edgeCheckCounter >= 300) {
+        edgeCheckCounter = 0
+        Promise.all([
+          invoke('get_mini_origin'),
+          invoke('get_mini_monitor_rect'),
+        ]).then(([pos, rect]) => {
+          const [x] = pos as [number, number]
+          const [monitorX, , monitorW] = rect as [number, number, number, number]
+          const monitorLeft = monitorX
+          const monitorRight = monitorX + monitorW
+          const baseWinW = petBaseWinWRef.current ?? window.innerWidth ?? 300
+          const mascotW = largeMascotRef.current
+            ? MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+            : MASCOT_BASE_SIZE * mascotScaleRef.current
+          const mascotRight = x + baseWinW
+          const mascotLeft = x + baseWinW - mascotW
+          if (mascotLeft <= monitorLeft + EDGE_THRESHOLD) {
+            if (walkTimerRef.current) clearInterval(walkTimerRef.current)
+            walkTimerRef.current = null
+            peekEdgeRef.current = 'left'
+            setCurrentPetAction('peek')
+            currentPetActionRef.current = 'peek'
+            snapToPeekEdge('left', x, monitorLeft, monitorRight)
+          } else if (mascotRight >= monitorRight - EDGE_THRESHOLD) {
+            if (walkTimerRef.current) clearInterval(walkTimerRef.current)
+            walkTimerRef.current = null
+            peekEdgeRef.current = 'right'
+            setCurrentPetAction('peek')
+            currentPetActionRef.current = 'peek'
+            snapToPeekEdge('right', x, monitorLeft, monitorRight)
+          }
+        }).catch(() => {})
+      }
+    }, WALK_INTERVAL)
+    return () => {
+      if (walkTimerRef.current) clearInterval(walkTimerRef.current)
+    }
+  }, [currentPetAction])
+
+  // Pet mode: auto-detect music/video from frontmost app
+  useEffect(() => {
+    if (appMode !== 'pet') return
+    const poll = async () => {
+      if (petSfxPlayingRef.current) return
+      const cur = currentPetActionRef.current
+      // Don't interrupt user-initiated movement or transient animations.
+      // Without this guard, e.g. clicking "walk" while a video is playing
+      // gets clobbered back to "watch" within 2s, causing the mascot to
+      // walk-in-place / stutter and occasionally overshoot the screen edge.
+      // Higher-priority actions (study/work/grasp/peek/walkout/hungry) are
+      // already filtered by the priority check below.
+      if (cur === 'walk' || TRANSIENT_PET_ACTIONS.includes(cur)) return
+      const curPri = petActionPriority(cur)
+      if (curPri >= petActionPriority('hungry')) return
+      try {
+        const media = await getNowPlayingSafe(0)
+        if (media === 'video' && cur !== 'watch') {
+          setCurrentPetAction('watch')
+          currentPetActionRef.current = 'watch'
+        } else if (media === 'music' && cur !== 'music') {
+          setCurrentPetAction('music')
+          currentPetActionRef.current = 'music'
+        } else if (media === 'none' && (cur === 'music' || cur === 'watch')) {
+          const d = petDataRef.current
+          const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+          setCurrentPetAction(next)
+          currentPetActionRef.current = next
+        }
+      } catch {}
+    }
+    poll()
+    const id = setInterval(poll, 2000)
+    return () => clearInterval(id)
+  }, [appMode, getNowPlayingSafe])
+
+  const handleSelectAppMode = useCallback(async (mode: AppMode) => {
+    appModeRef.current = mode
+    await saveAppMode(mode)
+    // Record the onboarding version so we don't re-prompt this user until
+    // we bump APP_MODE_ONBOARDING_VERSION again.
+    await saveAppModeVersion(APP_MODE_ONBOARDING_VERSION)
+    if (mode === 'pet') {
+      largeMascotRef.current = true
+      const store = await load('settings.json', { defaults: {}, autoSave: true })
+      await store.set('large_mascot', true)
+      await store.save()
+      const data = await loadPetData()
+      const ticked = tickPetData(data)
+      petDataRef.current = ticked
+      await savePetData(ticked)
+      // When switching mode from inside Settings, keep the settings-sized window.
+      // Expanding to pet window size here compresses the settings UI for a few frames.
+      if (settingsModeRef.current || settingsTransitioningRef.current) {
+        setAppMode(mode)
+        setShowOnboarding(false)
+        setLargeMascot(true)
+        setPetData(ticked)
+        try {
+          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, keepOnTop: true })
+        } catch {}
+        return
+      }
+      // Hide window content before resizing to avoid flashing the
+      // onboarding modal at the wrong window dimensions.
+      document.documentElement.style.opacity = '0'
+      // Reposition window, then update React state, then fade in
+      await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: true, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      await invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      setAppMode(mode)
+      setShowOnboarding(false)
+      setLargeMascot(true)
+      setPetData(ticked)
+      // Wait for React to render the mascot and chroma key canvas to draw, then reveal.
+      // Windows needs extra frames for the canvas chroma key loop to process the first frame.
+      const reveal = () => { document.documentElement.style.opacity = '1' }
+      if (isWindowsPlatform) {
+        setTimeout(reveal, 150)
+      } else {
+        requestAnimationFrame(reveal)
+      }
+    } else {
+      setAppMode(mode)
+      setShowOnboarding(false)
+      if (isWindowsPlatform && mode === 'coding') {
+        setLargeMascot(false)
+        largeMascotRef.current = false
+        const store = await load('settings.json', { defaults: {}, autoSave: true })
+        await store.set('large_mascot', false)
+        await store.save()
+      }
+      // Leaving pet mode: stop the pass-through poll first.
+      await invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      // When switching mode from inside Settings, keep the settings-sized window.
+      // Shrinking to collapsed size here compresses the settings UI for a few frames.
+      if (settingsModeRef.current || settingsTransitioningRef.current) {
+        try {
+          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, keepOnTop: true })
+        } catch {}
+        return
+      }
+      // Restore window back to collapsed mascot size
+      try {
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+      } catch {}
+    }
+  }, [])
+
+  const handleUpdatePetData = useCallback(async (data: PetData) => {
+    setPetData(data)
+    petDataRef.current = data
+    await savePetData(data)
+  }, [])
+
+  const handleSetPetAction = useCallback((action: PetAction) => {
+    // During pomodoro only allow 'study' or explicit stop (which sets 'idle')
+    if (pomodoroRef.current?.active && action !== 'study' && action !== 'idle') return
+    if (action === 'walk') {
+      walkToEdgeRef.current = true
+    }
+    setCurrentPetAction(action)
+    currentPetActionRef.current = action
+  }, [])
+
+  // Check if the mascot is at a screen edge and switch to peek if so.
+  // Snaps window to a fixed position so the character protrudes by a
+  // consistent amount (PEEK_VISIBLE_FRACTION of the mascot width).
+  const PEEK_VISIBLE_FRACTION = 0.95
+  const EDGE_THRESHOLD = 30
+
+  const snapToPeekEdge = useCallback((edge: 'left' | 'right', currentX: number, monitorLeft: number, monitorRight: number) => {
+    const baseWinW = petBaseWinWRef.current ?? window.innerWidth ?? 300
+    const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+    const visibleW = mascotW * PEEK_VISIBLE_FRACTION
+    let targetX: number
+    if (edge === 'right') {
+      targetX = monitorRight - visibleW - baseWinW + mascotW
+    } else {
+      targetX = monitorLeft + visibleW - baseWinW
+    }
+    const dx = targetX - currentX
+    if (Math.abs(dx) > 1) {
+      invoke('move_mini_by', { dx: Math.round(dx), dy: 0 }).catch(() => {})
+    }
+  }, [])
+
+  const checkEdgeAndSetPeek = useCallback(() => {
+    Promise.all([
+      invoke('get_mini_origin'),
+      invoke('get_mini_monitor_rect'),
+    ]).then(([pos, rect]) => {
+      const [x] = pos as [number, number]
+      const [monitorX, , monitorW] = rect as [number, number, number, number]
+      const monitorLeft = monitorX
+      const monitorRight = monitorX + monitorW
+      const baseWinW = petBaseWinWRef.current ?? window.innerWidth ?? 300
+      const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+      const mascotRight = x + baseWinW
+      const mascotLeft = x + baseWinW - mascotW
+      if (mascotLeft <= monitorLeft + EDGE_THRESHOLD) {
+        peekEdgeRef.current = 'left'
+        setCurrentPetAction('peek')
+        currentPetActionRef.current = 'peek'
+        snapToPeekEdge('left', x, monitorLeft, monitorRight)
+      } else if (mascotRight >= monitorRight - EDGE_THRESHOLD) {
+        peekEdgeRef.current = 'right'
+        setCurrentPetAction('peek')
+        currentPetActionRef.current = 'peek'
+        snapToPeekEdge('right', x, monitorLeft, monitorRight)
+      } else {
+        const d = petDataRef.current
+        const action: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+        setCurrentPetAction(action)
+        currentPetActionRef.current = action
+      }
+    }).catch(() => {
+      const d = petDataRef.current
+      const action: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+      setCurrentPetAction(action)
+      currentPetActionRef.current = action
+    })
+  }, [snapToPeekEdge])
+
+  const handleStartPomodoro = useCallback(async (minutes: number) => {
+    const state: PomodoroState = {
+      active: true,
+      duration: minutes * 60,
+      remaining: minutes * 60,
+      startedAt: Date.now(),
+    }
+    setPomodoro(state)
+    pomodoroRef.current = state
+    setCurrentPetAction('study')
+    currentPetActionRef.current = 'study'
+
+    if (pomodoroIntervalRef.current) clearInterval(pomodoroIntervalRef.current)
+    pomodoroIntervalRef.current = setInterval(async () => {
+      const p = pomodoroRef.current
+      if (!p?.active) return
+      const elapsed = (Date.now() - p.startedAt) / 1000
+      const left = Math.max(0, p.duration - elapsed)
+      const earnedMinutes = Math.floor(elapsed / 60)
+      const prevEarned = petDataRef.current.pomodoroCoins
+      if (earnedMinutes > prevEarned) {
+        const d = { ...petDataRef.current }
+        const newCoins = earnedMinutes - prevEarned
+        d.coins += newCoins * POMODORO_COINS_PER_MIN
+        d.pomodoroCoins = earnedMinutes
+        setPetData(d)
+        petDataRef.current = d
+        await savePetData(d)
+      }
+      if (left <= 0) {
+        // Pomodoro complete
+        if (pomodoroIntervalRef.current) clearInterval(pomodoroIntervalRef.current)
+        pomodoroIntervalRef.current = null
+        // Play a cute completion cue for pet mode pomodoro.
+        playPetAudio('headpat')
+        setPomodoro(null)
+        pomodoroRef.current = null
+        setCurrentPetAction('idle')
+        currentPetActionRef.current = 'idle'
+        const d = { ...petDataRef.current, pomodoroCoins: 0 }
+        setPetData(d)
+        petDataRef.current = d
+        await savePetData(d)
+      }
+    }, 1000)
+  }, [])
+
+  const handleStopPomodoro = useCallback(async () => {
+    if (pomodoroIntervalRef.current) clearInterval(pomodoroIntervalRef.current)
+    pomodoroIntervalRef.current = null
+    setPomodoro(null)
+    pomodoroRef.current = null
+    setCurrentPetAction('idle')
+    currentPetActionRef.current = 'idle'
+    const d = { ...petDataRef.current, pomodoroCoins: 0 }
+    setPetData(d)
+    petDataRef.current = d
+    await savePetData(d)
+  }, [])
+
+  // Sync pomodoro-active flag to the native pass-through poll. While a
+  // pomodoro is running, the bottom-anchored stop button sits in the
+  // mascot's pass-through inset region; the backend needs to know to keep
+  // the whole window interactive so clicks don't leak to apps behind.
+  useEffect(() => {
+    const active = !!pomodoro?.active
+    invoke('set_pet_pomodoro_active', { active }).catch(() => {})
+  }, [pomodoro?.active])
+
+  const closePetContextMenu = useCallback(async () => {
+    if (!petContextMenuOpenRef.current || petContextMenuTransitionRef.current) return
+    petContextMenuTransitionRef.current = true
+    try {
+      setPetContextMenuOpen(false)
+      petContextMenuOpenRef.current = false
+      await invoke('set_pet_context_menu', { open: false }).catch(() => {})
+    } finally {
+      petContextMenuTransitionRef.current = false
+    }
+  }, [])
+
+  const triggerFoodRain = useCallback((emoji: string) => {
+    const drops: FoodRainDrop[] = Array.from({ length: 12 }, () => {
+      foodRainIdRef.current += 1
+      return {
+        id: foodRainIdRef.current,
+        emoji,
+        x: Math.random() * 100,
+        delay: Math.random() * 0.6,
+        duration: 1.2 + Math.random() * 0.8,
+        size: 18 + Math.random() * 14,
+      }
+    })
+    setFoodRainDrops(prev => [...prev, ...drops])
+    setTimeout(() => {
+      setFoodRainDrops(prev => prev.filter(d => !drops.includes(d)))
+    }, 2500)
+  }, [])
+
+
   useEffect(() => {
     load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
       _setViewMode('efficiency')
@@ -729,9 +1571,18 @@ export default function Mini() {
       const storedMascotScale = await store.get('mascot_scale')
       const initialMascotScale = typeof storedMascotScale === 'number' ? clampMascotScale(storedMascotScale) : 1
       const storedLargeMascot = await store.get('large_mascot')
-      const initialLargeMascot = typeof storedLargeMascot === 'boolean' ? storedLargeMascot : false
+      let initialLargeMascot = typeof storedLargeMascot === 'boolean' ? storedLargeMascot : false
       const storedLargeMascotScale = await store.get('large_mascot_scale')
-      const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(1, storedLargeMascotScale)) : 3
+      const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(4, storedLargeMascotScale)) : 5
+      const existingMode = await loadAppMode()
+      // Avoid startup flicker: decide large/small mascot from the persisted mode
+      // BEFORE applying initial React/native window state. Otherwise we briefly
+      // render the stored small mascot and then switch to large in pet mode.
+      if (existingMode === 'pet') {
+        initialLargeMascot = true
+      } else if (existingMode === 'coding' && isWindowsPlatform) {
+        initialLargeMascot = false
+      }
       setMascotPosition(initialMascotPosition)
       setMascotScale(initialMascotScale)
       setLargeMascot(initialLargeMascot)
@@ -740,7 +1591,67 @@ export default function Mini() {
       mascotScaleRef.current = initialMascotScale
       largeMascotRef.current = initialLargeMascot
       largeMascotScaleRef.current = initialLargeMascotScale
-      invoke('set_mini_expanded', { expanded: false, position: initialMascotPosition, efficiency: true, mascotScale: initialMascotScale, largeMascot: initialLargeMascot, largeMascotScale: initialLargeMascotScale }).catch(() => {})
+
+      const existingModeVersion = await loadAppModeVersion()
+      // Force re-onboarding when the stored version is missing or older
+      // than APP_MODE_ONBOARDING_VERSION (e.g. after we ship changes that
+      // require users to re-confirm their mode choice).
+      const onboardingStale = isAppModeOnboardingStale(existingModeVersion)
+      if (!onboardingStale && (existingMode === 'pet' || existingMode === 'coding')) {
+        setAppMode(existingMode)
+        appModeRef.current = existingMode
+        setShowOnboarding(false)
+        if (existingMode === 'pet') {
+          const data = await loadPetData()
+          const ticked = tickPetData(data)
+          setPetData(ticked)
+          petDataRef.current = ticked
+          await savePetData(ticked)
+          // Keep persisted setting aligned with pet mode for next startup.
+          await store.set('large_mascot', true)
+        } else if (isWindowsPlatform) {
+          // Windows coding mode: force small mascot for stability.
+          initialLargeMascot = false
+          setLargeMascot(false)
+          largeMascotRef.current = false
+          await store.set('large_mascot', false)
+        }
+        await invoke('set_mini_expanded', {
+          expanded: false,
+          position: initialMascotPosition,
+          efficiency: true,
+          mascotScale: initialMascotScale,
+          largeMascot: existingMode === 'pet' ? true : initialLargeMascot,
+          largeMascotScale: initialLargeMascotScale,
+        }).catch(() => {})
+        if (existingMode === 'pet') {
+          await invoke('set_pet_mode_window', {
+            active: true,
+            mascotScale: initialMascotScale,
+            largeMascotScale: initialLargeMascotScale,
+          }).catch(() => {})
+        } else {
+          invoke('set_pet_mode_window', {
+            active: false,
+            mascotScale: initialMascotScale,
+            largeMascotScale: initialLargeMascotScale,
+          }).catch(() => {})
+        }
+      } else {
+        // First launch (or mode not chosen yet): show mode onboarding.
+        setAppMode(null)
+        appModeRef.current = null
+        try {
+          await invoke('set_mini_size', {
+            restore: false,
+            position: initialMascotPosition,
+            keepOnTop: true,
+            mascotScale: initialMascotScale,
+          })
+        } catch {}
+        setShowOnboarding(true)
+      }
+
       await store.set('view_mode', 'efficiency')
       // Force-reset mascot custom position to avoid off-screen placement.
       // Keep collapsed default placement controlled by `set_mini_expanded`.
@@ -1042,6 +1953,7 @@ export default function Mini() {
   }, [agents])
 
   useEffect(() => {
+    if (appMode !== 'coding') return
     fetchAgents()
     pollHealth()
     const a = setInterval(fetchAgents, 5000)
@@ -1050,7 +1962,7 @@ export default function Mini() {
       clearInterval(a)
       clearInterval(h)
     }
-  }, [fetchAgents, pollHealth])
+  }, [fetchAgents, pollHealth, appMode])
 
   // Update allSessions active states from pollHealth session data
   const syncSessionActiveStates = useCallback(() => {
@@ -1123,7 +2035,7 @@ export default function Mini() {
   }, [playOcCompletionSound])
 
   useEffect(() => {
-    if (!expanded) return
+    if (!expanded || appMode !== 'coding') return
     fetchAllSessions().then(() => drainPreviewQueue())
     const t1 = setInterval(() => {
       fetchAllSessions().then(() => drainPreviewQueue())
@@ -1135,7 +2047,7 @@ export default function Mini() {
         previewTimerRef.current = null
       }
     }
-  }, [expanded, fetchAllSessions, drainPreviewQueue])
+  }, [expanded, fetchAllSessions, drainPreviewQueue, appMode])
 
   // Load feature toggles
   useEffect(() => {
@@ -1144,11 +2056,18 @@ export default function Mini() {
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
       const cod = await store.get('enable_codex')
-      setEnableCodex(cod !== false)
-      if (cc !== false || cod !== false) invoke('install_claude_hooks').catch(() => {})
+      const codEnabled = isWindowsPlatform ? false : cod !== false
+      setEnableCodex(codEnabled)
+      if (cc !== false || codEnabled) invoke('install_claude_hooks').catch(() => {})
       const cur = await store.get('enable_cursor')
-      setEnableCursor(cur !== false)
-      if (cur !== false) invoke('install_cursor_hooks').catch(() => {})
+      const curEnabled = isWindowsPlatform ? false : cur !== false
+      setEnableCursor(curEnabled)
+      if (curEnabled) invoke('install_cursor_hooks').catch(() => {})
+      if (isWindowsPlatform) {
+        await store.set('enable_codex', false)
+        await store.set('enable_cursor', false)
+        await store.save()
+      }
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
       const codsnd = await store.get('codex_sound_enabled')
@@ -1161,6 +2080,14 @@ export default function Mini() {
       if (typeof ws === 'boolean') setWaitingSound(ws)
       const acc = await store.get('auto_close_completion')
       if (typeof acc === 'boolean') setAutoCloseCompletion(acc)
+      const psfx = await store.get('pet_sfx_enabled')
+      if (typeof psfx === 'boolean') { setPetSfxEnabled(psfx); petSfxEnabledRef.current = psfx }
+      const piim = await store.get('pet_idle_interval_min')
+      if (typeof piim === 'number' && Number.isFinite(piim)) {
+        const clamped = Math.min(30, Math.max(0.5, piim))
+        setPetIdleIntervalMin(clamped)
+        petIdleIntervalMinRef.current = clamped
+      }
       const aet = await store.get('auto_expand_on_task')
       if (typeof aet === 'boolean') {
         setAutoExpandOnTask(aet)
@@ -1169,13 +2096,14 @@ export default function Mini() {
       const dsa = await store.get('disable_sleep_anim')
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const lm = await store.get('large_mascot')
-      if (typeof lm === 'boolean') {
-        setLargeMascot(lm)
-        largeMascotRef.current = lm
+      if (typeof lm === 'boolean' && appModeRef.current !== 'pet') {
+        const largeEnabled = isWindowsPlatform && appModeRef.current === 'coding' ? false : lm
+        setLargeMascot(largeEnabled)
+        largeMascotRef.current = largeEnabled
       }
       const lms = await store.get('large_mascot_scale')
       if (typeof lms === 'number') {
-        const clamped = Math.min(6, Math.max(1, lms))
+        const clamped = Math.min(6, Math.max(4, lms))
         setLargeMascotScale(clamped)
         largeMascotScaleRef.current = clamped
       }
@@ -1213,6 +2141,7 @@ export default function Mini() {
 
   // Poll Claude/Codex/Cursor sessions
   useEffect(() => {
+    if (appMode !== 'coding') { setClaudeSessions([]); return }
     if (!(enableClaudeCode || enableCodex || enableCursor)) {
       setClaudeSessions([])
       return
@@ -1259,7 +2188,7 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode, enableCodex, enableCursor])
+  }, [enableClaudeCode, enableCodex, enableCursor, appMode])
 
   // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
@@ -1278,6 +2207,7 @@ export default function Mini() {
   autoExpandOnTaskRef.current = autoExpandOnTask
   const autoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
+    if (appMode !== 'coding') return
     if (!(enableClaudeCode || enableCodex || enableCursor)) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
       if (ev.payload?.waiting && viewModeRef.current === 'efficiency' && autoExpandOnTaskRef.current) {
@@ -1301,7 +2231,7 @@ export default function Mini() {
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [enableClaudeCode, enableCodex, enableCursor])
+  }, [enableClaudeCode, enableCodex, enableCursor, appMode])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
@@ -1681,25 +2611,93 @@ export default function Mini() {
     }
   }, [])
 
+  const handleMascotContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+  }, [])
+
+
   const handleMascotPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (e.button !== 0 || collapsingRef.current) return
+      // Pet mode: right-click / ctrl+click toggles context menu
+      const isRightClick = e.button === 2 || (e.button === 0 && e.ctrlKey)
+      if (isRightClick && appModeRef.current === 'pet' && largeMascotRef.current) {
+        e.preventDefault()
+        e.stopPropagation()
+        if (petContextMenuTransitionRef.current) return
+        if (!petContextMenuOpenRef.current) {
+          petContextMenuTransitionRef.current = true
+          const winW = petBaseWinWRef.current ?? window.innerWidth ?? 300
+          const mascotW = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
+          Promise.all([
+            invoke('get_mini_origin'),
+            invoke('get_mini_monitor_rect'),
+          ]).then(async ([pos, rect]) => {
+            const [x] = pos as [number, number]
+            const [monitorX, , monitorW] = rect as [number, number, number, number]
+            const monitorMid = monitorX + monitorW / 2
+            const mascotLeft = x + winW - mascotW
+            const side = mascotLeft < monitorMid ? 'right' : 'left'
+            setPetMenuSide(side)
+            setPetContextMenuOpen(true)
+            petContextMenuOpenRef.current = true
+            await invoke('set_pet_context_menu', { open: true, side }).catch(() => {})
+          }).catch(() => {}).finally(() => {
+            petContextMenuTransitionRef.current = false
+          })
+        } else {
+          void closePetContextMenu()
+        }
+        return
+      }
+      // Coding mode: always expand immediately on click, independent of mascot size.
+      // This avoids pointerup/drag timing races on Windows.
+      if (!moveModeRef.current && appModeRef.current !== 'pet') {
+        hoverExpandedRef.current = false
+        setCompletionSessionId(null)
+        expand()
+        return
+      }
+      if (e.button !== 0 || e.ctrlKey || collapsingRef.current) return
       const isMoveMode = moveModeRef.current
       const target = e.currentTarget as HTMLElement
       // Keep large mascot visual size unchanged, but shrink the effective hitbox.
+      // Apply the same hitbox rule to peek as well; otherwise peek ends up with
+      // an oversized full-rect click area that can trigger without touching the pet.
       if (!isMoveMode && largeMascotRef.current) {
         const visualSize = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
-        const hitWidth = MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER / 3 * largeMascotScaleRef.current)
+        const isPeek = currentPetActionRef.current === 'peek'
+        // During peek the character only pokes out a thin slice at one edge,
+        // so use a narrower side-aligned hitbox instead of the centered one.
+        // PEEK_HIT_WIDTH_RATIO mirrors the visual cursor strip width.
+        const hitWidth = isPeek
+          ? visualSize * PEEK_HIT_WIDTH_RATIO
+          : MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER / 3 * largeMascotScaleRef.current)
         const hitHeight = MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER / 3 * largeMascotScaleRef.current)
-        const insetX = Math.max(0, (visualSize - hitWidth) / 2)
         const insetY = Math.max(0, (visualSize - hitHeight) / 2)
         const rect = target.getBoundingClientRect()
         const localX = e.clientX - rect.left
         const localY = e.clientY - rect.top
-        if (localX < insetX || localX > visualSize - insetX || localY < insetY || localY > visualSize - insetY) return
+        let hitLeft: number
+        let hitRight: number
+        if (isPeek) {
+          if (peekEdgeRef.current === 'left') {
+            hitLeft = 0
+            hitRight = hitWidth
+          } else {
+            hitLeft = visualSize - hitWidth
+            hitRight = visualSize
+          }
+        } else {
+          const insetX = Math.max(0, (visualSize - hitWidth) / 2)
+          hitLeft = insetX
+          hitRight = visualSize - insetX
+        }
+        if (localX < hitLeft || localX > hitRight || localY < insetY || localY > visualSize - insetY) return
       }
 
-      // Large mascot normal mode: drag to move window, click for angry/shy
+      // Large mascot normal mode: drag to move window, click for angry/spin
+      // Block drag and clicks during pomodoro
+      if (!isMoveMode && largeMascotRef.current && pomodoroRef.current?.active) return
       if (!isMoveMode && largeMascotRef.current) {
         e.preventDefault()
         mascotDragActiveRef.current = true
@@ -1715,6 +2713,11 @@ export default function Mini() {
               dragging = true
               setLargePetAction('grasp')
               largePetActionRef.current = 'grasp'
+              playPetAudio('grasp')
+              if (appModeRef.current === 'pet') {
+                setCurrentPetAction('grasp')
+                currentPetActionRef.current = 'grasp'
+              }
             } else return
           }
           const dx = ev.screenX - lastX
@@ -1729,6 +2732,9 @@ export default function Mini() {
           if (largePetActionRef.current === 'grasp') {
             setLargePetAction(null)
             largePetActionRef.current = null
+            if (appModeRef.current === 'pet') {
+              checkEdgeAndSetPeek()
+            }
           }
           window.removeEventListener('pointermove', onMove)
           window.removeEventListener('pointerup', onUp)
@@ -1752,22 +2758,34 @@ export default function Mini() {
               await store.save()
             })
           } else {
-            // Click: angry for the first 10 clicks per day, then shy
-            const today = new Date().toDateString()
-            if (largeDailyAngryDateRef.current !== today) {
-              largeDailyAngryDateRef.current = today
-              largeDailyAngryCountRef.current = 0
+            if (appModeRef.current === 'pet') {
+              if (currentPetActionRef.current === 'peek') {
+                handleSetPetAction('walkout')
+                playPetAudio('walkout')
+              } else {
+                // Pet mode click: headpat based on affection tier
+                const tier = getAffectionTier(petDataRef.current.affection)
+                if (tier === 'angry') {
+                  handleSetPetAction('angry')
+                  playPetAudio('angry')
+                } else if (tier === 'shy') {
+                  const updated = applyHeadpat(petDataRef.current)
+                  handleUpdatePetData(updated)
+                  handleSetPetAction('spin')
+                  playPetAudio('spin')
+                } else {
+                  const updated = applyHeadpat(petDataRef.current)
+                  handleUpdatePetData(updated)
+                  handleSetPetAction('headpat')
+                  playPetAudio('headpat')
+                }
+              }
+            } else {
+              // Coding mode should open panel on click, regardless of large mascot size.
+              hoverExpandedRef.current = false
+              setCompletionSessionId(null)
+              expand()
             }
-            largeDailyAngryCountRef.current += 1
-            const action = largeDailyAngryCountRef.current <= LARGE_DAILY_ANGRY_LIMIT ? 'angry' : 'shy'
-            setLargePetAction(action)
-            largePetActionRef.current = action
-            if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
-            largeActionTimerRef.current = setTimeout(() => {
-              setLargePetAction(null)
-              largePetActionRef.current = null
-              largeActionTimerRef.current = null
-            }, LARGE_ACTION_DISPLAY_MS)
           }
         }
 
@@ -1777,8 +2795,9 @@ export default function Mini() {
         return
       }
 
-      // Normal mode (small mascot): click to expand
+      // Normal mode (small mascot): click to expand (coding mode only)
       if (!isMoveMode) {
+        if (appModeRef.current === 'pet') return // no panel in pet mode
         hoverExpandedRef.current = false
         setCompletionSessionId(null)
         expand()
@@ -1806,6 +2825,10 @@ export default function Mini() {
             if (largeMascotRef.current) {
               setLargePetAction('grasp')
               largePetActionRef.current = 'grasp'
+              if (appModeRef.current === 'pet') {
+                setCurrentPetAction('grasp')
+                currentPetActionRef.current = 'grasp'
+              }
             }
           } else return
         }
@@ -1821,6 +2844,9 @@ export default function Mini() {
         if (largeMascotRef.current && largePetActionRef.current === 'grasp') {
           setLargePetAction(null)
           largePetActionRef.current = null
+          if (appModeRef.current === 'pet') {
+            checkEdgeAndSetPeek()
+          }
         }
         window.removeEventListener('pointermove', onMove)
         window.removeEventListener('pointerup', onUp)
@@ -1912,7 +2938,7 @@ export default function Mini() {
       setShowSettingsOverlay(false)
       setSettingsTransitioning(true)
     }
-    const delay = wasSettings ? 280 : 480
+    const delay = isWindowsPlatform ? 150 : wasSettings ? 280 : 480
     setTimeout(async () => {
       settingsModeRef.current = false
       setSettingsMode(false)
@@ -1926,9 +2952,9 @@ export default function Mini() {
           const cc = await store.get('enable_claudecode')
           setEnableClaudeCode(cc !== false)
           const cod = await store.get('enable_codex')
-          setEnableCodex(cod !== false)
+          setEnableCodex(isWindowsPlatform ? false : cod !== false)
           const cur = await store.get('enable_cursor')
-          setEnableCursor(cur !== false)
+          setEnableCursor(isWindowsPlatform ? false : cur !== false)
         } catch {}
         // Trigger immediate refresh so config changes are reflected right away.
         fetchAgents()
@@ -1942,8 +2968,17 @@ export default function Mini() {
       expandedWindowModeRef.current = null
       try {
         await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
-        if (wasSettings) {
+        if (wasSettings && appModeRef.current === 'pet' && largeMascotRef.current) {
+          await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: true, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+          await invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+          if (petOriginBeforeSettingsRef.current) {
+            const [x, y] = petOriginBeforeSettingsRef.current
+            await invoke('set_mini_origin', { x, y }).catch(() => {})
+            petOriginBeforeSettingsRef.current = null
+          }
+        } else if (wasSettings) {
           await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+          await restoreCollapsedMascotPosition()
         } else {
           await invoke('set_mini_expanded', {
             expanded: false,
@@ -1953,8 +2988,8 @@ export default function Mini() {
             largeMascot: largeMascotRef.current,
             largeMascotScale: largeMascotScaleRef.current,
           })
+          await restoreCollapsedMascotPosition()
         }
-        await restoreCollapsedMascotPosition()
       } catch {
         /* ensure hiding is always cleared */
       }
@@ -1976,7 +3011,9 @@ export default function Mini() {
   // A Rust-side 50ms poll of NSEvent.mouseLocation emits "efficiency-hover"
   // events which we handle here to open / close the panel on hover.
   useEffect(() => {
-    if (viewMode === 'efficiency' && !moveMode && !updateModalOpen && !settingsMode && !settingsTransitioning) {
+    if (appMode === 'pet') {
+      invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
+    } else if (viewMode === 'efficiency' && !moveMode && !updateModalOpen && !settingsMode && !settingsTransitioning) {
       invoke('set_efficiency_hover_tracking', { active: true }).catch(() => {})
     } else {
       invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
@@ -1984,10 +3021,10 @@ export default function Mini() {
     return () => {
       invoke('set_efficiency_hover_tracking', { active: false }).catch(() => {})
     }
-  }, [viewMode, moveMode, updateModalOpen, settingsMode, settingsTransitioning])
+  }, [viewMode, moveMode, updateModalOpen, settingsMode, settingsTransitioning, appMode])
 
   useEffect(() => {
-    if (viewMode !== 'efficiency') return
+    if (viewMode !== 'efficiency' || appMode === 'pet') return
     const unlisten = listen<boolean>('efficiency-hover', (event) => {
       if (settingsModeRef.current || settingsTransitioningRef.current) {
         return
@@ -2040,20 +3077,32 @@ export default function Mini() {
         hoverOpenTimerRef.current = null
       }
     }
-  }, [viewMode, collapse])
+  }, [viewMode, collapse, appMode])
+
+  const petOriginBeforeSettingsRef = useRef<[number, number] | null>(null)
 
   const enterSettings = useCallback(async () => {
     if (settingsModeRef.current || settingsTransitioningRef.current) return
-    // Entering settings is an intentional action — disable hover auto-close
-    // so the panel stays open when the mouse leaves the window.
     hoverExpandedRef.current = false
     settingsTransitioningRef.current = true
     setSelectedAgentId(null)
     setSelectedClaudeSession(null)
     setSelectedSessionKey(null)
     setShowClaudeStats(false)
+    setSettingsNav(appModeRef.current === 'pet' ? 'settings' : 'pairing')
+    // Save pet mode window origin so we can restore it exactly
+    if (appModeRef.current === 'pet') {
+      try {
+        const pos = await invoke('get_mini_origin') as [number, number]
+        petOriginBeforeSettingsRef.current = pos
+      } catch {}
+    }
     setShowSettingsOverlay(false)
     setSettingsTransitioning(true)
+    // Stop pet passthrough poll before resizing to settings mode
+    if (appModeRef.current === 'pet') {
+      await invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+    }
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
     try {
       await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current })
@@ -2069,25 +3118,47 @@ export default function Mini() {
     if (!settingsModeRef.current || settingsTransitioningRef.current) return
     settingsTransitioningRef.current = true
     setShowSettingsOverlay(false)
-    await new Promise<void>((r) => setTimeout(r, 220))
-    setSettingsTransitioning(true)
-    settingsModeRef.current = false
-    setSettingsMode(false)
-    setSettingsNav('pairing')
-    // Re-sync feature toggles from store
-    const store = await load('settings.json', { defaults: {}, autoSave: true })
-    const cc = await store.get('enable_claudecode')
-    setEnableClaudeCode(cc !== false)
-    const cod = await store.get('enable_codex')
-    setEnableCodex(cod !== false)
-    const cur = await store.get('enable_cursor')
-    setEnableCursor(cur !== false)
-    fetchAgents()
     try {
-      await syncExpandedWindowLayout(viewModeRef.current)
-    } catch {}
-    setSettingsTransitioning(false)
-    settingsTransitioningRef.current = false
+      await new Promise<void>((r) => setTimeout(r, 220))
+      setSettingsTransitioning(true)
+      settingsModeRef.current = false
+      setSettingsMode(false)
+      setSettingsNav('pairing')
+      // Always return to collapsed visual state when leaving settings.
+      setShowPanel(false)
+      setExpanded(false)
+      expandedRef.current = false
+      expandedWindowModeRef.current = null
+      if (appModeRef.current === 'pet' && largeMascotRef.current) {
+        // Pet mode: restore pet-sized window directly, skip syncExpandedWindowLayout
+        await invoke('set_mini_expanded', { expanded: false, position: mascotPositionRef.current, efficiency: true, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+        await invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+        // Restore exact window position saved before entering settings
+        if (petOriginBeforeSettingsRef.current) {
+          const [x, y] = petOriginBeforeSettingsRef.current
+          await invoke('set_mini_origin', { x, y }).catch(() => {})
+          petOriginBeforeSettingsRef.current = null
+        }
+      } else {
+        // Coding mode: re-sync feature toggles and restore layout
+        const store = await load('settings.json', { defaults: {}, autoSave: true })
+        const cc = await store.get('enable_claudecode')
+        setEnableClaudeCode(cc !== false)
+        const cod = await store.get('enable_codex')
+        setEnableCodex(isWindowsPlatform ? false : cod !== false)
+        const cur = await store.get('enable_cursor')
+        setEnableCursor(isWindowsPlatform ? false : cur !== false)
+        fetchAgents()
+        try {
+          await syncExpandedWindowLayout(viewModeRef.current)
+        } catch {}
+      }
+    } finally {
+      // Always clear transition/hiding guards so mascot can't get stuck invisible.
+      setSettingsTransitioning(false)
+      settingsTransitioningRef.current = false
+      setHiding(false)
+    }
   }, [fetchAgents, syncExpandedWindowLayout])
 
   // Click outside to collapse (only when not pinned)
@@ -2105,7 +3176,9 @@ export default function Mini() {
   // Skip blur when a file picker dialog is open
   useEffect(() => {
     if (updateModalOpen) return
-    if (!expanded) return
+    // In pet mode settings, expanded stays false; still need blur handling
+    // so clicking desktop can close settings via exitSettings.
+    if (!expanded && !settingsMode) return
     if (pinned && !settingsMode) return
     const onClickCapture = (e: MouseEvent) => {
       const el = e.target as HTMLElement
@@ -2121,6 +3194,12 @@ export default function Mini() {
     }
     const onBlur = () => {
       if (filePickerOpenRef.current) return
+      // When settings is open, use the dedicated close path so pet mode
+      // restores window geometry/state consistently.
+      if (settingsModeRef.current) {
+        exitSettings()
+        return
+      }
       collapse()
     }
     window.addEventListener('click', onClickCapture, true)
@@ -2131,11 +3210,12 @@ export default function Mini() {
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
     }
-  }, [expanded, pinned, settingsMode, updateModalOpen, collapse])
+  }, [expanded, pinned, settingsMode, updateModalOpen, collapse, exitSettings])
 
   useEffect(() => {
     if (expanded || moveMode || updateModalOpen) return
     const onFocus = () => {
+      if (appModeRef.current === 'pet') return // no auto-expand in pet mode
       if (collapsingRef.current || moveModeRef.current || mascotDragActiveRef.current) return
       // Large mascot uses long-press to expand; auto-expand on focus
       // would race with the pointerdown handler and steal the click.
@@ -2185,12 +3265,130 @@ export default function Mini() {
     const c = characters.find((ch) => ch.largeActions && Object.keys(ch.largeActions).length > 0)
     return c?.largeActions
   }, [characters])
-  const hasAnyLargeActions = !!(miniChar?.largeActions && Object.keys(miniChar.largeActions).length > 0) || !!(fallbackLargeActions && Object.keys(fallbackLargeActions).length > 0)
-  const largeVideoBaseUrl = largeMascot ? getLargeVideo(miniChar ?? undefined, mainPetState, largePetAction, fallbackLargeActions) : undefined
+  const largeCharForRender = (appMode === 'pet' || appMode === 'coding')
+    ? ({ name: '香企鹅', largeActions: petBuiltinLargeActions } as CharacterMeta)
+    : miniChar
+  const hasAnyLargeActions = !!(largeCharForRender?.largeActions && Object.keys(largeCharForRender.largeActions).length > 0) || !!(fallbackLargeActions && Object.keys(fallbackLargeActions).length > 0)
+  const showLargeMascotToggle = !isWindowsPlatform && (appMode === 'coding' || (appMode !== 'pet' && hasAnyLargeActions))
+  const largeVideoBaseUrl = largeMascot
+    ? appMode === 'pet'
+      ? getLargeVideoPetMode(largeCharForRender ?? undefined, currentPetAction, fallbackLargeActions)
+      : getLargeVideo(largeCharForRender ?? undefined, mainPetState, largePetAction, fallbackLargeActions)
+    : undefined
   const largeVideoUrl = largeVideoBaseUrl ? `${largeVideoBaseUrl}?rev=alpha-fix-2` : undefined
-  const largeVideoRef = useRef<HTMLVideoElement>(null)
-  // @ts-ignore unused ref kept for future use
-  const _prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
+  // Double-buffer video: two stacked <video> elements swap roles on each
+  // animation change. The old video stays visible until the new one's first
+  // frame is decoded (onLoadedData), eliminating blank-frame flicker.
+  // vid.load() clears the frame buffer immediately, so a single-element
+  // approach always flashes transparent between animations.
+  const largeVideoRefA = useRef<HTMLVideoElement>(null)
+  const largeVideoRefB = useRef<HTMLVideoElement>(null)
+  const largeVideoCanvasRef = useRef<HTMLCanvasElement>(null)
+  // Which buffer (0=A, 1=B) is currently the *front* (visible, playing) video
+  const activeBufferRef = useRef<0 | 1>(0)
+  const [activeBuffer, setActiveBuffer] = useState<0 | 1>(0)
+  const prevLargeVideoUrlRef = useRef<string | undefined>(undefined)
+  const useWindowsChromaKey = isWindowsPlatform && !!largeVideoBaseUrl && largeVideoBaseUrl.includes('/large/webm/')
+
+  useEffect(() => {
+    if (!largeVideoUrl) {
+      // No video to show — reset tracking so we load fresh when a URL
+      // appears (e.g. switching back to pet mode restores the same URL).
+      prevLargeVideoUrlRef.current = undefined
+      return
+    }
+
+    const frontIdx = activeBufferRef.current
+    const backIdx: 0 | 1 = frontIdx === 0 ? 1 : 0
+    const front = frontIdx === 0 ? largeVideoRefA.current : largeVideoRefB.current
+    const back = backIdx === 0 ? largeVideoRefA.current : largeVideoRefB.current
+    if (!front || !back) {
+      // Video elements not yet in the DOM (e.g. collapsed view hidden
+      // while panel is expanded for settings). Reset URL tracker so we
+      // retry loading when the elements remount.
+      prevLargeVideoUrlRef.current = undefined
+      return
+    }
+
+    if (prevLargeVideoUrlRef.current === largeVideoUrl) return
+
+    const allowAlternateFormatFallback = !(typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows'))
+
+    const isFirstLoad = prevLargeVideoUrlRef.current === undefined
+    prevLargeVideoUrlRef.current = largeVideoUrl
+
+    let cancelled = false
+    const listeners: Array<() => void> = []
+    const addOnce = (el: HTMLVideoElement, event: 'playing' | 'error', fn: () => void) => {
+      el.addEventListener(event, fn, { once: true })
+      listeners.push(() => el.removeEventListener(event, fn))
+    }
+    const clearListeners = () => {
+      for (const off of listeners) off()
+      listeners.length = 0
+    }
+    const finishSwap = (newFront: 0 | 1) => {
+      if (cancelled) return
+      activeBufferRef.current = newFront
+      setActiveBuffer(newFront)
+      // Only pause the old buffer — do NOT clear its src synchronously.
+      // setActiveBuffer triggers an async React render that sets visibility:hidden,
+      // but removeAttribute('src') + load() would clear the frame buffer
+      // *before* React hides the element, causing a blank flash.
+      // The stale content is safe: the old buffer is hidden, and loadWithFallback
+      // will replace its src before it becomes front again.
+      const old = newFront === 0 ? largeVideoRefB.current : largeVideoRefA.current
+      if (old) {
+        old.pause()
+      }
+    }
+    const loadWithFallback = (
+      target: HTMLVideoElement,
+      url: string,
+      allowFallback: boolean,
+      onReady: () => void,
+      onFailed: () => void,
+    ) => {
+      clearListeners()
+      const ready = () => {
+        clearListeners()
+        onReady()
+      }
+      const failed = () => {
+        clearListeners()
+        if (cancelled) return
+        if (allowFallback) {
+          const alt = getAlternateLargeVideoUrl(url)
+          if (alt && alt !== url) {
+            loadWithFallback(target, alt, false, onReady, onFailed)
+            return
+          }
+        }
+        onFailed()
+      }
+      addOnce(target, 'playing', ready)
+      addOnce(target, 'error', failed)
+      target.currentTime = 0
+      target.src = url
+      target.load()
+      target.play().catch(() => {})
+    }
+
+    if (isFirstLoad) {
+      loadWithFallback(front, largeVideoUrl, allowAlternateFormatFallback, () => {}, () => {})
+      return () => {
+        cancelled = true
+        clearListeners()
+      }
+    }
+
+    // Keep current front visible, preload next on back, swap only after next plays.
+    loadWithFallback(back, largeVideoUrl, allowAlternateFormatFallback, () => finishSwap(backIdx), () => {})
+    return () => {
+      cancelled = true
+      clearListeners()
+    }
+  }, [largeVideoUrl, expanded])
 
   const handleDeleteChar = useCallback(async (name: string) => {
     try {
@@ -2220,9 +3418,15 @@ export default function Mini() {
   const closedNotchWidth = 44
   const closedNotchHeight = 10
   const openClipPath = 'inset(0 0 0 0 round 0 0 24px 24px)'
-  const closedClipPath = `inset(0 calc(50% - ${closedNotchWidth / 2}px) calc(100% - ${closedNotchHeight}px) calc(50% - ${closedNotchWidth / 2}px) round 0 0 8px 8px)`
-  const panelClipTransition = 'clip-path 0.42s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1)'
-  const panelChromeTransition = 'opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
+  const closedClipPath = isWindowsPlatform
+    ? 'inset(0 0 100% 0)'
+    : `inset(0 calc(50% - ${closedNotchWidth / 2}px) calc(100% - ${closedNotchHeight}px) calc(50% - ${closedNotchWidth / 2}px) round 0 0 8px 8px)`
+  const panelClipTransition = isWindowsPlatform
+    ? 'clip-path 0.12s ease-out, box-shadow 0.12s ease-out'
+    : 'clip-path 0.42s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.32s cubic-bezier(0.16, 1, 0.3, 1)'
+  const panelChromeTransition = isWindowsPlatform
+    ? 'opacity 0.1s ease-out'
+    : 'opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
   const panelRef = useRef<HTMLDivElement>(null)
 
   const lastResizeHeightRef = useRef(0)
@@ -2306,18 +3510,70 @@ export default function Mini() {
   const collapsedStatusBorder = largeMascot ? 1.1 : 1.5
   const largeMascotVisualSize = collapsedMascotSize * largeMascotScale
 
+  useEffect(() => {
+    if (!useWindowsChromaKey || !largeMascot) return
+    const canvas = largeVideoCanvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return
+    let rafId = 0
+    let retryCount = 0
+    const draw = () => {
+      const front = activeBufferRef.current === 0 ? largeVideoRefA.current : largeVideoRefB.current
+      if (front && front.readyState >= 2 && front.videoWidth > 0 && front.videoHeight > 0) {
+        retryCount = 0
+        const targetSize = Math.max(1, Math.round(largeMascotVisualSize))
+        if (canvas.width !== targetSize || canvas.height !== targetSize) {
+          canvas.width = targetSize
+          canvas.height = targetSize
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(front, 0, 0, canvas.width, canvas.height)
+        const frame = ctx.getImageData(0, 0, canvas.width, canvas.height)
+        const data = frame.data
+        // Chroma key black-ish pixels to transparent as a Windows fallback
+        // when WebView2 drops VP9 alpha during decode.
+        for (let i = 0; i < data.length; i += 4) {
+          const maxRgb = Math.max(data[i], data[i + 1], data[i + 2])
+          if (maxRgb <= 12) {
+            data[i + 3] = 0
+          } else if (maxRgb < 28) {
+            const softAlpha = Math.round(((maxRgb - 12) / 16) * 255)
+            if (softAlpha < data[i + 3]) data[i + 3] = softAlpha
+          }
+        }
+        ctx.putImageData(frame, 0, 0)
+      } else if (front && front.src && front.paused) {
+        // Video has a source but isn't playing — kick-start it.
+        // This handles cases where play() was called while the element
+        // was hidden (e.g. during settingsTransitioning display:none) and
+        // WebView2 silently rejected or stalled decoding.
+        // Throttle retries to ~2/sec to avoid spamming play().
+        retryCount++
+        if (retryCount % 30 === 0) front.play().catch(() => {})
+      }
+      rafId = requestAnimationFrame(draw)
+    }
+    rafId = requestAnimationFrame(draw)
+    return () => {
+      cancelAnimationFrame(rafId)
+    }
+  // `expanded` is included so the rAF loop restarts when the collapsed view
+  // mounts (the canvas element is only in the DOM when !expanded).
+  }, [useWindowsChromaKey, largeMascot, largeMascotVisualSize, activeBuffer, largeVideoUrl, expanded])
+
   return (
     <div
       style={{
         width: '100vw',
         height: '100vh',
         background: 'transparent',
-        overflow: 'hidden',
+        overflow: (appMode === 'pet' && largeMascot) ? 'visible' : 'hidden',
         userSelect: 'none',
       }}
     >
       {/* Collapsed */}
-      {!expanded && !hiding && !updateModalOpen && (
+      {!expanded && !hiding && !updateModalOpen && !showOnboarding && (
         <div
           id="mini-panel"
           onMouseEnter={() => {
@@ -2326,21 +3582,46 @@ export default function Mini() {
           style={{
             width: '100%',
             height: '100%',
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'center',
-            background: viewMode === 'efficiency' ? 'rgba(0,0,0,0.01)' : undefined,
+            position: 'relative',
+            display: (appMode === 'pet' && largeMascot) ? 'block' : 'flex',
+            alignItems: (appMode === 'pet' && largeMascot) ? undefined : 'flex-start',
+            justifyContent: (appMode === 'pet' && largeMascot) ? undefined : 'center',
+            background: (viewMode === 'efficiency' && appMode !== 'pet') ? 'rgba(0,0,0,0.01)' : undefined,
             pointerEvents: 'auto',
+            cursor: 'default',
           }}
         >
           <div
             onPointerDown={handleMascotPointerDown}
+            onContextMenu={handleMascotContextMenu}
             onMouseMove={undefined}
             onMouseLeave={undefined}
             style={{
-              position: 'relative',
-              cursor: moveMode ? 'grab' : 'pointer',
+              position: (appMode === 'pet' && largeMascot) ? 'absolute' : 'relative',
+              bottom: (appMode === 'pet' && largeMascot) ? 0 : undefined,
+              // Anchor mascot to a fixed window-x equal to the pet-mode
+              // window's "no-menu" inner width minus mascot CSS width.
+              // This matches the previous `right: 0` visual position but
+              // stays constant when the right-side menu temporarily
+              // widens the window, avoiding any race between React CSS
+              // commit and native window resize.
+              // Fallback to `right: 0` until petBaseWinW has been measured.
+              left: (appMode === 'pet' && largeMascot && petBaseWinW != null)
+                ? Math.max(0, Math.round(petBaseWinW - largeMascotVisualSize))
+                : undefined,
+              right: (appMode === 'pet' && largeMascot && petBaseWinW == null)
+                ? 0
+                : undefined,
+              overflow: 'visible',
+              // During peek, the mascot box is full-width but the character only
+              // pokes out a thin slice at one edge. Don't paint a pointer cursor
+              // over the empty side — narrow cursor handling is delegated to the
+              // peek overlay below.
+              cursor: moveMode
+                ? 'grab'
+                : (currentPetAction === 'peek' ? 'default' : 'pointer'),
               animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : 'none',
+              display: (appMode === 'pet' && (showSettingsOverlay || settingsTransitioning)) ? 'none' : undefined,
               ...(moveMode
                 ? {
                     borderRadius: 12,
@@ -2351,20 +3632,110 @@ export default function Mini() {
             }}
           >
             {largeMascot && largeVideoUrl ? (
-              <video
-                ref={largeVideoRef}
-                key={largeVideoUrl}
-                autoPlay
-                loop
-                muted
-                playsInline
-                preload="auto"
-                style={{ width: largeMascotVisualSize, height: largeMascotVisualSize, objectFit: 'contain', pointerEvents: 'none' }}
-                draggable={false}
-              >
-                <source src={largeVideoUrl} type={getLargeVideoType(largeVideoUrl)} />
-              </video>
-            ) : miniGif ? (
+              <div style={{ position: 'relative', width: largeMascotVisualSize, height: largeMascotVisualSize }}>
+              {currentPetAction === 'peek' && !moveMode && (() => {
+                // Narrow cursor:pointer strip aligned to the actual peeking side.
+                // The strip width is a small fraction of the mascot visual size to
+                // avoid the "cursor turns into hand even before reaching the pet" feel.
+                // pointer-events: 'auto' lets the cursor style apply; clicks bubble
+                // to the click handler on the parent div, which still enforces the
+                // shrunken hitbox check.
+                const stripW = Math.round(largeMascotVisualSize * PEEK_HIT_WIDTH_RATIO)
+                const isLeft = peekEdgeRef.current === 'left'
+                return (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      height: '100%',
+                      width: stripW,
+                      left: isLeft ? 0 : largeMascotVisualSize - stripW,
+                      cursor: 'pointer',
+                      pointerEvents: 'auto',
+                      background: 'transparent',
+                      zIndex: 2,
+                    }}
+                  />
+                )
+              })()}
+              {useWindowsChromaKey && (
+                <canvas
+                  ref={largeVideoCanvasRef}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    pointerEvents: 'none',
+                    transform:
+                      (currentPetAction === 'walk' && walkFlipped) ? 'scaleX(-1)'
+                      : ((currentPetAction === 'peek' || currentPetAction === 'walkout') && peekEdgeRef.current === 'left') ? 'scaleX(-1)'
+                      : undefined,
+                  }}
+                />
+              )}
+              {/* Double-buffer: front buffer stays visible while back buffer preloads.
+                  Swap only after back buffer is already playing to avoid blank frames. */}
+              {[0, 1].map((idx) => {
+                const isFront = activeBuffer === idx
+                const ref = idx === 0 ? largeVideoRefA : largeVideoRefB
+                return (
+                  <video
+                    key={idx}
+                    ref={ref}
+                    autoPlay={isFront}
+                    loop={!(appMode === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetAction))}
+                    muted
+                    playsInline
+                    preload="auto"
+                    onError={(e) => {
+                      if (!isFront) return
+                      console.warn('[large-video] error:', (e.target as HTMLVideoElement).error?.message, 'src:', largeVideoUrl)
+                      if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
+                        const d = petDataRef.current
+                        const next: PetAction = d.hunger < 30 ? 'hungry' : 'idle'
+                        setCurrentPetAction(next)
+                        currentPetActionRef.current = next
+                      }
+                    }}
+                    onEnded={() => {
+                      if (!isFront) return
+                      if (appModeRef.current === 'pet' && TRANSIENT_PET_ACTIONS.includes(currentPetActionRef.current)) {
+                        if (currentPetActionRef.current === 'farewell') {
+                          invoke('exit_app').catch(() => {})
+                          return
+                        }
+                        let next: PetAction
+                        if (currentPetActionRef.current === 'dance' && danceFromMusicRef.current) {
+                          danceFromMusicRef.current = false
+                          next = 'music'
+                        } else {
+                          const d = petDataRef.current
+                          next = d.hunger < 30 ? 'hungry' : 'idle'
+                        }
+                        setCurrentPetAction(next)
+                        currentPetActionRef.current = next
+                      }
+                    }}
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain',
+                      pointerEvents: 'none',
+                      visibility: isFront ? 'visible' : 'hidden',
+                      opacity: useWindowsChromaKey ? 0 : 1,
+                      transform:
+                        (currentPetAction === 'walk' && walkFlipped) ? 'scaleX(-1)'
+                        : ((currentPetAction === 'peek' || currentPetAction === 'walkout') && peekEdgeRef.current === 'left') ? 'scaleX(-1)'
+                        : undefined,
+                    }}
+                    draggable={false}
+                  />
+                )
+              })}
+            </div>) : miniGif ? (
               disableSleepAnim && mainPetState === 'idle' ? (
                 <FrozenImg src={miniGif} style={{ width: collapsedMascotSize, height: collapsedMascotSize, objectFit: 'contain', pointerEvents: 'none' }} draggable={false} />
               ) : mainPetState === 'compacting' ? (
@@ -2389,18 +3760,88 @@ export default function Mini() {
                 ?
               </div>
             )}
-            <div
-              style={{
-                position: 'absolute',
-                bottom: 0,
-                right: 0,
-                width: collapsedStatusSize,
-                height: collapsedStatusSize,
-                borderRadius: '50%',
-                background: mainPetState === 'waiting' ? '#f59e0b' : hasWorking ? '#2ecc71' : '#777',
-                border: `${collapsedStatusBorder}px solid rgba(0,0,0,0.3)`,
-              }}
-            />
+            {appMode !== 'pet' && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 0,
+                  right: 0,
+                  width: collapsedStatusSize,
+                  height: collapsedStatusSize,
+                  borderRadius: '50%',
+                  background: mainPetState === 'waiting' ? '#f59e0b' : hasWorking ? '#2ecc71' : '#777',
+                  border: `${collapsedStatusBorder}px solid rgba(0,0,0,0.3)`,
+                }}
+              />
+            )}
+            {/* Pomodoro timer overlay (pet mode, study action) */}
+            {appMode === 'pet' && largeMascot && pomodoro?.active && (
+              <PomodoroOverlay
+                pomodoro={pomodoro}
+                mascotSize={largeMascotVisualSize}
+                onStop={handleStopPomodoro}
+              />
+            )}
+            {/* Pet mode context menu: status bar above + buttons on left */}
+            {appMode === 'pet' && largeMascot && (
+              <PetContextMenu
+                open={petContextMenuOpen}
+                petData={petData}
+                currentAction={currentPetAction}
+                pomodoro={pomodoro}
+                mascotSize={largeMascotVisualSize}
+                side={petMenuSide}
+                onClose={closePetContextMenu}
+                onUpdatePetData={handleUpdatePetData}
+                onSetAction={(action) => {
+                  handleSetPetAction(action)
+                  closePetContextMenu()
+                }}
+                onStartPomodoro={(m) => {
+                  handleStartPomodoro(m)
+                  closePetContextMenu()
+                }}
+                onStopPomodoro={() => {
+                  handleStopPomodoro()
+                  closePetContextMenu()
+                }}
+                onOpenSettings={() => {
+                  closePetContextMenu()
+                  enterSettings()
+                }}
+                onStar={() => {
+                  closePetContextMenu()
+                  invoke('open_url', { url: 'https://github.com/rainnoon/oc-claw' }).catch(() => {})
+                }}
+                onFoodRain={triggerFoodRain}
+                onPlayAudio={playPetAudio}
+                onQuit={() => {
+                  closePetContextMenu()
+                  handleSetPetAction('farewell')
+                  playPetAudio('farewell')
+                }}
+              />
+            )}
+
+            {/* Food rain effect — rendered outside context menu so it persists after menu closes */}
+            {foodRainDrops.length > 0 && (
+              <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden', zIndex: 9999 }}>
+                <AnimatePresence>
+                  {foodRainDrops.map(drop => (
+                    <motion.span
+                      key={drop.id}
+                      initial={{ y: -30, opacity: 1 }}
+                      animate={{ y: '100vh', opacity: 0 }}
+                      transition={{ duration: drop.duration, delay: drop.delay, ease: 'easeIn' }}
+                      style={{ position: 'absolute', left: `${drop.x}%`, fontSize: drop.size, willChange: 'transform' }}
+                    >
+                      {drop.emoji}
+                    </motion.span>
+                  ))}
+                </AnimatePresence>
+              </div>
+            )}
+
           </div>
         </div>
       )}
@@ -2449,8 +3890,8 @@ export default function Mini() {
             transition: panelClipTransition,
           }}
         >
-          {/* Closed header: geometric anchor for clip-path collapse target. */}
-          {!showPanel && (
+          {/* Closed header: geometric anchor for clip-path collapse target (macOS notch only). */}
+          {!showPanel && !isWindowsPlatform && (
             <div
               style={{
                 position: 'absolute',
@@ -2533,7 +3974,7 @@ export default function Mini() {
               >
                 {soundEnabled || codexSoundEnabled || cursorSoundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
               </button>
-              {!(inAgentDetail || selectedClaudeSession || selectedSessionKey || showClaudeStats) && hasAnyLargeActions && (
+              {showLargeMascotToggle && (
                 <button
                   data-no-drag
                   onClick={async (e) => {
@@ -2557,7 +3998,7 @@ export default function Mini() {
               )}
             </div>
             <div className="flex items-center gap-4">
-              {!largeMascot && (
+              {appMode !== 'pet' && (
                 <button
                   data-no-drag
                   onClick={(e) => {
@@ -3730,12 +5171,23 @@ export default function Mini() {
             <div
               data-no-drag
               onMouseDown={(e) => {
-                if (e.target === e.currentTarget) exitSettings()
+                if (e.target === e.currentTarget) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                }
+              }}
+              onClick={(e) => {
+                if (e.target === e.currentTarget) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  exitSettings()
+                }
               }}
               style={{
                 position: 'fixed',
                 inset: 0,
                 zIndex: 40,
+                background: 'rgba(0,0,0,0.01)',
               }}
             />
             <motion.div
@@ -3791,7 +5243,7 @@ export default function Mini() {
                     >
                       <span style={{ fontSize: 13 }}>&lsaquo;</span> {t('common.back')}
                     </button>
-                    {(['pairing', 'settings'] as const).map((nav) => (
+                    {(appMode === 'pet' ? ['settings'] as const : ['pairing', 'settings'] as const).map((nav) => (
                       <button
                         key={nav}
                         data-no-drag
@@ -3815,7 +5267,7 @@ export default function Mini() {
                     ))}
                   </div>
                 </div>
-                {hasAnyLargeActions && (
+                {showLargeMascotToggle && (
                   <button
                     data-no-drag
                     onClick={async (e) => {
@@ -3844,7 +5296,7 @@ export default function Mini() {
                       transition: 'all 0.2s',
                     }}
                   >
-                    {largeMascot ? '🐧 大看板娘' : '小看板娘'}
+                    {largeMascot ? '小看板娘' : '🐧 大看板娘'}
                   </button>
                 )}
                 <button
@@ -4160,10 +5612,30 @@ export default function Mini() {
                         }}
                         largeMascotScale={largeMascotScale}
                         onChangeLargeMascotScale={async (v) => {
-                          setLargeMascotScale(v)
-                          largeMascotScaleRef.current = v
+                          const clamped = Math.min(6, Math.max(4, v))
+                          setLargeMascotScale(clamped)
+                          largeMascotScaleRef.current = clamped
                           const store = await getStore()
-                          await store.set('large_mascot_scale', v)
+                          await store.set('large_mascot_scale', clamped)
+                          await store.save()
+                        }}
+                        appMode={appMode}
+                        onChangeAppMode={handleSelectAppMode}
+                        petSfxEnabled={petSfxEnabled}
+                        onTogglePetSfxEnabled={async (v) => {
+                          setPetSfxEnabled(v)
+                          petSfxEnabledRef.current = v
+                          const store = await getStore()
+                          await store.set('pet_sfx_enabled', v)
+                          await store.save()
+                        }}
+                        petIdleIntervalMin={petIdleIntervalMin}
+                        onChangePetIdleIntervalMin={async (v) => {
+                          const clamped = Math.min(30, Math.max(0.5, v))
+                          setPetIdleIntervalMin(clamped)
+                          petIdleIntervalMinRef.current = clamped
+                          const store = await getStore()
+                          await store.set('pet_idle_interval_min', clamped)
                           await store.save()
                         }}
                       />
@@ -4233,6 +5705,11 @@ export default function Mini() {
           setCharacters(chars)
         }}
       />
+
+      {/* Onboarding modal — first launch only */}
+      <OnboardingModal open={showOnboarding} onSelect={handleSelectAppMode} />
+
+      {/* Pet context menu rendered inside mascot wrapper below */}
     </div>
   )
 }

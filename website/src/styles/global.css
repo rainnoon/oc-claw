@@ -231,18 +231,6 @@ nav {
   animation: fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.25s both;
 }
 
-.btn-secondary {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  box-shadow: none;
-}
-
-.btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.14);
-  box-shadow: none;
-  filter: none;
-}
-
 .btn {
   display: inline-flex;
   align-items: center;
@@ -267,6 +255,63 @@ nav {
   transform: translateY(-2px);
   box-shadow: 0 24px 48px rgba(243, 201, 13, 0.34);
   filter: brightness(1.05);
+}
+
+.btn-secondary {
+  background: rgba(20, 24, 34, 0.4);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.btn-secondary::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -150%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.15),
+    transparent
+  );
+  transform: skewX(-20deg);
+  transition: left 0.6s cubic-bezier(0.25, 1, 0.5, 1);
+  z-index: 0;
+}
+
+.btn-secondary span {
+  position: relative;
+  z-index: 1;
+}
+
+.btn-secondary svg {
+  position: relative;
+  z-index: 1;
+  transition: fill 0.2s ease, stroke 0.2s ease, transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.btn-secondary:hover {
+  background: rgba(30, 35, 48, 0.6);
+  border-color: rgba(243, 201, 13, 0.4);
+  box-shadow: 0 8px 24px rgba(243, 201, 13, 0.15), inset 0 0 12px rgba(243, 201, 13, 0.05);
+  transform: translateY(-2px);
+  filter: none;
+}
+
+.btn-secondary:hover::before {
+  left: 150%;
+}
+
+.btn-secondary:hover svg {
+  fill: #F3C90D;
+  stroke: #F3C90D;
+  transform: scale(1.15) rotate(5deg);
 }
 
 .github-icon {

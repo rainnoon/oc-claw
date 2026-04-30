@@ -26,6 +26,27 @@ static NOTCH_SCREEN_INFO: Mutex<Option<(f64, f64, f64, f64, f64)>> = Mutex::new(
 /// `resize_mini_height` so the hover poll can use the real frame size
 /// instead of hard-coded constants.
 static MINI_WINDOW_FRAME: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
+/// Temporary frame snapshot used by pet-context menu expansion. We store the
+/// original collapsed frame before expanding, then restore exactly to avoid
+/// mascot "teleport" after right-click close.
+static PET_MENU_RESTORE_FRAME: Mutex<Option<(f64, f64, f64, f64)>> = Mutex::new(None);
+/// Generation counter for pet-context alpha restore (legacy resize path).
+#[cfg(target_os = "macos")]
+static PET_ALPHA_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Whether the pet-mode click-through poll thread should be running.
+static PET_PASSTHROUGH_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the pet-mode click-through poll thread is alive.
+static PET_PASSTHROUGH_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the pet-mode context menu is currently open. When true the poll
+/// thread disables ignoresMouseEvents so the entire expanded window accepts
+/// clicks (for the menu buttons). When false, only the mascot area accepts
+/// clicks and the rest is pass-through.
+static PET_CONTEXT_MENU_OPEN: AtomicBool = AtomicBool::new(false);
+/// Whether a pomodoro timer is currently active. When true the poll thread
+/// keeps the entire window interactive so the bottom-anchored Pomodoro
+/// stop button receives clicks (it sits in the centered hitbox's bottom
+/// inset region and would otherwise pass through to whatever is behind).
+static PET_POMODORO_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Per-host SSH backoff state.
 struct SshBackoffState {
@@ -1536,7 +1557,7 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
             if let Some(ip_name) = ip_map.get(&name) {
                 char_obj.insert("ip".into(), serde_json::Value::String(ip_name.clone()));
             }
-            char_obj.insert("name".into(), serde_json::Value::String(name));
+            char_obj.insert("name".into(), serde_json::Value::String(name.clone()));
             char_obj.insert("workGifs".into(), serde_json::Value::Array(work_gifs.into_iter().map(serde_json::Value::String).collect()));
             char_obj.insert("restGifs".into(), serde_json::Value::Array(rest_gifs.into_iter().map(serde_json::Value::String).collect()));
             if !crawl_gifs.is_empty() {
@@ -1554,6 +1575,31 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
             if !large_actions.is_empty() {
                 char_obj.insert("largeActions".into(), serde_json::Value::Object(large_actions));
             }
+
+            // Read audio.json if it exists: maps action names to audio file URLs
+            let audio_json_path = entry.path().join("audio.json");
+            if audio_json_path.exists() {
+                if let Ok(data) = std::fs::read_to_string(&audio_json_path) {
+                    if let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&data) {
+                        let mut audio_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+                        for (action, file_val) in &map {
+                            if let Some(filename) = file_val.as_str() {
+                                let audio_path = entry.path().join("audio").join(filename);
+                                if audio_path.exists() {
+                                    audio_map.insert(
+                                        action.clone(),
+                                        serde_json::Value::String(format!("{}/{}/audio/{}", url_prefix, name, filename)),
+                                    );
+                                }
+                            }
+                        }
+                        if !audio_map.is_empty() {
+                            char_obj.insert("audioMap".into(), serde_json::Value::Object(audio_map));
+                        }
+                    }
+                }
+            }
+
             results.push(serde_json::Value::Object(char_obj));
         }
     }
@@ -3248,6 +3294,15 @@ async fn move_mini_by(app: tauri::AppHandle, dx: f64, dy: f64) -> Result<(), Str
                 if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
                     *f = Some((new_frame.origin.x, new_frame.origin.y, new_frame.size.width, new_frame.size.height));
                 }
+                // Keep the pet-context restore frame in sync when dragging
+                // while the context menu is open, so closing restores to the
+                // new position instead of the stale pre-drag position.
+                if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                    if let Some(ref mut s) = *saved {
+                        s.0 += dx;
+                        s.1 -= dy; // macOS: screen y is bottom-up, dy is top-down
+                    }
+                }
             }
         }).map_err(|e| e.to_string())?;
     }
@@ -3298,6 +3353,67 @@ async fn get_mini_origin(app: tauri::AppHandle) -> Result<(f64, f64), String> {
         }
     }
     Err("failed to get origin".into())
+}
+
+/// Return the monitor rect (x, y, w, h) in logical pixels for the monitor
+/// the mini window currently lives on.  Used by the front-end to detect
+/// screen edges correctly on multi-monitor setups.
+#[tauri::command]
+async fn get_mini_monitor_rect(app: tauri::AppHandle) -> Result<(f64, f64, f64, f64), String> {
+    let win = app.get_webview_window("mini").ok_or("mini not found")?;
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let win_clone = win.clone();
+        app.run_on_main_thread(move || {
+            use objc2::runtime::{AnyClass, AnyObject};
+            use objc2::msg_send;
+            use objc2_foundation::NSRect;
+            if let Ok(ns_win) = win_clone.ns_window() {
+                let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                let screen_frame: NSRect = unsafe {
+                    let screen: *mut AnyObject = msg_send![obj, screen];
+                    if screen.is_null() {
+                        let cls = match AnyClass::get(c"NSScreen") {
+                            Some(c) => c,
+                            None => return,
+                        };
+                        let main_screen: *mut AnyObject = msg_send![cls, mainScreen];
+                        if main_screen.is_null() {
+                            return;
+                        }
+                        msg_send![&*main_screen, frame]
+                    } else {
+                        msg_send![&*screen, frame]
+                    }
+                };
+                let _ = tx.send((
+                    screen_frame.origin.x,
+                    screen_frame.origin.y,
+                    screen_frame.size.width,
+                    screen_frame.size.height,
+                ));
+            }
+        }).map_err(|e| e.to_string())?;
+        if let Ok(rect) = rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            return Ok(rect);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let pos = monitor.position();
+            let size = monitor.size();
+            let scale = win.scale_factor().unwrap_or(1.0);
+            return Ok((
+                pos.x as f64 / scale,
+                pos.y as f64 / scale,
+                size.width as f64 / scale,
+                size.height as f64 / scale,
+            ));
+        }
+    }
+    Err("failed to get monitor rect".into())
 }
 
 /// Set the mini window's origin in logical coordinates.
@@ -3685,6 +3801,1387 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Opti
     Ok(())
 }
 
+/// Schedule restoring the NSWindow alpha to 1.0 after the webview has had
+/// time to composite at the new frame size.  Uses GCD `dispatch_after_f` on
+/// the main queue so the restore runs at a precise time without thread-spawn
+/// overhead.  A generation counter (`PET_ALPHA_GEN`) prevents stale callbacks
+/// from restoring alpha during a subsequent resize (fast double-clicks).
+#[cfg(target_os = "macos")]
+fn pet_context_schedule_restore_alpha(ns_win_ptr: *mut std::ffi::c_void) {
+    extern "C" {
+        // dispatch_get_main_queue() is a C macro; the real symbol is a global.
+        #[link_name = "_dispatch_main_q"]
+        static DISPATCH_MAIN_Q: std::ffi::c_void;
+        fn dispatch_after_f(
+            when: u64,
+            queue: *const std::ffi::c_void,
+            context: *mut std::ffi::c_void,
+            work: extern "C" fn(*mut std::ffi::c_void),
+        );
+        fn dispatch_time(when: u64, delta: i64) -> u64;
+    }
+
+    /// Packed context passed through GCD void* pointer.
+    struct RestoreCtx {
+        ns_win: *mut std::ffi::c_void,
+        gen: u64,
+    }
+
+    extern "C" fn restore_alpha(ctx_raw: *mut std::ffi::c_void) {
+        let ctx = unsafe { Box::from_raw(ctx_raw as *mut RestoreCtx) };
+        // Only restore if no newer resize has happened since we were scheduled.
+        if PET_ALPHA_GEN.load(Ordering::SeqCst) != ctx.gen {
+            return;
+        }
+        use objc2::msg_send;
+        let obj = unsafe { &*(ctx.ns_win as *const objc2::runtime::AnyObject) };
+        unsafe {
+            let _: () = msg_send![obj, setAlphaValue: 1.0f64];
+        }
+    }
+
+    let gen = PET_ALPHA_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let ctx = Box::new(RestoreCtx { ns_win: ns_win_ptr, gen });
+    unsafe {
+        // 34ms ≈ 2 frames at 60Hz — minimal delay for the webview to
+        // finish compositing at the new window size.
+        let when = dispatch_time(0, 34_000_000); // nanoseconds
+        dispatch_after_f(
+            when,
+            &DISPATCH_MAIN_Q as *const std::ffi::c_void,
+            Box::into_raw(ctx) as *mut std::ffi::c_void,
+            restore_alpha,
+        );
+    }
+}
+
+/// Detect what media the user is consuming.
+///
+/// Returns: "music", "video", or "none".
+///
+/// Priority:
+/// 1) System-level now playing playback state (MediaRemote)
+/// 2) Frontmost app fallback (video/music bundle IDs)
+/// 3) Explicit player-state scripts for background music fallback
+#[tauri::command]
+async fn get_system_idle_time(app: tauri::AppHandle) -> Result<f64, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<f64>();
+        app.run_on_main_thread(move || {
+            #[link(name = "CoreGraphics", kind = "framework")]
+            extern "C" {
+                fn CGEventSourceSecondsSinceLastEventType(
+                    state_id: i32,
+                    event_type: u32,
+                ) -> f64;
+            }
+            let idle = unsafe { CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF) };
+            let _ = tx.send(idle);
+        }).map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(0.0)
+    }
+}
+
+#[tauri::command]
+async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        app.run_on_main_thread(move || {
+            let bid = get_frontmost_bundle_id().to_lowercase();
+            let cli_status = nowplaying_cli_status();
+
+            let result = if let Some((playing, ref source)) = cli_status {
+                if !playing || source.contains("openclaw") || source.contains("ooclaw") || source.contains("com.apple.webkit") {
+                    // Not playing, or our own pet SFX hijacked the Now Playing session.
+                    // WebView audio (HTML5 Audio / <video>) reports as "com.apple.WebKit.GPU",
+                    // not the host app's bundle ID, so we must also filter that.
+                    // Fall back to AppleScript to check if a real music app is still playing,
+                    // because nowplaying-cli only reports one source at a time.
+                    if is_any_music_app_playing() { "music" } else { "none" }
+                } else if is_music_app(source) {
+                    "music"
+                } else if is_video_app(source) || is_browser(source) {
+                    "video"
+                } else {
+                    "music"
+                }
+            } else {
+                // nowplaying-cli not available, fall back to AppleScript
+                if is_any_music_app_playing() {
+                    "music"
+                } else {
+                    "none"
+                }
+            };
+            log::info!(
+                "[now_playing] frontmost_bid={} cli_status={:?} result={}",
+                bid, cli_status, result
+            );
+            let _ = tx.send(result.into());
+        }).map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let result = tokio::task::spawn_blocking(|| -> Result<String, String> {
+            use windows::Media::Control::{
+                GlobalSystemMediaTransportControlsSessionManager,
+                GlobalSystemMediaTransportControlsSessionPlaybackStatus,
+            };
+
+            let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+                .map_err(|e| format!("GSMTC RequestAsync failed: {}", e))?
+                .get()
+                .map_err(|e| format!("GSMTC get manager failed: {}", e))?;
+
+            let sessions = match manager.GetSessions() {
+                Ok(s) => s,
+                Err(_) => return Ok("none".into()),
+            };
+
+            let count = sessions.Size().unwrap_or(0);
+            let mut best: Option<&str> = None;
+            for i in 0..count {
+                let session: windows::Media::Control::GlobalSystemMediaTransportControlsSession =
+                    match sessions.GetAt(i) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+
+                let source = session.SourceAppUserModelId()
+                    .map(|s| s.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+
+                let info = match session.GetPlaybackInfo() {
+                    Ok(i) => i,
+                    Err(_) => continue,
+                };
+                let status = match info.PlaybackStatus() {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                log::info!(
+                    "[now_playing/gsmtc] source={} status={:?}",
+                    source, status.0
+                );
+
+                if status != GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing {
+                    continue;
+                }
+
+                let kind = if is_video_app_win(&source) || is_browser_win(&source) {
+                    "video"
+                } else if is_music_app_win(&source) {
+                    "music"
+                } else {
+                    "music"
+                };
+
+                if kind == "video" {
+                    best = Some("video");
+                    break;
+                }
+                if best.is_none() {
+                    best = Some(kind);
+                }
+            }
+            Ok(best.unwrap_or("none").into())
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking join error: {}", e))?;
+        result
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Ok("none".into())
+    }
+}
+
+/// Get the bundle identifier of the frontmost application.
+#[cfg(target_os = "macos")]
+fn get_frontmost_bundle_id() -> String {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    unsafe {
+        let cls = match AnyClass::get(c"NSWorkspace") {
+            Some(c) => c,
+            None => return String::new(),
+        };
+        let ws: *mut AnyObject = msg_send![cls, sharedWorkspace];
+        if ws.is_null() { return String::new(); }
+        let front_app: *mut AnyObject = msg_send![&*ws, frontmostApplication];
+        if front_app.is_null() { return String::new(); }
+        let bid_ns: *mut AnyObject = msg_send![&*front_app, bundleIdentifier];
+        if bid_ns.is_null() { return String::new(); }
+        let utf8: *const u8 = msg_send![&*bid_ns, UTF8String];
+        if utf8.is_null() { return String::new(); }
+        let len: usize = msg_send![&*bid_ns, length];
+        String::from_utf8_lossy(std::slice::from_raw_parts(utf8, len)).into_owned()
+    }
+}
+
+#[cfg(target_os = "macos")]
+const MUSIC_APP_BIDS: &[&str] = &[
+    "com.apple.music", "com.spotify.client", "com.netease.163music",
+    "com.tencent.qqmusic", "com.kugou", "com.kuwo",
+    "com.xiami.client", "com.apple.itunes",
+    "com.soda.music", "com.bytedance.soda.music",
+];
+
+#[cfg(target_os = "macos")]
+fn is_music_app(bid: &str) -> bool {
+    MUSIC_APP_BIDS.iter().any(|m| bid.contains(m))
+}
+
+#[cfg(target_os = "macos")]
+fn is_music_app_running() -> bool {
+    let script = r#"
+        set musicBids to {"com.apple.music", "com.spotify.client", "com.netease.163music", "com.tencent.qqmusic", "com.kugou", "com.kuwo", "com.xiami.client", "com.apple.itunes", "com.soda.music", "com.bytedance.soda.music"}
+        repeat with bid in musicBids
+            try
+                if application id (bid as text) is running then return "1"
+            end try
+        end repeat
+        return "0"
+    "#;
+    match std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+    {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).trim() == "1",
+        Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn _get_system_now_playing_is_playing_unused() -> Option<bool> {
+    use block2::RcBlock;
+    use std::ffi::c_void;
+    use std::sync::{Mutex, OnceLock};
+    use std::sync::mpsc::channel;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
+
+    type DispatchQueue = *mut std::ffi::c_void;
+    type PlaybackState = u32;
+
+    const MEDIA_REMOTE_PLAYING: PlaybackState = 1;
+    const MEDIA_REMOTE_AMBIGUOUS: PlaybackState = 2;
+    const K_CFNUMBER_DOUBLE_TYPE: i32 = 13;
+    const K_CFSTRING_ENCODING_UTF8: u32 = 0x0800_0100;
+
+    type MrGetIsPlayingFn = unsafe extern "C" fn(DispatchQueue, &block2::Block<dyn Fn(i8)>);
+    type MrGetPlaybackStateFn =
+        unsafe extern "C" fn(DispatchQueue, &block2::Block<dyn Fn(PlaybackState)>);
+    type MrGetNowPlayingInfoFn =
+        unsafe extern "C" fn(DispatchQueue, &block2::Block<dyn Fn(*const c_void)>);
+    type DispatchGetGlobalQueueFn = unsafe extern "C" fn(isize, usize) -> DispatchQueue;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+        fn CFNumberGetValue(number: *const c_void, the_type: i32, value: *mut c_void) -> u8;
+        fn CFStringCreateWithCString(
+            alloc: *const c_void,
+            c_str: *const u8,
+            encoding: u32,
+        ) -> *const c_void;
+    }
+
+    static MR_GET_IS_PLAYING_FN: OnceLock<MrGetIsPlayingFn> = OnceLock::new();
+    static MR_GET_STATE_FN: OnceLock<MrGetPlaybackStateFn> = OnceLock::new();
+    static MR_GET_INFO_FN: OnceLock<MrGetNowPlayingInfoFn> = OnceLock::new();
+    static MR_PLAYBACK_RATE_KEY_ADDR: OnceLock<usize> = OnceLock::new();
+    static MR_ELAPSED_TIME_KEY_ADDR: OnceLock<usize> = OnceLock::new();
+    static DISPATCH_GET_GLOBAL_QUEUE_FN: OnceLock<DispatchGetGlobalQueueFn> = OnceLock::new();
+    static LAST_ELAPSED_SAMPLE: OnceLock<Mutex<Option<(f64, f64)>>> = OnceLock::new();
+
+    unsafe {
+        let mr_handle = libc::dlopen(
+            c"/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote"
+                .as_ptr()
+                .cast(),
+            libc::RTLD_NOW,
+        );
+        if mr_handle.is_null() {
+            log::info!("[now_playing/media_remote] dlopen MediaRemote failed");
+            return None;
+        }
+
+        let get_is_playing = if let Some(f) = MR_GET_IS_PLAYING_FN.get() {
+            Some(*f)
+        } else {
+            let mr_is_playing_sym = libc::dlsym(
+                mr_handle,
+                c"MRMediaRemoteGetNowPlayingApplicationIsPlaying".as_ptr().cast(),
+            );
+            if mr_is_playing_sym.is_null() {
+                None
+            } else {
+                let f: MrGetIsPlayingFn =
+                    std::mem::transmute::<*mut c_void, MrGetIsPlayingFn>(mr_is_playing_sym);
+                let _ = MR_GET_IS_PLAYING_FN.set(f);
+                Some(f)
+            }
+        };
+
+        let get_playback_state = if let Some(f) = MR_GET_STATE_FN.get() {
+            Some(*f)
+        } else {
+            let mr_handle = libc::dlopen(
+                c"/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote"
+                    .as_ptr()
+                    .cast(),
+                libc::RTLD_NOW,
+            );
+            if mr_handle.is_null() {
+                None
+            } else {
+                let mr_sym = libc::dlsym(
+                    mr_handle,
+                    c"MRMediaRemoteGetNowPlayingApplicationPlaybackState"
+                        .as_ptr()
+                        .cast(),
+                );
+                if mr_sym.is_null() {
+                    None
+                } else {
+                    let f: MrGetPlaybackStateFn = std::mem::transmute::<*mut c_void, MrGetPlaybackStateFn>(mr_sym);
+                    let _ = MR_GET_STATE_FN.set(f);
+                    Some(f)
+                }
+            }
+        };
+
+        let get_now_playing_info = if let Some(f) = MR_GET_INFO_FN.get() {
+            Some(*f)
+        } else {
+            let mr_info_sym = libc::dlsym(
+                mr_handle,
+                c"MRMediaRemoteGetNowPlayingInfo".as_ptr().cast(),
+            );
+            if mr_info_sym.is_null() {
+                None
+            } else {
+                let f: MrGetNowPlayingInfoFn =
+                    std::mem::transmute::<*mut c_void, MrGetNowPlayingInfoFn>(mr_info_sym);
+                let _ = MR_GET_INFO_FN.set(f);
+                Some(f)
+            }
+        };
+
+        let playback_rate_key = if let Some(addr) = MR_PLAYBACK_RATE_KEY_ADDR.get() {
+            Some(*addr as *const c_void)
+        } else {
+            let key_sym = libc::dlsym(
+                mr_handle,
+                c"kMRMediaRemoteNowPlayingInfoPlaybackRate".as_ptr().cast(),
+            );
+            let key = if key_sym.is_null() {
+                let fallback = CFStringCreateWithCString(
+                    std::ptr::null(),
+                    c"kMRMediaRemoteNowPlayingInfoPlaybackRate".as_ptr().cast(),
+                    K_CFSTRING_ENCODING_UTF8,
+                );
+                if fallback.is_null() {
+                    std::ptr::null()
+                } else {
+                    fallback
+                }
+            } else {
+                // Exported as CFStringRef* global; dereference once to get key object.
+                *(key_sym as *const *const c_void)
+            };
+            if key.is_null() {
+                None
+            } else {
+                let _ = MR_PLAYBACK_RATE_KEY_ADDR.set(key as usize);
+                Some(key)
+            }
+        };
+
+        let elapsed_time_key = if let Some(addr) = MR_ELAPSED_TIME_KEY_ADDR.get() {
+            Some(*addr as *const c_void)
+        } else {
+            let key_sym = libc::dlsym(
+                mr_handle,
+                c"kMRMediaRemoteNowPlayingInfoElapsedTime".as_ptr().cast(),
+            );
+            let key = if key_sym.is_null() {
+                let fallback = CFStringCreateWithCString(
+                    std::ptr::null(),
+                    c"kMRMediaRemoteNowPlayingInfoElapsedTime".as_ptr().cast(),
+                    K_CFSTRING_ENCODING_UTF8,
+                );
+                if fallback.is_null() {
+                    std::ptr::null()
+                } else {
+                    fallback
+                }
+            } else {
+                *(key_sym as *const *const c_void)
+            };
+            if key.is_null() {
+                None
+            } else {
+                let _ = MR_ELAPSED_TIME_KEY_ADDR.set(key as usize);
+                Some(key)
+            }
+        };
+
+        let get_global_queue = if let Some(f) = DISPATCH_GET_GLOBAL_QUEUE_FN.get() {
+            *f
+        } else {
+            let dispatch_handle =
+                libc::dlopen(c"/usr/lib/system/libdispatch.dylib".as_ptr().cast(), libc::RTLD_NOW);
+            if dispatch_handle.is_null() {
+                log::info!("[now_playing/media_remote] dlopen libdispatch failed");
+                return None;
+            }
+            let dispatch_sym =
+                libc::dlsym(dispatch_handle, c"dispatch_get_global_queue".as_ptr().cast());
+            if dispatch_sym.is_null() {
+                log::info!("[now_playing/media_remote] dlsym dispatch_get_global_queue failed");
+                return None;
+            }
+            let f: DispatchGetGlobalQueueFn =
+                std::mem::transmute::<*mut c_void, DispatchGetGlobalQueueFn>(dispatch_sym);
+            let _ = DISPATCH_GET_GLOBAL_QUEUE_FN.set(f);
+            f
+        };
+
+        let queue = get_global_queue(0, 0);
+
+        // Best signal: now playing info playbackRate (0 paused, 1 playing).
+        if let Some(get_now_playing_info_fn) = get_now_playing_info
+        {
+            let (tx, rx) = channel::<(Option<f64>, Option<f64>)>();
+            let callback = RcBlock::new(move |info: *const c_void| {
+                if info.is_null() {
+                    let _ = tx.send((None, None));
+                    return;
+                }
+                let read_number = |key: Option<*const c_void>| -> Option<f64> {
+                    let k = key?;
+                    let value = CFDictionaryGetValue(info, k);
+                    if value.is_null() {
+                        return None;
+                    }
+                    let mut n: f64 = 0.0;
+                    let ok = CFNumberGetValue(
+                        value,
+                        K_CFNUMBER_DOUBLE_TYPE,
+                        &mut n as *mut f64 as *mut c_void,
+                    );
+                    if ok != 0 { Some(n) } else { None }
+                };
+                let rate = read_number(playback_rate_key);
+                let elapsed = read_number(elapsed_time_key);
+                let _ = tx.send((rate, elapsed));
+            });
+            get_now_playing_info_fn(queue, &callback);
+            match rx.recv_timeout(Duration::from_millis(220)) {
+                Ok((Some(rate), _)) => {
+                    let is_playing = rate > 0.01;
+                    log::info!(
+                        "[now_playing/media_remote] playback_rate={} source=now_playing_info is_playing={}",
+                        rate, is_playing
+                    );
+                    return Some(is_playing);
+                }
+                Ok((None, Some(elapsed))) => {
+                    let now_sec = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs_f64())
+                        .unwrap_or(0.0);
+                    let cache = LAST_ELAPSED_SAMPLE.get_or_init(|| Mutex::new(None));
+                    let mut guard = cache.lock().unwrap();
+                    let inferred = if let Some((prev_elapsed, prev_ts)) = *guard {
+                        let dt = (now_sec - prev_ts).max(0.001);
+                        let de = elapsed - prev_elapsed;
+                        // Progress increasing at a meaningful pace => playing.
+                        // Paused typically keeps elapsed almost unchanged.
+                        Some(de > dt * 0.15)
+                    } else {
+                        None
+                    };
+                    *guard = Some((elapsed, now_sec));
+                    log::info!(
+                        "[now_playing/media_remote] elapsed_time={} source=elapsed_fallback inferred={:?}",
+                        elapsed, inferred
+                    );
+                    if let Some(v) = inferred {
+                        return Some(v);
+                    }
+                }
+                Ok((None, None)) => {
+                    log::info!(
+                        "[now_playing/media_remote] playback_rate/elapsed missing source=now_playing_info fallback=is_playing/state"
+                    );
+                }
+                Err(_) => {
+                    log::info!(
+                        "[now_playing/media_remote] now_playing_info timeout fallback=is_playing/state"
+                    );
+                }
+            }
+        }
+
+        let mut is_playing_api_result: Option<bool> = None;
+        if let Some(get_is_playing_fn) = get_is_playing {
+            let (tx, rx) = channel::<i8>();
+            let callback = RcBlock::new(move |is_playing: i8| {
+                let _ = tx.send(is_playing);
+            });
+            get_is_playing_fn(queue, &callback);
+            match rx.recv_timeout(Duration::from_millis(220)) {
+                Ok(is_playing_raw) => {
+                    let is_playing = is_playing_raw != 0;
+                    log::info!("[now_playing/media_remote] is_playing_api={} source=is_playing", is_playing);
+                    is_playing_api_result = Some(is_playing);
+                }
+                Err(_) => {
+                    log::info!("[now_playing/media_remote] is_playing_api timeout, fallback=playback_state");
+                }
+            }
+        }
+
+        if let Some(get_playback_state_fn) = get_playback_state {
+            let (tx, rx) = channel::<PlaybackState>();
+            let callback = RcBlock::new(move |state: PlaybackState| {
+                let _ = tx.send(state);
+            });
+            get_playback_state_fn(queue, &callback);
+            let playback_state_result = match rx.recv_timeout(Duration::from_millis(220)) {
+                Ok(state) => {
+                    log::info!(
+                        "[now_playing/media_remote] playback_state={} source=state_fallback",
+                        state
+                    );
+                    Some(state)
+                }
+                Err(_) => {
+                    log::info!("[now_playing/media_remote] playback_state timeout");
+                    None
+                }
+            };
+            let audio_active = is_audio_output_active();
+            return match (is_playing_api_result, playback_state_result) {
+                // Prefer explicit API when it reliably reports playing.
+                (Some(true), _) => Some(true),
+                // Some integrations always return false from is_playing API.
+                // In that case, accept ambiguous state=2 only when audio output is active.
+                (Some(false), Some(state)) if state == MEDIA_REMOTE_AMBIGUOUS => {
+                    let inferred = false;
+                    log::info!(
+                        "[now_playing/media_remote] reconcile is_playing=false state=2 audio_active={} inferred={}",
+                        audio_active, inferred
+                    );
+                    Some(inferred)
+                }
+                (Some(false), Some(state)) => {
+                    let inferred = state == MEDIA_REMOTE_PLAYING;
+                    log::info!(
+                        "[now_playing/media_remote] reconcile is_playing=false state={} inferred={}",
+                        state, inferred
+                    );
+                    Some(inferred)
+                }
+                // If explicit API timed out/unavailable, use state + audio tie-breaker.
+                (None, Some(state)) if state == MEDIA_REMOTE_AMBIGUOUS => {
+                    let inferred = audio_active;
+                    log::info!(
+                        "[now_playing/media_remote] reconcile no_is_playing state=2 audio_active={} inferred={}",
+                        audio_active, inferred
+                    );
+                    Some(inferred)
+                }
+                (None, Some(state)) => Some(state == MEDIA_REMOTE_PLAYING),
+                (Some(v), None) => Some(v),
+                (None, None) => None,
+            };
+        }
+
+        if is_playing_api_result.is_some() {
+            return is_playing_api_result;
+        }
+        log::info!("[now_playing/media_remote] no usable media_remote symbol");
+        None
+    }
+}
+
+/// Check if the default audio output device has any audio running.
+/// Used only as a tie-breaker for ambiguous MediaRemote states.
+#[cfg(target_os = "macos")]
+fn is_audio_output_active() -> bool {
+    #[allow(non_upper_case_globals)]
+    const kAudioHardwarePropertyDefaultOutputDevice: u32 = u32::from_be_bytes(*b"dOut");
+    #[allow(non_upper_case_globals)]
+    const kAudioDevicePropertyDeviceIsRunningSomewhere: u32 = u32::from_be_bytes(*b"gone");
+    #[allow(non_upper_case_globals)]
+    const kAudioObjectPropertyScopeGlobal: u32 = u32::from_be_bytes(*b"glob");
+    #[allow(non_upper_case_globals)]
+    const kAudioObjectPropertyElementMain: u32 = 0;
+    #[allow(non_upper_case_globals)]
+    const kAudioObjectSystemObject: u32 = 1;
+
+    #[repr(C)]
+    struct AudioObjectPropertyAddress {
+        selector: u32,
+        scope: u32,
+        element: u32,
+    }
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    unsafe extern "C" {
+        fn AudioObjectGetPropertyData(
+            id: u32,
+            addr: *const AudioObjectPropertyAddress,
+            qualifier_size: u32,
+            qualifier: *const std::ffi::c_void,
+            data_size: *mut u32,
+            data: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    unsafe {
+        let addr = AudioObjectPropertyAddress {
+            selector: kAudioHardwarePropertyDefaultOutputDevice,
+            scope: kAudioObjectPropertyScopeGlobal,
+            element: kAudioObjectPropertyElementMain,
+        };
+        let mut device: u32 = 0;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let err = AudioObjectGetPropertyData(
+            kAudioObjectSystemObject,
+            &addr,
+            0,
+            std::ptr::null(),
+            &mut size,
+            &mut device as *mut u32 as *mut std::ffi::c_void,
+        );
+        if err != 0 || device == 0 {
+            return false;
+        }
+
+        let addr2 = AudioObjectPropertyAddress {
+            selector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            scope: kAudioObjectPropertyScopeGlobal,
+            element: kAudioObjectPropertyElementMain,
+        };
+        let mut running: u32 = 0;
+        size = std::mem::size_of::<u32>() as u32;
+        let err2 = AudioObjectGetPropertyData(
+            device,
+            &addr2,
+            0,
+            std::ptr::null(),
+            &mut size,
+            &mut running as *mut u32 as *mut std::ffi::c_void,
+        );
+        err2 == 0 && running != 0
+    }
+}
+
+/// Use `nowplaying-cli` to check playback rate and source app.
+/// Returns (is_playing, source_bundle_id) or None if tool unavailable.
+#[cfg(target_os = "macos")]
+fn nowplaying_cli_status() -> Option<(bool, String)> {
+    static CLI_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let path = CLI_PATH.get_or_init(|| {
+        for p in &["/opt/homebrew/bin/nowplaying-cli", "/usr/local/bin/nowplaying-cli"] {
+            if std::path::Path::new(p).exists() {
+                return Some(p.to_string());
+            }
+        }
+        None
+    });
+    let cli = path.as_deref()?;
+    let output = std::process::Command::new(cli)
+        .args(["get", "playbackRate", "clientBundleIdentifier"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines();
+    let rate: f64 = lines.next()?.trim().parse().ok()?;
+    let source_bid = lines.next().unwrap_or("").trim().to_lowercase();
+    Some((rate > 0.01, source_bid))
+}
+
+#[cfg(target_os = "macos")]
+fn is_any_music_app_playing() -> bool {
+    let script = r#"
+        set isPlaying to false
+
+        -- Check apps that support "player state" AppleScript
+        if application "Music" is running then
+            tell application "Music"
+                try
+                    if player state is playing then set isPlaying to true
+                end try
+            end tell
+        end if
+
+        if (not isPlaying) and application "Spotify" is running then
+            tell application "Spotify"
+                try
+                    if player state is playing then set isPlaying to true
+                end try
+            end tell
+        end if
+
+        -- For apps without AppleScript player-state (NeteaseMusic, QQ Music, etc.),
+        -- check the system menu bar: the first item in the "控制" menu
+        -- toggles between "播放"/"暂停" or "Play"/"Pause".
+        if not isPlaying then
+            tell application "System Events"
+                set menuChecks to {{"com.netease.163music", "控制"}, {"com.tencent.qqmusic", "控制"}, {"com.soda.music", "控制"}, {"com.bytedance.soda.music", "控制"}}
+                repeat with entry in menuChecks
+                    if isPlaying then exit repeat
+                    set bid to item 1 of entry
+                    set menuName to item 2 of entry
+                    try
+                        set procs to every process whose bundle identifier is bid
+                        if (count of procs) > 0 then
+                            set p to item 1 of procs
+                            set firstItem to name of menu item 1 of menu 1 of menu bar item menuName of menu bar 1 of p
+                            if firstItem is "暂停" or firstItem is "Pause" then
+                                set isPlaying to true
+                            end if
+                        end if
+                    end try
+                end repeat
+            end tell
+        end if
+
+        if isPlaying then
+            return "1"
+        else
+            return "0"
+        end if
+    "#;
+
+    match std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+    {
+        Ok(output) => {
+            let result = String::from_utf8_lossy(&output.stdout).trim() == "1";
+            log::info!("[now_playing/script] is_any_music_app_playing={}", result);
+            result
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_video_app(bid: &str) -> bool {
+    const VIDEO_APPS: &[&str] = &[
+        "com.colliderli.iina", "org.videolan.vlc", "com.apple.quicktimeplayer",
+        "tv.plex.plexmediaplayer", "io.mpv", "com.apple.tv",
+        "com.bilibili.bili", "com.disneyplus", "com.netflix",
+    ];
+    VIDEO_APPS.iter().any(|v| bid.contains(v))
+}
+
+#[cfg(target_os = "macos")]
+fn is_browser(bid: &str) -> bool {
+    const BROWSERS: &[&str] = &[
+        "com.google.chrome", "org.mozilla.firefox", "com.apple.safari",
+        "com.microsoft.edgemac", "com.brave.browser", "com.vivaldi.vivaldi",
+        "company.thebrowser.browser", "com.operasoftware.opera",
+    ];
+    BROWSERS.iter().any(|b| bid.contains(b))
+}
+
+#[cfg(target_os = "windows")]
+fn is_music_app_win(id: &str) -> bool {
+    const MUSIC_APPS: &[&str] = &[
+        "spotify", "zune", "zunemusic",
+        "cloudmusic", "163music", "netease", "\u{7f51}\u{6613}\u{4e91}",
+        "qqmusic", "qq\u{97f3}\u{4e50}",
+        "kugou", "\u{9177}\u{72d7}", "kuwo", "\u{9177}\u{6211}",
+        "foobar2000", "aimp", "musicbee",
+        "itunes", "applemusic", "cider",
+        "\u{6c7d}\u{6c34}\u{97f3}\u{4e50}", "soda",
+    ];
+    MUSIC_APPS.iter().any(|m| id.contains(m))
+}
+
+#[cfg(target_os = "windows")]
+fn is_video_app_win(id: &str) -> bool {
+    const VIDEO_APPS: &[&str] = &[
+        "potplayer", "vlc", "mpv",
+        "plex", "mpc-hc", "mpc-be",
+        "kmplayer", "iina", "films",
+        "bilibili", "\u{54d4}\u{54e9}\u{54d4}\u{54e9}",
+        "disney", "netflix", "hbo",
+        "douyin", "\u{6296}\u{97f3}", "tiktok",
+        "iqiyi", "\u{7231}\u{5947}\u{827a}",
+        "youku", "\u{4f18}\u{9177}",
+        "mgtv", "\u{8292}\u{679c}",
+        "dandanplay",
+    ];
+    VIDEO_APPS.iter().any(|v| id.contains(v))
+}
+
+#[cfg(target_os = "windows")]
+fn is_browser_win(id: &str) -> bool {
+    const BROWSERS: &[&str] = &[
+        "chrome", "firefox", "msedge",
+        "brave", "vivaldi", "opera",
+        "arc",
+    ];
+    BROWSERS.iter().any(|b| id.contains(b))
+}
+
+/// Expand the mini window to pet-context size and start a cursor-position poll
+/// that toggles `setIgnoresMouseEvents:` — the transparent area around the
+/// mascot passes clicks through to the desktop. When the context menu is open
+/// (`PET_CONTEXT_MENU_OPEN`), the entire window accepts clicks.
+///
+/// Pass `active: false` to stop the poll and shrink back to collapsed size.
+#[tauri::command]
+async fn set_pet_mode_window(
+    app: tauri::AppHandle,
+    active: bool,
+    mascot_scale: Option<f64>,
+    large_mascot_scale: Option<f64>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("mini").ok_or("mini window not found")?;
+    let mascot_scale = sanitized_mascot_scale(mascot_scale);
+    let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
+
+    if active {
+        // Expand window to menu-ready size (mascot area + padding for buttons).
+        #[cfg(target_os = "macos")]
+        {
+            let win_clone = win.clone();
+            app.run_on_main_thread(move || {
+                use objc2::runtime::{AnyClass, AnyObject};
+                use objc2::msg_send;
+                use objc2_foundation::{NSRect, NSPoint, NSSize};
+                if let Ok(ns_win) = win_clone.ns_window() {
+                    let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                    let current: NSRect = unsafe { msg_send![obj, frame] };
+                    let screen_info: Option<(f64, f64, f64, f64)> = unsafe {
+                        let screen: *mut AnyObject = msg_send![obj, screen];
+                        if screen.is_null() {
+                            let cls = AnyClass::get(c"NSScreen");
+                            cls.and_then(|c| {
+                                let ms: *mut AnyObject = msg_send![c, mainScreen];
+                                if ms.is_null() { None } else {
+                                    let sf: NSRect = msg_send![&*ms, frame];
+                                    Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height))
+                                }
+                            })
+                        } else {
+                            let sf: NSRect = msg_send![&*screen, frame];
+                            Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height))
+                        }
+                    };
+                    if let Some((sx, sy, sw, sh)) = screen_info {
+                        let left_pad = 180.0;
+                        let top_pad = 100.0;
+                        let win_w = (current.size.width + left_pad).min(sw);
+                        let win_h = (current.size.height + top_pad).min(sh);
+                        // Keep bottom-right corner fixed (mascot stays there).
+                        let mut x = current.origin.x + current.size.width - win_w;
+                        let y = current.origin.y;
+                        x = x.max(sx).min(sx + sw - win_w);
+                        let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
+                        unsafe {
+                            // Start with clicks passing through until the poll takes over.
+                            let _: () = msg_send![obj, setIgnoresMouseEvents: true];
+                            let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                            let _: () = msg_send![obj, setLevel: 27isize];
+                            let _: () = msg_send![obj, orderFrontRegardless];
+                        }
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((x, y, win_w, win_h));
+                        }
+                    }
+                }
+            }).map_err(|e| e.to_string())?;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(Some(monitor)) = win.current_monitor() {
+                let scale = monitor.scale_factor();
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                    let current_x = pos.x as f64 / scale;
+                    let current_y = pos.y as f64 / scale;
+                    let current_w = size.width as f64 / scale;
+                    let current_h = size.height as f64 / scale;
+                    let sw = monitor.size().width as f64 / scale;
+                    let sh = monitor.size().height as f64 / scale;
+                    let left_pad = 180.0;
+                    let top_pad = 100.0;
+                    let win_w = (current_w + left_pad).min(sw);
+                    let win_h = (current_h + top_pad).min(sh);
+                    // Keep bottom-right corner fixed so mascot stays anchored.
+                    let x = (current_x + current_w - win_w).max(0.0).min(sw - win_w);
+                    let y = current_y.max(0.0).min(sh - win_h);
+                    let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+                }
+            }
+            if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = win.set_always_on_top(true);
+                let _ = win.show();
+            }
+        }
+
+        // Start the click-through poll thread.
+        PET_PASSTHROUGH_ACTIVE.store(true, Ordering::SeqCst);
+        #[cfg(target_os = "macos")]
+        if !PET_PASSTHROUGH_THREAD_ALIVE.load(Ordering::SeqCst) {
+            let app2 = app.clone();
+            std::thread::spawn(move || pet_passthrough_poll(app2, mascot_scale, large_mascot_scale));
+        }
+        #[cfg(target_os = "windows")]
+        if !PET_PASSTHROUGH_THREAD_ALIVE.load(Ordering::SeqCst) {
+            let app2 = app.clone();
+            std::thread::spawn(move || pet_passthrough_poll_windows(app2, mascot_scale, large_mascot_scale));
+        }
+    } else {
+        // Stop the poll thread.
+        PET_PASSTHROUGH_ACTIVE.store(false, Ordering::SeqCst);
+        PET_CONTEXT_MENU_OPEN.store(false, Ordering::SeqCst);
+        PET_POMODORO_ACTIVE.store(false, Ordering::SeqCst);
+
+        // Shrink back to collapsed mascot size and re-enable mouse events.
+        #[cfg(target_os = "macos")]
+        {
+            let win_clone = win.clone();
+            app.run_on_main_thread(move || {
+                use objc2::runtime::AnyObject;
+                use objc2::msg_send;
+                use objc2_foundation::{NSRect, NSPoint, NSSize};
+                if let Ok(ns_win) = win_clone.ns_window() {
+                    let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                    let current: NSRect = unsafe { msg_send![obj, frame] };
+                    let (win_w, win_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+                    // Collapse towards bottom-right corner.
+                    let x = current.origin.x + current.size.width - win_w;
+                    let y = current.origin.y;
+                    let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
+                    unsafe {
+                        let _: () = msg_send![obj, setIgnoresMouseEvents: false];
+                        let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                    }
+                    if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                        *f = Some((x, y, win_w, win_h));
+                    }
+                }
+            }).map_err(|e| e.to_string())?;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(Some(monitor)) = win.current_monitor() {
+                let scale = monitor.scale_factor();
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                    let current_x = pos.x as f64 / scale;
+                    let current_y = pos.y as f64 / scale;
+                    let current_w = size.width as f64 / scale;
+                    let (win_w, win_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+                    // Collapse towards bottom-right corner.
+                    let x = current_x + current_w - win_w;
+                    let y = current_y;
+                    let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Tell the pet-mode pass-through poll whether a pomodoro timer is active.
+/// When true, the entire mascot window stays interactive so the bottom-
+/// anchored Pomodoro stop button receives clicks instead of having them
+/// pass through (it sits in the centered hitbox's bottom inset region).
+#[tauri::command]
+async fn set_pet_pomodoro_active(active: bool) -> Result<(), String> {
+    PET_POMODORO_ACTIVE.store(active, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Tell the pet-mode pass-through poll whether the context menu is open.
+/// When `side` is `"right"` the window is widened rightward by 180 px
+/// (left edge stays put).  The frontend sets the mascot CSS to
+/// `right: 180` so it does not move on screen — it stays at exactly
+/// the same pixel position.  Menu buttons render in the new 180 px area
+/// via `overflow: visible` + `left: mascotSize + 14`.
+#[tauri::command]
+async fn set_pet_context_menu(app: tauri::AppHandle, open: bool, side: Option<String>) -> Result<(), String> {
+    PET_CONTEXT_MENU_OPEN.store(open, Ordering::SeqCst);
+
+    #[cfg(target_os = "macos")]
+    {
+        let right_pad = 180.0_f64;
+        if open && side.as_deref() == Some("right") {
+            if let Some(win) = app.get_webview_window("mini") {
+                let win_clone = win.clone();
+                let (tx, rx) = std::sync::mpsc::channel::<()>();
+                let _ = app.run_on_main_thread(move || {
+                    use objc2::runtime::AnyObject;
+                    use objc2::msg_send;
+                    use objc2_foundation::{NSRect, NSPoint, NSSize};
+                    if let Ok(ns_win) = win_clone.ns_window() {
+                        let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                        let current: NSRect = unsafe { msg_send![obj, frame] };
+                        if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                            *saved = Some((
+                                current.origin.x,
+                                current.origin.y,
+                                current.size.width,
+                                current.size.height,
+                            ));
+                        }
+                        // Widen rightward — left edge stays fixed, mascot
+                        // keeps its screen position via CSS right: 180.
+                        let new_w = current.size.width + right_pad;
+                        let frame = NSRect::new(
+                            NSPoint::new(current.origin.x, current.origin.y),
+                            NSSize::new(new_w, current.size.height),
+                        );
+                        unsafe {
+                            let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                            let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                        }
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((current.origin.x, current.origin.y, new_w, current.size.height));
+                        }
+                        pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                    }
+                    let _ = tx.send(());
+                });
+                let _ = rx.recv();
+            }
+        } else if !open {
+            if let Some(win) = app.get_webview_window("mini") {
+                let win_clone = win.clone();
+                let (tx, rx) = std::sync::mpsc::channel::<()>();
+                let _ = app.run_on_main_thread(move || {
+                    use objc2::runtime::AnyObject;
+                    use objc2::msg_send;
+                    use objc2_foundation::{NSRect, NSPoint, NSSize};
+                    if let Ok(ns_win) = win_clone.ns_window() {
+                        let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                        if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                            if let Some((_x, _y, w, h)) = *saved {
+                                let current: NSRect = unsafe { msg_send![obj, frame] };
+                                let frame = NSRect::new(
+                                    // Keep current position (user may have dragged while menu open),
+                                    // only restore size.
+                                    NSPoint::new(current.origin.x, current.origin.y),
+                                    NSSize::new(w, h),
+                                );
+                                unsafe {
+                                    let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                                    let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                                }
+                                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                                    *f = Some((current.origin.x, current.origin.y, w, h));
+                                }
+                                *saved = None;
+                                pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                            }
+                        }
+                    }
+                    let _ = tx.send(());
+                });
+                let _ = rx.recv();
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let right_pad = 180.0_f64;
+        if open && side.as_deref() == Some("right") {
+            if let Some(win) = app.get_webview_window("mini") {
+                if let Ok(Some(monitor)) = win.current_monitor() {
+                    let scale = monitor.scale_factor();
+                    if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                        let current_x = pos.x as f64 / scale;
+                        let current_y = pos.y as f64 / scale;
+                        let current_w = size.width as f64 / scale;
+                        let current_h = size.height as f64 / scale;
+                        if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                            if saved.is_none() {
+                                *saved = Some((current_x, current_y, current_w, current_h));
+                            }
+                        }
+                        // Widen rightward — left edge stays fixed, mascot keeps
+                        // screen position via CSS right: 180.
+                        let new_w = current_w + right_pad;
+                        let _ = win.set_size(tauri::LogicalSize::new(new_w, current_h));
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((current_x, current_y, new_w, current_h));
+                        }
+                    }
+                }
+            }
+        } else if !open {
+            if let Some(win) = app.get_webview_window("mini") {
+                if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                    if let Some((_x, _y, w, h)) = *saved {
+                        let (current_x, current_y) = match (win.outer_position(), win.current_monitor()) {
+                            (Ok(pos), Ok(Some(monitor))) => {
+                                let scale = monitor.scale_factor();
+                                (pos.x as f64 / scale, pos.y as f64 / scale)
+                            }
+                            _ => (0.0, 0.0),
+                        };
+                        let _ = win.set_size(tauri::LogicalSize::new(w, h));
+                        if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                            *f = Some((current_x, current_y, w, h));
+                        }
+                        *saved = None;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Polling loop for pet-mode click pass-through. Checks cursor position every
+/// 20ms. When the cursor is over the mascot (bottom-right of the expanded
+/// window) or the context menu is open, `setIgnoresMouseEvents: false` so the
+/// webview receives events. Otherwise `setIgnoresMouseEvents: true` so clicks
+/// pass through to whatever is behind.
+#[cfg(target_os = "macos")]
+fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_scale: f64) {
+    use std::time::Duration;
+    PET_PASSTHROUGH_THREAD_ALIVE.store(true, Ordering::SeqCst);
+    let mut was_interactive = false;
+    let (mascot_w, mascot_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+    // Keep these ratios aligned with frontend `Mini.tsx` so hover cursor and
+    // native pass-through behavior remain consistent around mascot edges.
+    let hit_w = mascot_w * (2.4 / 3.0);
+    let hit_h = mascot_h * (2.8 / 3.0);
+    let inset_x = (mascot_w - hit_w) / 2.0;
+    let inset_y = (mascot_h - hit_h) / 2.0;
+    let edge_threshold = 30.0;
+    // Get screen bounds once at startup so we can detect edge proximity.
+    let screen_bounds: Option<(f64, f64, f64, f64)> = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let app_c = app.clone();
+        let _ = app_c.run_on_main_thread(move || {
+            use objc2::runtime::{AnyClass, AnyObject};
+            use objc2::msg_send;
+            use objc2_foundation::NSRect;
+            let result: Option<(f64, f64, f64, f64)> = unsafe {
+                AnyClass::get(c"NSScreen").and_then(|cls| {
+                    let ms: *mut AnyObject = msg_send![cls, mainScreen];
+                    if ms.is_null() { None } else {
+                        let sf: NSRect = msg_send![&*ms, frame];
+                        Some((sf.origin.x, sf.origin.y, sf.size.width, sf.size.height))
+                    }
+                })
+            };
+            let _ = tx.send(result);
+        });
+        rx.recv().ok().flatten()
+    };
+
+    while PET_PASSTHROUGH_ACTIVE.load(Ordering::SeqCst) {
+        let menu_open = PET_CONTEXT_MENU_OPEN.load(Ordering::SeqCst);
+        let pomodoro_active = PET_POMODORO_ACTIVE.load(Ordering::SeqCst);
+        let frame = MINI_WINDOW_FRAME.lock().ok().and_then(|g| *g);
+
+        let should_be_interactive = if menu_open || pomodoro_active {
+            true
+        } else if let Some((fx, fy, fw, _fh)) = frame {
+            let cursor = macos_cursor_position();
+            let mascot_left = fx + fw - mascot_w;
+            let mascot_right = mascot_left + mascot_w;
+            let mascot_bottom = fy;
+            // Drop hitbox insets when the mascot extends near/past a screen
+            // edge so the visible portion stays fully clickable.
+            let near_edge = if let Some((sx, _sy, sw, _sh)) = screen_bounds {
+                mascot_left < sx + edge_threshold || mascot_right > sx + sw - edge_threshold
+            } else {
+                mascot_left < edge_threshold
+            };
+            // Near screen edge, keep hitbox reasonably generous but never full-rect.
+            // Full-rect near-edge hitboxes make peek feel "too clickable" and steal
+            // hover/clicks away from nearby desktop content.
+            let ix = if near_edge { inset_x * 0.5 } else { inset_x };
+            let iy = inset_y;
+            let hit_left = mascot_left + ix;
+            let hit_right = mascot_right - ix;
+            let hit_bottom = mascot_bottom + iy;
+            let hit_top = mascot_bottom + mascot_h - iy;
+            cursor.0 >= hit_left && cursor.0 <= hit_right
+                && cursor.1 >= hit_bottom && cursor.1 <= hit_top
+        } else {
+            false
+        };
+
+        if should_be_interactive != was_interactive {
+            let app1 = app.clone();
+            let app2 = app.clone();
+            let val = should_be_interactive;
+            let _ = app1.run_on_main_thread(move || {
+                if let Some(win) = app2.get_webview_window("mini") {
+                    if let Ok(ns_win) = win.ns_window() {
+                        use objc2::msg_send;
+                        let obj = unsafe { &*(ns_win as *mut objc2::runtime::AnyObject) };
+                        unsafe {
+                            let _: () = msg_send![obj, setIgnoresMouseEvents: !val];
+                        }
+                    }
+                }
+            });
+            was_interactive = should_be_interactive;
+        }
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Ensure events are re-enabled when the thread exits.
+    let app_exit = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(win) = app_exit.get_webview_window("mini") {
+            if let Ok(ns_win) = win.ns_window() {
+                use objc2::msg_send;
+                let obj = unsafe { &*(ns_win as *mut objc2::runtime::AnyObject) };
+                unsafe {
+                    let _: () = msg_send![obj, setIgnoresMouseEvents: false];
+                }
+            }
+        }
+    });
+    PET_PASSTHROUGH_THREAD_ALIVE.store(false, Ordering::SeqCst);
+}
+
+/// Windows equivalent of `pet_passthrough_poll`. Polls the global cursor
+/// position (via Win32 `GetCursorPos`) every 20 ms and toggles the mini
+/// webview's `set_ignore_cursor_events` so clicks outside the mascot
+/// hit-box pass through to whatever is behind, while clicks on the mascot
+/// itself reach the webview. When the pet context menu is open the entire
+/// window is interactive so menu buttons receive clicks.
+#[cfg(target_os = "windows")]
+fn pet_passthrough_poll_windows(app: tauri::AppHandle, mascot_scale: f64, large_mascot_scale: f64) {
+    use std::time::Duration;
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    PET_PASSTHROUGH_THREAD_ALIVE.store(true, Ordering::SeqCst);
+    // mascot dimensions in logical pixels (matches CSS px on Windows WebView2).
+    let (mascot_w_logical, mascot_h_logical) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+    let hit_w = mascot_w_logical * (1.8 / 3.0);
+    let hit_h = mascot_h_logical * (2.5 / 3.0);
+    let inset_x_logical = (mascot_w_logical - hit_w) / 2.0;
+    let inset_y_logical = (mascot_h_logical - hit_h) / 2.0;
+    let edge_threshold_logical = 30.0_f64;
+
+    let mut last_state: Option<bool> = None;
+
+    while PET_PASSTHROUGH_ACTIVE.load(Ordering::SeqCst) {
+        let menu_open = PET_CONTEXT_MENU_OPEN.load(Ordering::SeqCst);
+        let pomodoro_active = PET_POMODORO_ACTIVE.load(Ordering::SeqCst);
+
+        let should_be_interactive = if menu_open || pomodoro_active {
+            true
+        } else {
+            // Read cursor position and window geometry in physical pixels.
+            let cursor = unsafe {
+                let mut pt = POINT::default();
+                if GetCursorPos(&mut pt).is_ok() {
+                    Some((pt.x as f64, pt.y as f64))
+                } else {
+                    None
+                }
+            };
+            let win = app.get_webview_window("mini");
+            match (win, cursor) {
+                (Some(win), Some((cx, cy))) => {
+                    let pos = win.outer_position().ok();
+                    let size = win.outer_size().ok();
+                    let scale = win.scale_factor().unwrap_or(1.0);
+                    let monitor = win.current_monitor().ok().flatten();
+                    if let (Some(pos), Some(size)) = (pos, size) {
+                        let fx = pos.x as f64;
+                        let fy = pos.y as f64;
+                        let fw = size.width as f64;
+                        let fh = size.height as f64;
+
+                        // Mascot is anchored at `left: petBaseWinW - mascotW` and `bottom: 0`,
+                        // i.e. the right-bottom corner of the no-menu window. When the menu
+                        // is closed, fw == petBaseWinW so the mascot's right edge in screen
+                        // physical px is fx + fw and its bottom is fy + fh.
+                        let mascot_w = mascot_w_logical * scale;
+                        let mascot_h = mascot_h_logical * scale;
+                        let inset_x = inset_x_logical * scale;
+                        let inset_y = inset_y_logical * scale;
+                        let edge_threshold = edge_threshold_logical * scale;
+
+                        let mascot_right = fx + fw;
+                        let mascot_left = mascot_right - mascot_w;
+                        let mascot_bottom = fy + fh;
+                        let mascot_top = mascot_bottom - mascot_h;
+
+                        let near_edge = if let Some(monitor) = monitor {
+                            let mp = monitor.position();
+                            let ms = monitor.size();
+                            let monitor_left = mp.x as f64;
+                            let monitor_right = monitor_left + ms.width as f64;
+                            mascot_left < monitor_left + edge_threshold
+                                || mascot_right > monitor_right - edge_threshold
+                        } else {
+                            false
+                        };
+
+                        // Keep edge hitbox slightly relaxed on X only; do not use
+                        // full-rect hitboxes, which feel too large during peek.
+                        let ix = if near_edge { inset_x * 0.5 } else { inset_x };
+                        let iy = inset_y;
+                        let hit_left = mascot_left + ix;
+                        let hit_right = mascot_right - ix;
+                        let hit_top = mascot_top + iy;
+                        let hit_bottom = mascot_bottom - iy;
+
+                        cx >= hit_left && cx <= hit_right
+                            && cy >= hit_top && cy <= hit_bottom
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        };
+
+        if last_state != Some(should_be_interactive) {
+            if let Some(win) = app.get_webview_window("mini") {
+                let _ = win.set_ignore_cursor_events(!should_be_interactive);
+            }
+            last_state = Some(should_be_interactive);
+        }
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Re-enable click events on exit so the window stays usable when leaving pet mode.
+    if let Some(win) = app.get_webview_window("mini") {
+        let _ = win.set_ignore_cursor_events(false);
+    }
+    PET_PASSTHROUGH_THREAD_ALIVE.store(false, Ordering::SeqCst);
+}
+
 /// Resize the mini window to 3/4 of screen, centered, with normal window level.
 /// Used for settings/update modal mode. Pass `restore: true` to go back to mini mode.
 #[tauri::command]
@@ -3693,6 +5190,7 @@ async fn set_mini_size(
     restore: bool,
     position: Option<String>,
     keep_on_top: Option<bool>,
+    pet_context: Option<bool>,
     mascot_scale: Option<f64>,
     large_mascot: Option<bool>,
     large_mascot_scale: Option<f64>,
@@ -3700,6 +5198,7 @@ async fn set_mini_size(
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
     let want_top = keep_on_top.unwrap_or(restore);
+    let is_pet_context = pet_context.unwrap_or(false);
     let mascot_scale = sanitized_mascot_scale(mascot_scale);
     let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
 
@@ -3738,6 +5237,98 @@ async fn set_mini_size(
                     // the mini window is temporarily resized into settings/update mode.
                     if let Ok(mut info) = NOTCH_SCREEN_INFO.lock() {
                         *info = Some((sx, sy, sw, sh, notch_off));
+                    }
+                    if is_pet_context {
+                        if restore {
+                            let current: NSRect = unsafe { msg_send![obj, frame] };
+                            if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                                if let Some((x, y, win_w, win_h)) = *saved {
+                                    let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
+                                    // Hide window before shrink to avoid compositor
+                                    // flashing the old large-frame content at the
+                                    // wrong position inside the smaller window.
+                                    unsafe {
+                                        let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                                        let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
+                                        let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                                        if want_top {
+                                            let _: () = msg_send![obj, orderFrontRegardless];
+                                        }
+                                    }
+                                    *saved = None;
+                                    if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                                        *f = Some((x, y, win_w, win_h));
+                                    }
+                                    // Restore alpha after the webview repaints at
+                                    // the new size.  dispatch_after on the main
+                                    // queue with a
+                                    // short delay lets the compositor
+                                    // finish compositing the new frame.
+                                    pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                                    return;
+                                }
+                            }
+                            // Fallback: if save frame is missing (e.g. race/double close),
+                            // still collapse around current center instead of jumping to
+                            // default corner placement.
+                            let (target_w, target_h) = if large_mascot.unwrap_or(false) {
+                                large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale)
+                            } else {
+                                collapsed_mascot_window_size(mascot_scale)
+                            };
+                            let mut x = current.origin.x + (current.size.width - target_w) / 2.0;
+                            let mut y = current.origin.y + (current.size.height - target_h) / 2.0;
+                            x = x.max(sx).min(sx + sw - target_w);
+                            y = y.max(sy).min(sy + sh - target_h);
+                            let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(target_w, target_h));
+                            unsafe {
+                                let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                                let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
+                                let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                                if want_top {
+                                    let _: () = msg_send![obj, orderFrontRegardless];
+                                }
+                            }
+                            if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                                *f = Some((x, y, target_w, target_h));
+                            }
+                            pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                            return;
+                        } else {
+                            let current: NSRect = unsafe { msg_send![obj, frame] };
+                            if let Ok(mut saved) = PET_MENU_RESTORE_FRAME.lock() {
+                                *saved = Some((current.origin.x, current.origin.y, current.size.width, current.size.height));
+                            }
+                            // Expand LEFT and UP, keeping the bottom-right corner
+                            // of the window fixed (macOS: origin.x+width, origin.y).
+                            // The mascot stays at bottom-right via CSS absolute pos.
+                            let left_pad = 180.0;
+                            let top_pad = 100.0;
+                            let win_w = (current.size.width + left_pad).min(sw);
+                            let win_h = (current.size.height + top_pad).min(sh);
+                            let mut x = current.origin.x + current.size.width - win_w;
+                            let mut y = current.origin.y;
+                            x = x.max(sx).min(sx + sw - win_w);
+                            y = y.max(sy).min(sy + sh - win_h);
+                            let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
+                            // Hide → resize → delayed restore, same as the
+                            // shrink path, to prevent the old small-window
+                            // content from flashing at the top-left of the
+                            // newly expanded frame.
+                            unsafe {
+                                let _: () = msg_send![obj, setAlphaValue: 0.0f64];
+                                let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
+                                let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
+                                if want_top {
+                                    let _: () = msg_send![obj, orderFrontRegardless];
+                                }
+                            }
+                            if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                                *f = Some((x, y, win_w, win_h));
+                            }
+                            pet_context_schedule_restore_alpha(ns_win as *mut std::ffi::c_void);
+                            return;
+                        }
                     }
                     if restore {
                         let (win_w, win_h) = if large_mascot.unwrap_or(false) {
@@ -8946,6 +10537,19 @@ fn build_asset_response(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    {
+        // WebView2 hardware video decode can drop VP9 alpha; force software decode.
+        let key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+        let flag = "--disable-accelerated-video-decode";
+        let merged = match std::env::var(key) {
+            Ok(existing) if !existing.contains(flag) && !existing.trim().is_empty() => format!("{} {}", existing, flag),
+            Ok(existing) if existing.contains(flag) => existing,
+            _ => flag.to_string(),
+        };
+        std::env::set_var(key, merged);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .register_uri_scheme_protocol("localasset", |ctx, req| {
@@ -9161,6 +10765,8 @@ pub fn run() {
             }
 
             // Start Cursor socket server (shares ClaudeState for unified session tracking)
+            // Cursor integration is disabled on Windows, so skip the server there.
+            #[cfg(not(target_os = "windows"))]
             {
                 let claude_state = app.state::<ClaudeState>();
                 let sessions_arc = Arc::clone(&claude_state.sessions);
@@ -9235,7 +10841,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

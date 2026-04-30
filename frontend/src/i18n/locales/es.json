@@ -122,6 +122,12 @@
     "islandBgDesc": "Selecciona o sube una imagen de fondo, arrastra para seleccionar el área de recorte",
 
     "sound": "Sonido",
+    "petSfx": "Voz del personaje",
+    "petSfxDesc": "Reproducir sonidos del personaje durante las interacciones",
+    "petBehavior": "Comportamiento",
+    "petIdleInterval": "Intervalo de acción aleatoria",
+    "petIdleIntervalDesc": "Frecuencia con la que la mascota activa una acción aleatoria mientras está inactiva",
+    "minutesShort": "min",
     "completionSound": "Sonido de finalización",
     "completionSoundDesc": "Sonido que se reproduce al completar una tarea",
     "defaultSound": "Predeterminado",
@@ -156,6 +162,12 @@
     "checkUpdate": "Buscar actualizaciones",
     "exitApp": "Salir de la aplicación",
 
+    "appMode": "Modo",
+    "codingMode": "Modo Código",
+    "codingModeDesc": "Monitoreo multi-agente, estadísticas de tokens y alertas",
+    "petMode": "Modo Mascota",
+    "petModeDesc": "Animaciones, sistema de crianza y juego interactivo",
+
     "language": "Idioma",
     "languageDesc": "Seleccionar el idioma de la interfaz",
     "langZh": "中文",
@@ -164,6 +176,33 @@
     "langKo": "한국어",
     "langEs": "Español",
     "langFr": "Français"
+  },
+
+  "onboarding": {
+    "chooseModeTitle": "Elige tu modo",
+    "chooseModeSubtitle": "Puedes cambiar de modo en cualquier momento desde Ajustes.",
+    "codingModeLongDesc": "Supervisa tus agentes de IA. Pasa el cursor por la mascota para ver estado, sesiones y actividad.",
+    "petModeLongDesc": "Cría tu mascota de escritorio. Dale comida, juega y sube afinidad con animaciones ricas."
+  },
+
+  "pet": {
+    "dailyGift": "Regalo diario",
+    "claimed": "Reclamado",
+    "actions": "Acciones",
+    "shop": "Tienda",
+    "stop": "Detener",
+    "pomodoro": "Pomodoro",
+    "quit": "Salir",
+    "sleep": "Dormir",
+    "watch": "Ver",
+    "music": "Música",
+    "walk": "Pasear",
+    "milktea": "Té con leche",
+    "spin": "Giro",
+    "dance": "Baile",
+    "pat": "Acariciar",
+    "min": "min",
+    "go": "IR"
   },
 
   "character": {

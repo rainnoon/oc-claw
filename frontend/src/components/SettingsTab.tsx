@@ -226,14 +226,15 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void }) {
+export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
   const { t, i18n } = useTranslation()
+  const isWindowsPlatform = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
-  const [enableCodex, setEnableCodex] = useState(true)
+  const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
   const [codexHookStatus, setCodexHookStatus] = useState('')
-  const [enableCursor, setEnableCursor] = useState(true)
+  const [enableCursor, setEnableCursor] = useState(!isWindowsPlatform)
   const [cursorHookStatus, setCursorHookStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
   const [updateChecking, setUpdateChecking] = useState(false)
@@ -290,9 +291,17 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
       const cod = await store.get('enable_codex')
-      if (typeof cod === 'boolean') setEnableCodex(cod)
+      if (isWindowsPlatform) {
+        setEnableCodex(false)
+        await store.set('enable_codex', false)
+        await store.save()
+      } else if (typeof cod === 'boolean') setEnableCodex(cod)
       const cur = await store.get('enable_cursor')
-      if (typeof cur === 'boolean') setEnableCursor(cur)
+      if (isWindowsPlatform) {
+        setEnableCursor(false)
+        await store.set('enable_cursor', false)
+        await store.save()
+      } else if (typeof cur === 'boolean') setEnableCursor(cur)
     })()
     void checkForUpdate()
     if (showIslandBackgroundSettings) {
@@ -447,8 +456,114 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     }
   }
 
+  const isPetMode = appMode === 'pet'
+
   return (
     <div className="max-w-2xl mx-auto pt-10 pb-20 px-6 flex flex-col gap-10">
+      {/* App Mode Switch */}
+      {appMode && onChangeAppMode && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.appMode', 'Mode')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden p-4">
+            <div className="flex gap-3">
+              {([
+                { mode: 'coding' as const, label: t('settings.codingMode'), icon: '💻', desc: t('settings.codingModeDesc') },
+                { mode: 'pet' as const, label: t('settings.petMode'), icon: '🐾', desc: t('settings.petModeDesc') },
+              ]).map(({ mode, label, icon, desc }) => (
+                <button
+                  key={mode}
+                  onClick={() => onChangeAppMode(mode)}
+                  className={`flex-1 flex items-center gap-3 p-3 rounded-xl border transition-all ${
+                    appMode === mode
+                      ? 'bg-white/10 border-white/20'
+                      : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.05] hover:border-white/10'
+                  }`}
+                >
+                  <span className="text-xl">{icon}</span>
+                  <div className="text-left">
+                    <div className={`text-sm font-medium ${appMode === mode ? 'text-white' : 'text-white/60'}`}>{label}</div>
+                    <div className="text-[11px] text-white/30">{desc}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Pet mode: mascot size */}
+      {isPetMode && !isWindowsPlatform && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Large Mascot Size')}</span>
+                  <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for large mascot mode')}</span>
+                </div>
+                <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
+              </div>
+              <input
+                type="range"
+                min={4}
+                max={6}
+                step={0.1}
+                value={largeMascotScale}
+                onChange={(e) => onChangeLargeMascotScale(Number(e.target.value))}
+                className="w-full accent-white/60 h-1"
+              />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Pet mode: character voice toggle */}
+      {isPetMode && onTogglePetSfxEnabled && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.sound')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+            <div className="flex items-center justify-between p-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.petSfx')}</span>
+                <span className="text-xs text-white/40">{t('settings.petSfxDesc')}</span>
+              </div>
+              <Toggle checked={petSfxEnabled ?? true} onChange={onTogglePetSfxEnabled} />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Pet mode: random idle action interval */}
+      {isPetMode && onChangePetIdleIntervalMin && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.petBehavior', 'Behavior')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.petIdleInterval', 'Random action interval')}</span>
+                  <span className="text-xs text-white/40">{t('settings.petIdleIntervalDesc', 'How often the mascot triggers a random action while idle')}</span>
+                </div>
+                <span className="text-sm text-white/60 tabular-nums">
+                  {(petIdleIntervalMin ?? 2).toFixed(1)} {t('settings.minutesShort', 'min')}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.5}
+                max={30}
+                step={0.5}
+                value={petIdleIntervalMin ?? 2}
+                onChange={(e) => onChangePetIdleIntervalMin(Number(e.target.value))}
+                className="w-full accent-white/60 h-1"
+              />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {!isPetMode && <>
       {/* OpenClaw 连接 */}
       <section className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
@@ -494,7 +609,9 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </div>
       </section>
 
-      {/* Cursor */}
+      {!isWindowsPlatform && (
+      <>
+      {/* Codex */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.codex', 'Codex')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -523,6 +640,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           </div>
         </div>
       </section>
+      </>
+      )}
 
       {/* 显示设置 */}
       <section className="flex flex-col gap-4">
@@ -571,6 +690,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               className="w-full accent-white/60 h-1"
             />
           </div>
+          {!isWindowsPlatform && (
           <div className="p-4 border-b border-white/5">
             <div className="flex items-center justify-between mb-2">
               <div className="flex flex-col gap-1">
@@ -589,6 +709,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               className="w-full accent-white/60 h-1"
             />
           </div>
+          )}
           {showIslandBackgroundSettings && (
             <div className="p-4">
               <div className="flex flex-col gap-1 mb-3">
@@ -703,6 +824,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
           </div>
+          {!isWindowsPlatform && (
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.codexSound', 'Codex Completion Sound')}</span>
@@ -710,6 +832,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={codexSoundEnabled} onChange={onToggleCodexSoundEnabled} />
           </div>
+          )}
+          {!isWindowsPlatform && (
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.cursorSound', 'Cursor Completion Sound')}</span>
@@ -717,6 +841,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={cursorSoundEnabled} onChange={onToggleCursorSoundEnabled} />
           </div>
+          )}
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.waitingSound')}</span>
@@ -734,6 +859,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </div>
       </section>
 
+      </>}
       {/* 关于 */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.about')}</h2>
