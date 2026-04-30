@@ -4968,8 +4968,10 @@ fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_s
     PET_PASSTHROUGH_THREAD_ALIVE.store(true, Ordering::SeqCst);
     let mut was_interactive = false;
     let (mascot_w, mascot_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
-    let hit_w = mascot_w * (1.8 / 3.0);
-    let hit_h = mascot_h * (2.5 / 3.0);
+    // Keep these ratios aligned with frontend `Mini.tsx` so hover cursor and
+    // native pass-through behavior remain consistent around mascot edges.
+    let hit_w = mascot_w * (2.4 / 3.0);
+    let hit_h = mascot_h * (2.8 / 3.0);
     let inset_x = (mascot_w - hit_w) / 2.0;
     let inset_y = (mascot_h - hit_h) / 2.0;
     let edge_threshold = 30.0;
@@ -5014,8 +5016,11 @@ fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_s
             } else {
                 mascot_left < edge_threshold
             };
-            let ix = if near_edge { 0.0 } else { inset_x };
-            let iy = if near_edge { 0.0 } else { inset_y };
+            // Near screen edge, keep hitbox reasonably generous but never full-rect.
+            // Full-rect near-edge hitboxes make peek feel "too clickable" and steal
+            // hover/clicks away from nearby desktop content.
+            let ix = if near_edge { inset_x * 0.5 } else { inset_x };
+            let iy = inset_y;
             let hit_left = mascot_left + ix;
             let hit_right = mascot_right - ix;
             let hit_bottom = mascot_bottom + iy;
@@ -5141,8 +5146,10 @@ fn pet_passthrough_poll_windows(app: tauri::AppHandle, mascot_scale: f64, large_
                             false
                         };
 
-                        let ix = if near_edge { 0.0 } else { inset_x };
-                        let iy = if near_edge { 0.0 } else { inset_y };
+                        // Keep edge hitbox slightly relaxed on X only; do not use
+                        // full-rect hitboxes, which feel too large during peek.
+                        let ix = if near_edge { inset_x * 0.5 } else { inset_x };
+                        let iy = inset_y;
                         let hit_left = mascot_left + ix;
                         let hit_right = mascot_right - ix;
                         let hit_top = mascot_top + iy;

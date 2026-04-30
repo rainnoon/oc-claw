@@ -112,8 +112,14 @@ function petActionPriority(action: PetAction): number {
     default: return 0
   }
 }
-const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 1.8
-const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.5
+// Hitbox ratio for large mascot interactions.
+// Keep in sync with Rust `pet_passthrough_poll` so cursor shape and click
+// interactivity don't disagree at the mascot edge.
+const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 2.4
+const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.8
+// Peek hit-area width as a fraction of the mascot visual size. Shared by the
+// click hitbox check and the visual cursor strip so they always agree.
+const PEEK_HIT_WIDTH_RATIO = 0.5
 const MOVE_DRAG_THRESHOLD = 1
 
 function clampMascotScale(value: number): number {
@@ -909,6 +915,35 @@ export default function Mini() {
 
   // Pet mode: check system idle time → rest (5min no activity & no media) or idle
   const idleCheckRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Shared now-playing cache/lock for pet-mode polling.
+  // We have two loops querying media state (2s media auto-detect + 10s idle check).
+  // Without a shared busy guard, slow backend responses can overlap and pile up,
+  // which can cause noticeable startup stutter on macOS.
+  const nowPlayingBusyRef = useRef(false)
+  const nowPlayingCachedRef = useRef<'none' | 'music' | 'video'>('none')
+  const nowPlayingCachedAtRef = useRef(0)
+  const getNowPlayingSafe = useCallback(async (maxAgeMs: number): Promise<'none' | 'music' | 'video'> => {
+    const now = Date.now()
+    if (maxAgeMs > 0 && now - nowPlayingCachedAtRef.current <= maxAgeMs) {
+      return nowPlayingCachedRef.current
+    }
+    if (nowPlayingBusyRef.current) {
+      return nowPlayingCachedRef.current
+    }
+    nowPlayingBusyRef.current = true
+    try {
+      const media = await invoke<string>('get_now_playing')
+      const normalized: 'none' | 'music' | 'video' =
+        media === 'video' ? 'video' : media === 'music' ? 'music' : 'none'
+      nowPlayingCachedRef.current = normalized
+      nowPlayingCachedAtRef.current = Date.now()
+      return normalized
+    } catch {
+      return nowPlayingCachedRef.current
+    } finally {
+      nowPlayingBusyRef.current = false
+    }
+  }, [])
   useEffect(() => {
     if (idleCheckRef.current) { clearInterval(idleCheckRef.current); idleCheckRef.current = null }
     if (appMode !== 'pet') return
@@ -920,7 +955,7 @@ export default function Mini() {
       try {
         const [idleSec, media] = await Promise.all([
           invoke<number>('get_system_idle_time'),
-          invoke<string>('get_now_playing'),
+          getNowPlayingSafe(4_000),
         ])
         const hasMedia = media === 'music' || media === 'video'
         const userInactive = idleSec >= 300 && !hasMedia
@@ -936,7 +971,7 @@ export default function Mini() {
     check()
     idleCheckRef.current = setInterval(check, 10_000)
     return () => { if (idleCheckRef.current) clearInterval(idleCheckRef.current) }
-  }, [appMode])
+  }, [appMode, getNowPlayingSafe])
 
   // Pet mode: while idle, randomly trigger weighted actions on a user-tunable
   // interval (default 2 min, range 0.5–30 min). Keep spin out of the random
@@ -1260,7 +1295,7 @@ export default function Mini() {
       const curPri = petActionPriority(cur)
       if (curPri >= petActionPriority('hungry')) return
       try {
-        const media = await invoke<string>('get_now_playing')
+        const media = await getNowPlayingSafe(0)
         if (media === 'video' && cur !== 'watch') {
           setCurrentPetAction('watch')
           currentPetActionRef.current = 'watch'
@@ -1278,7 +1313,7 @@ export default function Mini() {
     poll()
     const id = setInterval(poll, 2000)
     return () => clearInterval(id)
-  }, [appMode])
+  }, [appMode, getNowPlayingSafe])
 
   const handleSelectAppMode = useCallback(async (mode: AppMode) => {
     appModeRef.current = mode
@@ -1539,6 +1574,15 @@ export default function Mini() {
       let initialLargeMascot = typeof storedLargeMascot === 'boolean' ? storedLargeMascot : false
       const storedLargeMascotScale = await store.get('large_mascot_scale')
       const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(4, storedLargeMascotScale)) : 5
+      const existingMode = await loadAppMode()
+      // Avoid startup flicker: decide large/small mascot from the persisted mode
+      // BEFORE applying initial React/native window state. Otherwise we briefly
+      // render the stored small mascot and then switch to large in pet mode.
+      if (existingMode === 'pet') {
+        initialLargeMascot = true
+      } else if (existingMode === 'coding' && isWindowsPlatform) {
+        initialLargeMascot = false
+      }
       setMascotPosition(initialMascotPosition)
       setMascotScale(initialMascotScale)
       setLargeMascot(initialLargeMascot)
@@ -1548,7 +1592,6 @@ export default function Mini() {
       largeMascotRef.current = initialLargeMascot
       largeMascotScaleRef.current = initialLargeMascotScale
 
-      const existingMode = await loadAppMode()
       const existingModeVersion = await loadAppModeVersion()
       // Force re-onboarding when the stored version is missing or older
       // than APP_MODE_ONBOARDING_VERSION (e.g. after we ship changes that
@@ -1564,9 +1607,7 @@ export default function Mini() {
           setPetData(ticked)
           petDataRef.current = ticked
           await savePetData(ticked)
-          initialLargeMascot = true
-          setLargeMascot(true)
-          largeMascotRef.current = true
+          // Keep persisted setting aligned with pet mode for next startup.
           await store.set('large_mascot', true)
         } else if (isWindowsPlatform) {
           // Windows coding mode: force small mascot for stability.
@@ -2620,17 +2661,38 @@ export default function Mini() {
       const isMoveMode = moveModeRef.current
       const target = e.currentTarget as HTMLElement
       // Keep large mascot visual size unchanged, but shrink the effective hitbox.
-      // Skip inset check when peeking at edge so the visible slice stays clickable.
-      if (!isMoveMode && largeMascotRef.current && currentPetActionRef.current !== 'peek') {
+      // Apply the same hitbox rule to peek as well; otherwise peek ends up with
+      // an oversized full-rect click area that can trigger without touching the pet.
+      if (!isMoveMode && largeMascotRef.current) {
         const visualSize = MASCOT_BASE_SIZE * mascotScaleRef.current * largeMascotScaleRef.current
-        const hitWidth = MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER / 3 * largeMascotScaleRef.current)
+        const isPeek = currentPetActionRef.current === 'peek'
+        // During peek the character only pokes out a thin slice at one edge,
+        // so use a narrower side-aligned hitbox instead of the centered one.
+        // PEEK_HIT_WIDTH_RATIO mirrors the visual cursor strip width.
+        const hitWidth = isPeek
+          ? visualSize * PEEK_HIT_WIDTH_RATIO
+          : MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER / 3 * largeMascotScaleRef.current)
         const hitHeight = MASCOT_BASE_SIZE * mascotScaleRef.current * (LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER / 3 * largeMascotScaleRef.current)
-        const insetX = Math.max(0, (visualSize - hitWidth) / 2)
         const insetY = Math.max(0, (visualSize - hitHeight) / 2)
         const rect = target.getBoundingClientRect()
         const localX = e.clientX - rect.left
         const localY = e.clientY - rect.top
-        if (localX < insetX || localX > visualSize - insetX || localY < insetY || localY > visualSize - insetY) return
+        let hitLeft: number
+        let hitRight: number
+        if (isPeek) {
+          if (peekEdgeRef.current === 'left') {
+            hitLeft = 0
+            hitRight = hitWidth
+          } else {
+            hitLeft = visualSize - hitWidth
+            hitRight = visualSize
+          }
+        } else {
+          const insetX = Math.max(0, (visualSize - hitWidth) / 2)
+          hitLeft = insetX
+          hitRight = visualSize - insetX
+        }
+        if (localX < hitLeft || localX > hitRight || localY < insetY || localY > visualSize - insetY) return
       }
 
       // Large mascot normal mode: drag to move window, click for angry/spin
@@ -3526,6 +3588,7 @@ export default function Mini() {
             justifyContent: (appMode === 'pet' && largeMascot) ? undefined : 'center',
             background: (viewMode === 'efficiency' && appMode !== 'pet') ? 'rgba(0,0,0,0.01)' : undefined,
             pointerEvents: 'auto',
+            cursor: 'default',
           }}
         >
           <div
@@ -3550,7 +3613,13 @@ export default function Mini() {
                 ? 0
                 : undefined,
               overflow: 'visible',
-              cursor: moveMode ? 'grab' : 'pointer',
+              // During peek, the mascot box is full-width but the character only
+              // pokes out a thin slice at one edge. Don't paint a pointer cursor
+              // over the empty side — narrow cursor handling is delegated to the
+              // peek overlay below.
+              cursor: moveMode
+                ? 'grab'
+                : (currentPetAction === 'peek' ? 'default' : 'pointer'),
               animation: moveMode ? 'movePulse 1.2s ease-in-out infinite' : 'none',
               display: (appMode === 'pet' && (showSettingsOverlay || settingsTransitioning)) ? 'none' : undefined,
               ...(moveMode
@@ -3564,6 +3633,31 @@ export default function Mini() {
           >
             {largeMascot && largeVideoUrl ? (
               <div style={{ position: 'relative', width: largeMascotVisualSize, height: largeMascotVisualSize }}>
+              {currentPetAction === 'peek' && !moveMode && (() => {
+                // Narrow cursor:pointer strip aligned to the actual peeking side.
+                // The strip width is a small fraction of the mascot visual size to
+                // avoid the "cursor turns into hand even before reaching the pet" feel.
+                // pointer-events: 'auto' lets the cursor style apply; clicks bubble
+                // to the click handler on the parent div, which still enforces the
+                // shrunken hitbox check.
+                const stripW = Math.round(largeMascotVisualSize * PEEK_HIT_WIDTH_RATIO)
+                const isLeft = peekEdgeRef.current === 'left'
+                return (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      height: '100%',
+                      width: stripW,
+                      left: isLeft ? 0 : largeMascotVisualSize - stripW,
+                      cursor: 'pointer',
+                      pointerEvents: 'auto',
+                      background: 'transparent',
+                      zIndex: 2,
+                    }}
+                  />
+                )
+              })()}
               {useWindowsChromaKey && (
                 <canvas
                   ref={largeVideoCanvasRef}
