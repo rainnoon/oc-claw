@@ -1173,6 +1173,24 @@ export default function Mini() {
       setWalkFlipped(false)
       return
     }
+    // Walk physically moves the native window via `move_mini_by`. Anything
+    // rendered inside that same window (settings overlay, expanded panel,
+    // update / onboarding modals) would visually slide along with it,
+    // which is jarring. Pause walking while any of those are visible, and
+    // skip entirely outside pet mode.
+    if (
+      appMode !== 'pet' ||
+      settingsMode ||
+      settingsTransitioning ||
+      expanded ||
+      showSettingsOverlay ||
+      updateModalOpen ||
+      showOnboarding ||
+      isCreateModalOpen
+    ) {
+      setWalkFlipped(false)
+      return
+    }
     const WALK_SPEED = 2
     const WALK_INTERVAL = 30
     const FLIP_AFTER = 3000
@@ -1277,7 +1295,17 @@ export default function Mini() {
     return () => {
       if (walkTimerRef.current) clearInterval(walkTimerRef.current)
     }
-  }, [currentPetAction])
+  }, [
+    currentPetAction,
+    appMode,
+    settingsMode,
+    settingsTransitioning,
+    expanded,
+    showSettingsOverlay,
+    updateModalOpen,
+    showOnboarding,
+    isCreateModalOpen,
+  ])
 
   // Pet mode: auto-detect music/video from frontmost app
   useEffect(() => {
@@ -1330,16 +1358,17 @@ export default function Mini() {
       const ticked = tickPetData(data)
       petDataRef.current = ticked
       await savePetData(ticked)
-      // When switching mode from inside Settings, keep the settings-sized window.
-      // Expanding to pet window size here compresses the settings UI for a few frames.
+      // When switching mode from inside Settings, keep the settings-sized
+      // window completely untouched. Any native resize/move call (even a
+      // theoretically idempotent set_mini_size) can produce a visible
+      // jump of the fixed-position settings overlay on macOS, so just
+      // update React state and let exitSettings handle the real layout
+      // when the user closes the panel.
       if (settingsModeRef.current || settingsTransitioningRef.current) {
         setAppMode(mode)
         setShowOnboarding(false)
         setLargeMascot(true)
         setPetData(ticked)
-        try {
-          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, keepOnTop: true })
-        } catch {}
         return
       }
       // Hide window content before resizing to avoid flashing the
@@ -1370,16 +1399,17 @@ export default function Mini() {
         await store.set('large_mascot', false)
         await store.save()
       }
-      // Leaving pet mode: stop the pass-through poll first.
-      await invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
-      // When switching mode from inside Settings, keep the settings-sized window.
-      // Shrinking to collapsed size here compresses the settings UI for a few frames.
+      // When switching mode from inside Settings, keep the settings window
+      // completely untouched. enterSettings already disabled pet pass-
+      // through, and any extra native resize/move call (even an
+      // "idempotent" set_mini_size) can visibly jump the fixed-position
+      // settings overlay on macOS. exitSettings will switch back to the
+      // correct collapsed/pet layout when the user closes the panel.
       if (settingsModeRef.current || settingsTransitioningRef.current) {
-        try {
-          await invoke('set_mini_size', { restore: false, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, keepOnTop: true })
-        } catch {}
         return
       }
+      // Leaving pet mode (not from settings): stop the pass-through poll first.
+      await invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
       // Restore window back to collapsed mascot size
       try {
         await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
@@ -3140,7 +3170,13 @@ export default function Mini() {
           petOriginBeforeSettingsRef.current = null
         }
       } else {
-        // Coding mode: re-sync feature toggles and restore layout
+        // Coding mode: re-sync feature toggles and restore the COLLAPSED
+        // mascot window, matching React's `setExpanded(false)` above.
+        // Previously this called `syncExpandedWindowLayout`, which sized
+        // the window for the expanded panel (600x350 top-center). The
+        // collapsed mascot React tree then rendered flex-centered at the
+        // top of that big window — visually the mascot teleported under
+        // the notch on macOS.
         const store = await load('settings.json', { defaults: {}, autoSave: true })
         const cc = await store.get('enable_claudecode')
         setEnableClaudeCode(cc !== false)
@@ -3150,7 +3186,14 @@ export default function Mini() {
         setEnableCursor(isWindowsPlatform ? false : cur !== false)
         fetchAgents()
         try {
-          await syncExpandedWindowLayout(viewModeRef.current)
+          await invoke('set_mini_size', {
+            restore: true,
+            position: mascotPositionRef.current,
+            mascotScale: mascotScaleRef.current,
+            largeMascot: largeMascotRef.current,
+            largeMascotScale: largeMascotScaleRef.current,
+          })
+          await restoreCollapsedMascotPosition()
         } catch {}
       }
     } finally {
@@ -3159,7 +3202,7 @@ export default function Mini() {
       settingsTransitioningRef.current = false
       setHiding(false)
     }
-  }, [fetchAgents, syncExpandedWindowLayout])
+  }, [fetchAgents, restoreCollapsedMascotPosition])
 
   // Click outside to collapse (only when not pinned)
   useEffect(() => {
@@ -3388,7 +3431,11 @@ export default function Mini() {
       cancelled = true
       clearListeners()
     }
-  }, [largeVideoUrl, expanded])
+  // `hiding` gates the collapsed mascot view in JSX (along with `expanded`).
+  // Without it in deps, the effect runs while refs are null (hiding=true)
+  // and bails out, then never re-runs when hiding flips back to false and the
+  // <video> elements remount — leaving the mascot blank after closing a popup.
+  }, [largeVideoUrl, expanded, hiding])
 
   const handleDeleteChar = useCallback(async (name: string) => {
     try {
@@ -3558,9 +3605,11 @@ export default function Mini() {
     return () => {
       cancelAnimationFrame(rafId)
     }
-  // `expanded` is included so the rAF loop restarts when the collapsed view
-  // mounts (the canvas element is only in the DOM when !expanded).
-  }, [useWindowsChromaKey, largeMascot, largeMascotVisualSize, activeBuffer, largeVideoUrl, expanded])
+  // `expanded` and `hiding` are included so the rAF loop restarts when the
+  // collapsed view (re)mounts — the canvas element is only in the DOM when
+  // `!expanded && !hiding`. Missing `hiding` causes the same "mascot blank
+  // after closing a popup" symptom as the video loader effect above.
+  }, [useWindowsChromaKey, largeMascot, largeMascotVisualSize, activeBuffer, largeVideoUrl, expanded, hiding])
 
   return (
     <div
