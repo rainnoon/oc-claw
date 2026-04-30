@@ -1247,6 +1247,13 @@ export default function Mini() {
     const poll = async () => {
       if (petSfxPlayingRef.current) return
       const cur = currentPetActionRef.current
+      // Don't interrupt user-initiated movement or transient animations.
+      // Without this guard, e.g. clicking "walk" while a video is playing
+      // gets clobbered back to "watch" within 2s, causing the mascot to
+      // walk-in-place / stutter and occasionally overshoot the screen edge.
+      // Higher-priority actions (study/work/grasp/peek/walkout/hungry) are
+      // already filtered by the priority check below.
+      if (cur === 'walk' || TRANSIENT_PET_ACTIONS.includes(cur)) return
       const curPri = petActionPriority(cur)
       if (curPri >= petActionPriority('hungry')) return
       try {
@@ -1473,6 +1480,15 @@ export default function Mini() {
     petDataRef.current = d
     await savePetData(d)
   }, [])
+
+  // Sync pomodoro-active flag to the native pass-through poll. While a
+  // pomodoro is running, the bottom-anchored stop button sits in the
+  // mascot's pass-through inset region; the backend needs to know to keep
+  // the whole window interactive so clicks don't leak to apps behind.
+  useEffect(() => {
+    const active = !!pomodoro?.active
+    invoke('set_pet_pomodoro_active', { active }).catch(() => {})
+  }, [pomodoro?.active])
 
   const closePetContextMenu = useCallback(async () => {
     if (!petContextMenuOpenRef.current || petContextMenuTransitionRef.current) return
