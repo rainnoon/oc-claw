@@ -150,6 +150,54 @@ export async function saveAppMode(mode: AppMode): Promise<void> {
   await store.save()
 }
 
+// ─── App-mode onboarding version gate ───
+//
+// Bump this whenever we want to force existing users through the mode-pick
+// onboarding again (e.g. when adding a new mode option or changing the
+// default behavior of an existing one). On launch, if the stored version is
+// missing or strictly below this value, the saved app_mode is ignored and
+// the onboarding modal is shown again. After the user picks a mode we save
+// this constant so subsequent launches pass the check.
+export const APP_MODE_ONBOARDING_VERSION = '1.8.1'
+
+export async function loadAppModeVersion(): Promise<string | null> {
+  const store = await getPetStore()
+  return (await store.get('app_mode_version')) as string | null
+}
+
+export async function saveAppModeVersion(version: string): Promise<void> {
+  const store = await getPetStore()
+  await store.set('app_mode_version', version)
+  await store.save()
+}
+
+// Compare two dotted version strings (e.g. "1.8.1" vs "1.8.0").
+// Missing segments are treated as 0; non-numeric segments are treated as 0
+// so we degrade gracefully on malformed input. Returns -1/0/1.
+export function compareVersion(a: string, b: string): number {
+  const parse = (v: string) => v.split('.').map((s) => {
+    const n = parseInt(s, 10)
+    return Number.isFinite(n) ? n : 0
+  })
+  const pa = parse(a)
+  const pb = parse(b)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const ai = pa[i] ?? 0
+    const bi = pb[i] ?? 0
+    if (ai > bi) return 1
+    if (ai < bi) return -1
+  }
+  return 0
+}
+
+// True when the stored onboarding version is missing or older than the
+// required version, meaning the user should be re-onboarded.
+export function isAppModeOnboardingStale(stored: string | null | undefined): boolean {
+  if (!stored) return true
+  return compareVersion(stored, APP_MODE_ONBOARDING_VERSION) < 0
+}
+
 // ─── Tick logic: apply time-based decay ───
 
 function isSleepHour(hour: number): boolean {

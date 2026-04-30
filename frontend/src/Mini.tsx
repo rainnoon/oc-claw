@@ -19,6 +19,8 @@ import { PetContextMenu, PomodoroOverlay } from './components/PetContextMenu'
 import {
   type AppMode, type PetData, type PetAction, type PomodoroState,
   loadAppMode, saveAppMode, loadPetData, savePetData, tickPetData,
+  loadAppModeVersion, saveAppModeVersion, isAppModeOnboardingStale,
+  APP_MODE_ONBOARDING_VERSION,
   defaultPetData, getAffectionTier, canWalk,
   POMODORO_COINS_PER_MIN, AFFECTION_ACTIVITY_PER_10MIN, AFFECTION_MAX,
   HUNGER_ACTIVITY_PER_HOUR, HUNGER_OFFLINE_FLOOR,
@@ -1060,6 +1062,7 @@ export default function Mini() {
       angry: '/assets/builtin/香企鹅/audio/angry.mp3',
       grasp: '/assets/builtin/香企鹅/audio/angry.mp3',
       headpat: '/assets/builtin/香企鹅/audio/cute.mp3',
+      farewell: '/assets/builtin/香企鹅/audio/cute.mp3',
       spin: '/assets/builtin/香企鹅/audio/happy.mp3',
       walkout: '/assets/builtin/香企鹅/audio/happy.mp3',
       eat: '/assets/builtin/香企鹅/audio/happy.mp3',
@@ -1280,6 +1283,9 @@ export default function Mini() {
   const handleSelectAppMode = useCallback(async (mode: AppMode) => {
     appModeRef.current = mode
     await saveAppMode(mode)
+    // Record the onboarding version so we don't re-prompt this user until
+    // we bump APP_MODE_ONBOARDING_VERSION again.
+    await saveAppModeVersion(APP_MODE_ONBOARDING_VERSION)
     if (mode === 'pet') {
       largeMascotRef.current = true
       const store = await load('settings.json', { defaults: {}, autoSave: true })
@@ -1543,7 +1549,12 @@ export default function Mini() {
       largeMascotScaleRef.current = initialLargeMascotScale
 
       const existingMode = await loadAppMode()
-      if (existingMode === 'pet' || existingMode === 'coding') {
+      const existingModeVersion = await loadAppModeVersion()
+      // Force re-onboarding when the stored version is missing or older
+      // than APP_MODE_ONBOARDING_VERSION (e.g. after we ship changes that
+      // require users to re-confirm their mode choice).
+      const onboardingStale = isAppModeOnboardingStale(existingModeVersion)
+      if (!onboardingStale && (existingMode === 'pet' || existingMode === 'coding')) {
         setAppMode(existingMode)
         appModeRef.current = existingMode
         setShowOnboarding(false)
@@ -3713,6 +3724,7 @@ export default function Mini() {
                 onQuit={() => {
                   closePetContextMenu()
                   handleSetPetAction('farewell')
+                  playPetAudio('farewell')
                 }}
               />
             )}
