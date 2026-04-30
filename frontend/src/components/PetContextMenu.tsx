@@ -1,9 +1,9 @@
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import {
-  type PetData, type PetAction, type PomodoroState, type AffectionTier,
+  type PetData, type PetAction, type PomodoroState,
   FOODS, POMODORO_PRESETS,
-  getAffectionTier, canWalk, canHeadpat,
+  canWalk, canHeadpat,
   canClaimDailyGift, claimDailyGift,
   applyFeed, applyHeadpat,
 } from '../lib/petStore'
@@ -58,8 +58,6 @@ export function PetContextMenu({
       window.removeEventListener('mousedown', onClick)
     }
   }, [open, onClose])
-
-  const tier: AffectionTier = getAffectionTier(petData.affection)
 
   const handleAction = useCallback((action: PetAction) => {
     if (action === 'headpat') {
@@ -437,18 +435,9 @@ function DevSlider({ label, value, min, max, onChange }: {
   )
 }
 
-function tierColor(tier: AffectionTier): string {
-  switch (tier) {
-    case 'shy': return '#f472b6'
-    case 'happy': return '#22c55e'
-    case 'cold': return '#60a5fa'
-    case 'angry': return '#ef4444'
-  }
-}
-
 // ─── Pomodoro Timer Overlay ───
 
-export function PomodoroOverlay({ pomodoro, mascotSize, onStop }: {
+export function PomodoroOverlay({ pomodoro, onStop }: {
   pomodoro: PomodoroState | null
   mascotSize: number
   onStop: () => void
