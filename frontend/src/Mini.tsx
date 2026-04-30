@@ -766,17 +766,6 @@ export default function Mini() {
   const petBaseWinWRef = useRef<number | null>(null)
   useEffect(() => { petBaseWinWRef.current = petBaseWinW }, [petBaseWinW])
 
-  useEffect(() => {
-    if (!isWindowsPlatform || appMode !== 'coding' || !largeMascot) return
-    // Windows coding mode: disable large mascot to avoid close-time disappear regressions.
-    setLargeMascot(false)
-    largeMascotRef.current = false
-    load('settings.json', { defaults: {}, autoSave: true }).then(async (store) => {
-      await store.set('large_mascot', false)
-      await store.save()
-    }).catch(() => {})
-  }, [isWindowsPlatform, appMode, largeMascot])
-
   // Food rain effect (lives outside context menu so it persists after menu closes)
   interface FoodRainDrop { id: number; emoji: string; x: number; delay: number; duration: number; size: number }
   const [foodRainDrops, setFoodRainDrops] = useState<FoodRainDrop[]>([])
@@ -1392,12 +1381,18 @@ export default function Mini() {
     } else {
       setAppMode(mode)
       setShowOnboarding(false)
-      if (isWindowsPlatform && mode === 'coding') {
-        setLargeMascot(false)
-        largeMascotRef.current = false
+      // First time entering coding mode (no persisted preference): default
+      // to the large mascot so new users see it out of the box. Existing
+      // users who have explicitly toggled the size are left alone.
+      if (mode === 'coding') {
         const store = await load('settings.json', { defaults: {}, autoSave: true })
-        await store.set('large_mascot', false)
-        await store.save()
+        const existingLM = await store.get('large_mascot')
+        if (typeof existingLM !== 'boolean') {
+          setLargeMascot(true)
+          largeMascotRef.current = true
+          await store.set('large_mascot', true)
+          await store.save()
+        }
       }
       // When switching mode from inside Settings, keep the settings window
       // completely untouched. enterSettings already disabled pet pass-
@@ -1601,17 +1596,22 @@ export default function Mini() {
       const storedMascotScale = await store.get('mascot_scale')
       const initialMascotScale = typeof storedMascotScale === 'number' ? clampMascotScale(storedMascotScale) : 1
       const storedLargeMascot = await store.get('large_mascot')
-      let initialLargeMascot = typeof storedLargeMascot === 'boolean' ? storedLargeMascot : false
       const storedLargeMascotScale = await store.get('large_mascot_scale')
       const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(4, storedLargeMascotScale)) : 5
       const existingMode = await loadAppMode()
       // Avoid startup flicker: decide large/small mascot from the persisted mode
       // BEFORE applying initial React/native window state. Otherwise we briefly
       // render the stored small mascot and then switch to large in pet mode.
+      // Default to large mascot for both pet and coding modes when the user
+      // has no explicit preference yet; respect the stored boolean otherwise.
+      let initialLargeMascot: boolean
+      if (typeof storedLargeMascot === 'boolean') {
+        initialLargeMascot = storedLargeMascot
+      } else {
+        initialLargeMascot = existingMode === 'coding' || existingMode === 'pet'
+      }
       if (existingMode === 'pet') {
         initialLargeMascot = true
-      } else if (existingMode === 'coding' && isWindowsPlatform) {
-        initialLargeMascot = false
       }
       setMascotPosition(initialMascotPosition)
       setMascotScale(initialMascotScale)
@@ -1639,12 +1639,6 @@ export default function Mini() {
           await savePetData(ticked)
           // Keep persisted setting aligned with pet mode for next startup.
           await store.set('large_mascot', true)
-        } else if (isWindowsPlatform) {
-          // Windows coding mode: force small mascot for stability.
-          initialLargeMascot = false
-          setLargeMascot(false)
-          largeMascotRef.current = false
-          await store.set('large_mascot', false)
         }
         await invoke('set_mini_expanded', {
           expanded: false,
@@ -2127,9 +2121,8 @@ export default function Mini() {
       if (typeof dsa === 'boolean') setDisableSleepAnim(dsa)
       const lm = await store.get('large_mascot')
       if (typeof lm === 'boolean' && appModeRef.current !== 'pet') {
-        const largeEnabled = isWindowsPlatform && appModeRef.current === 'coding' ? false : lm
-        setLargeMascot(largeEnabled)
-        largeMascotRef.current = largeEnabled
+        setLargeMascot(lm)
+        largeMascotRef.current = lm
       }
       const lms = await store.get('large_mascot_scale')
       if (typeof lms === 'number') {
@@ -3312,7 +3305,7 @@ export default function Mini() {
     ? ({ name: '香企鹅', largeActions: petBuiltinLargeActions } as CharacterMeta)
     : miniChar
   const hasAnyLargeActions = !!(largeCharForRender?.largeActions && Object.keys(largeCharForRender.largeActions).length > 0) || !!(fallbackLargeActions && Object.keys(fallbackLargeActions).length > 0)
-  const showLargeMascotToggle = !isWindowsPlatform && (appMode === 'coding' || (appMode !== 'pet' && hasAnyLargeActions))
+  const showLargeMascotToggle = appMode === 'coding' || (appMode !== 'pet' && hasAnyLargeActions)
   const largeVideoBaseUrl = largeMascot
     ? appMode === 'pet'
       ? getLargeVideoPetMode(largeCharForRender ?? undefined, currentPetAction, fallbackLargeActions)
