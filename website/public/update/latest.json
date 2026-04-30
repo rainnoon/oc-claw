@@ -1,15 +1,15 @@
 {
   "platforms": {
     "macos": {
-      "version": "1.8.1",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.1/oc-claw_1.8.1_aarch64.dmg",
+      "version": "1.8.2",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.2/oc-claw_1.8.2_aarch64.dmg",
       "notes_i18n": {
-        "zh": "- 全新支持宠物模式",
-        "en": "- New pet mode support",
-        "ja": "- 新しくペットモードに対応",
-        "ko": "- 펫 모드 지원 추가",
-        "es": "- Nuevo soporte para el modo mascota",
-        "fr": "- Nouveau support du mode animal de compagnie"
+        "zh": "- Code 模式下解锁大看板娘\n- 修复多项 Mac 设置与角色动画问题",
+        "en": "- Unlock large mascot in Code mode\n- Fix several mac settings and mascot animation glitches",
+        "ja": "- コードモードで大マスコットを解放\n- Mac の設定パネルとマスコット表示の不具合を修正",
+        "ko": "- 코드 모드에서 대형 마스코트 해금\n- Mac 설정 및 마스코트 애니메이션 관련 버그 수정",
+        "es": "- Mascota grande disponible en modo Code\n- Corrige varios problemas de ajustes y animación en Mac",
+        "fr": "- Grande mascotte débloquée en mode Code\n- Correction de plusieurs bugs sur les réglages et animations Mac"
       }
     },
     "windows": {
