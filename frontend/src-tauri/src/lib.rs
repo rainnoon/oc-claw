@@ -9115,7 +9115,9 @@ async fn start_rtc_voice_chat(
                 "Provider": "volcano",
                 "ProviderParams": {
                     "AppId": asr_app,
-                    "Mode": "bigmodel"
+                    "AccessToken": asr_token,
+                    "Mode": "bigmodel",
+                    "Cluster": "volcengine_streaming_common"
                 }
             },
             "TTSConfig": {

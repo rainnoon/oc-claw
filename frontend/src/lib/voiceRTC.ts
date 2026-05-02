@@ -81,6 +81,21 @@ export class VoiceRTCClient {
         if (e.mediaType === MediaType.AUDIO) {
           await this.engine.subscribeStream(e.userId, MediaType.AUDIO)
           rlog('info', `subscribed to audio from ${e.userId}`)
+          // Play a test beep to confirm audio output works
+          try {
+            const ac = new AudioContext()
+            const osc = ac.createOscillator()
+            const gain = ac.createGain()
+            osc.connect(gain)
+            gain.connect(ac.destination)
+            gain.gain.setValueAtTime(0.1, ac.currentTime)
+            gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.3)
+            osc.start(ac.currentTime)
+            osc.stop(ac.currentTime + 0.3)
+            rlog('info', 'played test beep — if you heard it, audio output works')
+          } catch (e: any) {
+            rlog('warn', `beep failed: ${e?.message}`)
+          }
         }
       })
 
