@@ -9121,10 +9121,8 @@ async fn start_rtc_voice_chat(
                 "Provider": "volcano",
                 "ProviderParams": {
                     "AppId": asr_app,
-                    "AccessToken": asr_token,
-                    "Mode": "bigmodel",
-                    "ApiResourceId": asr_resource_id,
-                    "StreamMode": 0
+                    "Mode": "smallmodel",
+                    "Cluster": "volcengine_streaming_common"
                 },
                 "VADConfig": {
                     "SilenceTime": 600
