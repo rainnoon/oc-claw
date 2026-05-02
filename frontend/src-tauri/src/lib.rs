@@ -9108,7 +9108,7 @@ async fn start_rtc_voice_chat(
     };
 
     // Build request body — correct structure per VisualVoiceChat API docs
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "AppId": app_id,
         "RoomId": room_id,
         "TaskId": room_id,
