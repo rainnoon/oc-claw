@@ -82,22 +82,42 @@ export class VoiceRTCClient {
           await this.engine.subscribeStream(e.userId, MediaType.AUDIO)
           rlog('info', `subscribed to audio from ${e.userId}`)
 
-          // Play a test beep to confirm audio output works
+          // VERTC SDK manages audio playback internally after subscribe.
+          // We must call setAudioPlaybackVolume to ensure it's not muted,
+          // and also try to set a remote audio player element.
           try {
-            const ac = new AudioContext()
-            if (ac.state === 'suspended') await ac.resume()
-            const osc = ac.createOscillator()
-            const gain = ac.createGain()
-            osc.connect(gain)
-            gain.connect(ac.destination)
-            gain.gain.setValueAtTime(0.1, ac.currentTime)
-            gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.3)
-            osc.start(ac.currentTime)
-            osc.stop(ac.currentTime + 0.3)
-            rlog('info', 'played test beep — if you heard a short tone, audio output works')
+            // Ensure remote audio volume is at 100%
+            if (typeof this.engine.setRemoteAudioPlaybackVolume === 'function') {
+              this.engine.setRemoteAudioPlaybackVolume(e.userId, 100)
+              rlog('info', `set remote audio volume 100 for ${e.userId}`)
+            }
+            // Try adjusting global playback volume
+            if (typeof this.engine.setAudioPlaybackVolume === 'function') {
+              this.engine.setAudioPlaybackVolume(100)
+              rlog('info', 'set global audio playback volume 100')
+            }
+            // Try setting player element (some VERTC versions need this)
+            if (typeof this.engine.setRemoteAudioPlayer === 'function') {
+              let audioEl = document.getElementById('rtc-remote-audio') as HTMLAudioElement
+              if (!audioEl) {
+                audioEl = document.createElement('audio')
+                audioEl.id = 'rtc-remote-audio'
+                audioEl.autoplay = true
+                audioEl.controls = false
+                audioEl.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;'
+                document.body.appendChild(audioEl)
+              }
+              this.engine.setRemoteAudioPlayer(e.userId, audioEl)
+              rlog('info', `setRemoteAudioPlayer for ${e.userId}`)
+            }
           } catch (err: any) {
-            rlog('warn', `beep failed: ${err?.message}`)
+            rlog('warn', `audio setup error: ${err?.message}`)
           }
+
+          // Log all properties of the engine to find correct audio API
+          const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(this.engine))
+            .filter(m => m.toLowerCase().includes('audio') || m.toLowerCase().includes('volume') || m.toLowerCase().includes('play'))
+          rlog('info', `engine audio methods: ${methods.join(', ')}`)
         }
       })
 
