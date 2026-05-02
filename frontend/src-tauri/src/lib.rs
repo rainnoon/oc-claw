@@ -9154,7 +9154,21 @@ async fn start_rtc_voice_chat(
                 "SystemMessages": [character_prompt],
                 "MaxTokens": 1024,
                 "Temperature": 0.7,
-                "TopP": 0.9
+                "TopP": 0.9,
+                "Tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "take_screenshot",
+                            "description": "截取用户当前屏幕画面，用于查看用户正在做什么、玩什么游戏、看什么内容。当用户问'你看到什么'、'我在干什么'、'帮我看看屏幕'或需要了解屏幕内容时调用。",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {},
+                                "required": []
+                            }
+                        }
+                    }
+                ]
             }
         }
     });
