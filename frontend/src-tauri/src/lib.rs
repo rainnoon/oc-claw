@@ -11253,8 +11253,8 @@ pub fn run() {
 
     #[cfg(target_os = "windows")]
     {
-        // WebView2 browser args: disable HW video decode (VP9 alpha fix) + enable autoplay
-        // --auto-select-desktop-capture-source=Entire screen: skip picker, auto select full screen
+        // Browser args for dynamically-created windows (detail, room, etc.)
+        // mini window args are now set via tauri.conf.json additionalBrowserArgs
         // NOTE: do NOT add --use-fake-ui-for-media-stream — it provides a silent fake mic!
         let key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
         let flags = [
@@ -11269,7 +11269,6 @@ pub fn run() {
                 else { current = format!("{} {}", current, flag); }
             }
         }
-        // Remove fake-ui flag if previously set
         current = current.replace("--use-fake-ui-for-media-stream", "").trim().to_string();
         std::env::set_var(key, current);
     }

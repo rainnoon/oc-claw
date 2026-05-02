@@ -26,7 +26,8 @@
         "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "url": "index.html#/mini"
+        "url": "index.html#/mini",
+        "additionalBrowserArgs": "--autoplay-policy=no-user-gesture-required --disable-accelerated-video-decode --auto-select-desktop-capture-source=Entire screen"
       }
     ],
     "security": {
