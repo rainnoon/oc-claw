@@ -45,16 +45,34 @@ export class VoiceRTCClient {
       try {
         const ac = new AudioContext()
         if (ac.state === 'suspended') await ac.resume()
-        // Play a silent buffer to fully unlock audio
         const buf = ac.createBuffer(1, 1, 22050)
         const src = ac.createBufferSource()
         src.buffer = buf
         src.connect(ac.destination)
         src.start(0)
-        this.audioContext = ac  // save for later use in track routing
+        this.audioContext = ac
         rlog('info', `AudioContext state: ${ac.state}`)
       } catch (e) {
         rlog('warn', `AudioContext unlock failed: ${e}`)
+      }
+
+      // Quick mic sanity check — detect if mic is real or fake/silent
+      try {
+        const testStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        const testAC = new AudioContext()
+        await testAC.resume()
+        const src2 = testAC.createMediaStreamSource(testStream)
+        const analyser = testAC.createAnalyser()
+        src2.connect(analyser)
+        await new Promise(r => setTimeout(r, 500))
+        const data = new Float32Array(analyser.fftSize)
+        analyser.getFloatTimeDomainData(data)
+        const rms = Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length)
+        rlog('info', `mic test RMS=${rms.toFixed(6)} ${rms > 0.001 ? '✅ REAL mic (has signal)' : '⚠️ SILENT mic (fake or muted)'}`)
+        testStream.getTracks().forEach(t => t.stop())
+        testAC.close()
+      } catch (err: any) {
+        rlog('error', `mic test failed: ${err?.message} — mic permission may be denied`)
       }
 
       // 1. Generate RTC token via Rust
