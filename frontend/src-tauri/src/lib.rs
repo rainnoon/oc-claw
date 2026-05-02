@@ -6251,6 +6251,153 @@ async fn play_sound(name: String) -> Result<(), String> {
     Ok(())
 }
 
+// ─── Voice Companion ───
+
+/// Takes a screenshot of the primary monitor and returns base64-encoded PNG.
+#[tauri::command]
+async fn take_screenshot() -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose};
+    use xcap::Monitor;
+
+    let monitors = Monitor::all().map_err(|e| format!("Monitor list error: {e}"))?;
+    let monitor = monitors.into_iter().next().ok_or("No monitor found")?;
+    let rgba_image = monitor.capture_image().map_err(|e| format!("Capture error: {e}"))?;
+
+    // Convert RGBA DynamicImage to PNG bytes
+    let dyn_img = image::DynamicImage::ImageRgba8(rgba_image);
+    let mut png_bytes: Vec<u8> = Vec::new();
+    dyn_img
+        .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .map_err(|e| format!("PNG encode error: {e}"))?;
+
+    Ok(general_purpose::STANDARD.encode(&png_bytes))
+}
+
+/// Calls Volcano Engine LLM (OpenAI-compatible) with optional screenshot context.
+#[tauri::command]
+async fn chat_with_pet(
+    screenshot: Option<String>,
+    message: String,
+    llm_endpoint_id: String,
+    llm_api_key: String,
+    character_prompt: String,
+) -> Result<String, String> {
+    // Fall back to placeholder when keys are empty (dev / no config)
+    if llm_api_key.is_empty() || llm_endpoint_id.is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let replies = ["哇，你在干嘛呀～", "加油加油！我在看着你呢 ✨", "要不要休息一下？", "看起来很有趣的样子！"];
+        let idx = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() % 4) as usize;
+        return Ok(replies[idx].to_string());
+    }
+
+    let client = reqwest::Client::new();
+
+    let system_msg = serde_json::json!({ "role": "system", "content": character_prompt });
+
+    let user_content = if let Some(img_b64) = screenshot {
+        let img_url = format!("data:image/png;base64,{}", img_b64);
+        serde_json::json!([
+            { "type": "image_url", "image_url": { "url": img_url } },
+            { "type": "text", "text": message }
+        ])
+    } else {
+        serde_json::json!([{ "type": "text", "text": message }])
+    };
+
+    let user_msg = serde_json::json!({ "role": "user", "content": user_content });
+
+    let body = serde_json::json!({
+        "model": llm_endpoint_id,
+        "messages": [system_msg, user_msg],
+        "max_tokens": 120
+    });
+
+    let resp = client
+        .post("https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+        .header("Authorization", format!("Bearer {}", llm_api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("LLM request error: {e}"))?;
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| format!("LLM parse error: {e}"))?;
+
+    let reply = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("嗯嗯～")
+        .to_string();
+
+    Ok(reply)
+}
+
+/// Calls Volcano Engine TTS and plays the resulting audio via system player.
+#[tauri::command]
+async fn speak_text(
+    text: String,
+    tts_app_id: String,
+    tts_access_token: String,
+) -> Result<(), String> {
+    if tts_app_id.is_empty() || tts_access_token.is_empty() {
+        return Ok(()); // silently skip when not configured
+    }
+
+    let client = reqwest::Client::new();
+    let req_id = uuid::Uuid::new_v4().to_string();
+
+    let body = serde_json::json!({
+        "app": { "appid": tts_app_id, "token": tts_access_token, "cluster": "volcano_tts" },
+        "user": { "uid": "oc-claw-user" },
+        "audio": {
+            "voice_type": "ICL_zh_female_keainvsheng_tob",
+            "encoding": "mp3",
+            "speed_ratio": 1.0,
+            "volume_ratio": 1.0
+        },
+        "request": { "reqid": req_id, "text": text, "text_type": "plain", "operation": "query" }
+    });
+
+    let resp = client
+        .post("https://openspeech.bytedance.com/api/v1/tts")
+        .header("Authorization", format!("Bearer;{}", tts_access_token))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("TTS request error: {e}"))?;
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| format!("TTS parse error: {e}"))?;
+
+    let audio_b64 = json["data"]["audio"]
+        .as_str()
+        .ok_or("No audio field in TTS response")?;
+
+    use base64::{Engine as _, engine::general_purpose};
+    let audio_bytes = general_purpose::STANDARD
+        .decode(audio_b64)
+        .map_err(|e| format!("Base64 decode error: {e}"))?;
+
+    let tmp_path = std::env::temp_dir().join("oc_claw_tts.mp3");
+    std::fs::write(&tmp_path, &audio_bytes).map_err(|e| format!("Write tmp file error: {e}"))?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let path_str = tmp_path.to_string_lossy().to_string();
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "/min", "wmplayer", &path_str])
+            .spawn()
+            .map_err(|e| format!("Play error: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("afplay")
+            .arg(&tmp_path)
+            .spawn()
+            .map_err(|e| format!("Play error: {e}"))?;
+    }
+
+    Ok(())
+
 // ─── Claude Code session state ───
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -10841,7 +10988,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, take_screenshot, chat_with_pet, speak_text])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

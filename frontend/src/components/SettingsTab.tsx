@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import { Loader2, Check, ChevronDown, Copy, Plus, Trash2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useTranslation } from 'react-i18next'
-import { getStore, loadOcConnections, saveOcConnections } from '../lib/store'
+import { getStore, loadOcConnections, saveOcConnections, loadVoiceConfig, saveVoiceConfig, type VoiceConfig } from '../lib/store'
 import type { OcConnection } from '../lib/types'
 
 type UpdateProgressPayload = {
@@ -251,6 +251,9 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
   const cropContainerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const showIslandBackgroundSettings = false
+  const [voiceConfig, setVoiceConfig] = useState<VoiceConfig | null>(null)
+  const [voiceSaving, setVoiceSaving] = useState(false)
+  const [voiceSaveResult, setVoiceSaveResult] = useState<'success' | null>(null)
   const resolveUpdateProgressText = useCallback((stage?: string, fallbackMessage?: string) => {
     if (stage) {
       const key = `updateModal.progress.${stage}`
@@ -302,6 +305,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         await store.set('enable_cursor', false)
         await store.save()
       } else if (typeof cur === 'boolean') setEnableCursor(cur)
+      const vc = await loadVoiceConfig()
+      setVoiceConfig(vc)
     })()
     void checkForUpdate()
     if (showIslandBackgroundSettings) {
@@ -948,6 +953,135 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           </div>
         </div>
       </section>
+
+      {/* Voice Companion Configuration */}
+      {isPetMode && voiceConfig && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">🎙️ {t('settings.voiceCompanion', '语音陪伴配置')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+            <div className="p-4 flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.rtcAppId', 'RTC App ID')}</label>
+                  <input
+                    type="text"
+                    value={voiceConfig.rtcAppId}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, rtcAppId: e.target.value })}
+                    placeholder="RTC App ID"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.rtcAppKey', 'RTC App Key')}</label>
+                  <input
+                    type="password"
+                    value={voiceConfig.rtcAppKey}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, rtcAppKey: e.target.value })}
+                    placeholder="RTC App Key"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.asrAppId', 'ASR App ID')}</label>
+                  <input
+                    type="text"
+                    value={voiceConfig.asrAppId}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, asrAppId: e.target.value })}
+                    placeholder="ASR App ID"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.asrAccessToken', 'ASR Access Token')}</label>
+                  <input
+                    type="password"
+                    value={voiceConfig.asrAccessToken}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, asrAccessToken: e.target.value })}
+                    placeholder="ASR Token"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.ttsAppId', 'TTS App ID')}</label>
+                  <input
+                    type="text"
+                    value={voiceConfig.ttsAppId}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, ttsAppId: e.target.value })}
+                    placeholder="TTS App ID"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.ttsAccessToken', 'TTS Access Token')}</label>
+                  <input
+                    type="password"
+                    value={voiceConfig.ttsAccessToken}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, ttsAccessToken: e.target.value })}
+                    placeholder="TTS Token"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.llmEndpointId', 'LLM Endpoint ID')}</label>
+                  <input
+                    type="text"
+                    value={voiceConfig.llmEndpointId}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, llmEndpointId: e.target.value })}
+                    placeholder="Endpoint ID"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.llmApiKey', 'LLM API Key')}</label>
+                  <input
+                    type="password"
+                    value={voiceConfig.llmApiKey}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, llmApiKey: e.target.value })}
+                    placeholder="API Key"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-white/40">{t('settings.characterPrompt', '角色人设')}</label>
+                <textarea
+                  value={voiceConfig.characterPrompt}
+                  onChange={(e) => setVoiceConfig({ ...voiceConfig, characterPrompt: e.target.value })}
+                  placeholder={t('settings.characterPromptPlaceholder', '描述宠物的性格和陪伴方式')}
+                  rows={3}
+                  className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors resize-none"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={async () => {
+                    setVoiceSaving(true)
+                    setVoiceSaveResult(null)
+                    try {
+                      await saveVoiceConfig(voiceConfig)
+                      setVoiceSaveResult('success')
+                      setTimeout(() => setVoiceSaveResult(null), 2000)
+                    } catch (e) {
+                      console.error('Save voice config failed:', e)
+                    }
+                    setVoiceSaving(false)
+                  }}
+                  disabled={voiceSaving}
+                  className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {voiceSaving && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {t('common.save', '保存')}
+                </button>
+                {voiceSaveResult === 'success' && (
+                  <span className="text-xs text-emerald-400 flex items-center gap-1">
+                    <Check className="w-3 h-3" /> {t('common.saved', '已保存')}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Language selector */}
       <section className="flex flex-col gap-4">

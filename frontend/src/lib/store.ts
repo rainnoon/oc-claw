@@ -161,3 +161,37 @@ export function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
+export interface VoiceConfig {
+  rtcAppId: string
+  rtcAppKey: string
+  asrAppId: string
+  asrAccessToken: string
+  ttsAppId: string
+  ttsAccessToken: string
+  llmEndpointId: string
+  llmApiKey: string
+  characterPrompt: string
+}
+
+export async function loadVoiceConfig(): Promise<VoiceConfig> {
+  const store = await getStore()
+  const saved = await store.get('voice_config') as Partial<VoiceConfig> | null
+  return {
+    rtcAppId: saved?.rtcAppId || '',
+    rtcAppKey: saved?.rtcAppKey || '',
+    asrAppId: saved?.asrAppId || '',
+    asrAccessToken: saved?.asrAccessToken || '',
+    ttsAppId: saved?.ttsAppId || '',
+    ttsAccessToken: saved?.ttsAccessToken || '',
+    llmEndpointId: saved?.llmEndpointId || '',
+    llmApiKey: saved?.llmApiKey || '',
+    characterPrompt: saved?.characterPrompt || '你是一只可爱的桌面宠物,陪伴用户玩游戏和工作',
+  }
+}
+
+export async function saveVoiceConfig(cfg: VoiceConfig): Promise<void> {
+  const store = await getStore()
+  await store.set('voice_config', cfg)
+  await store.save()
+}
+

@@ -11,7 +11,7 @@ import { UpdateModal, type UpdateModalInfo, type UpdateModalPhase } from './comp
 import { AgentDetailView } from './components/AgentDetailView'
 import { CreateCharacterModal } from './components/CreateCharacterModal'
 import { ClaudeStatsView } from './components/ClaudeStatsView'
-import { getStore, DEFAULT_CHAR, DEFAULT_CHAR_NAME, loadCharacters, loadOcConnections, saveOcConnections } from './lib/store'
+import { getStore, DEFAULT_CHAR, DEFAULT_CHAR_NAME, loadCharacters, loadOcConnections, saveOcConnections, loadVoiceConfig } from './lib/store'
 import { saveAgentCharMap } from './lib/agents'
 import type { AgentMetrics, OcConnection } from './lib/types'
 import { OnboardingModal } from './components/OnboardingModal'
@@ -738,6 +738,10 @@ export default function Mini() {
   const petDataRef = useRef<PetData>(defaultPetData())
   petDataRef.current = petData
   const [currentPetAction, setCurrentPetAction] = useState<PetAction>('idle')
+  // Voice companion state
+  const [voiceBubbleText, setVoiceBubbleText] = useState<string | null>(null)
+  const [voiceBubbleVisible, setVoiceBubbleVisible] = useState(false)
+  const voiceBubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentPetActionRef = useRef<PetAction>('idle')
   currentPetActionRef.current = currentPetAction
   const [walkFlipped, setWalkFlipped] = useState(false)
@@ -1584,6 +1588,57 @@ export default function Mini() {
     setTimeout(() => {
       setFoodRainDrops(prev => prev.filter(d => !drops.includes(d)))
     }, 2500)
+  }, [])
+
+  const handleVoiceTalk = useCallback(async () => {
+    try {
+      // Show "thinking" bubble
+      setVoiceBubbleText('思考中...')
+      setVoiceBubbleVisible(true)
+
+      // Load voice config (keys)
+      const voiceCfg = await loadVoiceConfig()
+
+      // Take screenshot
+      const screenshot = await invoke<string>('take_screenshot')
+
+      // Call LLM with keys from config
+      const response = await invoke<string>('chat_with_pet', {
+        screenshot,
+        message: '用户点击了说话按钮，看看屏幕上发生了什么，给出陪伴式的简短回应（不超过30字）',
+        llmEndpointId: voiceCfg.llmEndpointId,
+        llmApiKey: voiceCfg.llmApiKey,
+        characterPrompt: voiceCfg.characterPrompt,
+      })
+
+      // Show response bubble
+      setVoiceBubbleText(response)
+      setVoiceBubbleVisible(true)
+
+      // Play TTS in background (don't await, let it play async)
+      invoke('speak_text', {
+        text: response,
+        ttsAppId: voiceCfg.ttsAppId,
+        ttsAccessToken: voiceCfg.ttsAccessToken,
+      }).catch(e => console.warn('[voice] TTS failed:', e))
+
+      // Auto-hide after 4 seconds
+      if (voiceBubbleTimerRef.current) clearTimeout(voiceBubbleTimerRef.current)
+      voiceBubbleTimerRef.current = setTimeout(() => {
+        setVoiceBubbleVisible(false)
+        setVoiceBubbleText(null)
+        voiceBubbleTimerRef.current = null
+      }, 4000)
+    } catch (e) {
+      console.error('[voice] talk failed:', e)
+      setVoiceBubbleText('呜...出错了')
+      setVoiceBubbleVisible(true)
+      if (voiceBubbleTimerRef.current) clearTimeout(voiceBubbleTimerRef.current)
+      voiceBubbleTimerRef.current = setTimeout(() => {
+        setVoiceBubbleVisible(false)
+        setVoiceBubbleText(null)
+      }, 2000)
+    }
   }, [])
 
 
@@ -3882,6 +3937,87 @@ export default function Mini() {
                   ))}
                 </AnimatePresence>
               </div>
+            )}
+
+            {/* Voice talk button — bottom-right corner */}
+            {appMode === 'pet' && largeMascot && !petContextMenuOpen && !settingsMode && (
+              <button
+                onClick={handleVoiceTalk}
+                style={{
+                  position: 'absolute',
+                  bottom: 20,
+                  right: 20,
+                  width: 44,
+                  height: 44,
+                  borderRadius: '50%',
+                  background: 'rgba(255, 255, 255, 0.15)',
+                  backdropFilter: 'blur(10px)',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                  fontSize: 20,
+                  zIndex: 100,
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)'
+                  e.currentTarget.style.transform = 'scale(1.1)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)'
+                  e.currentTarget.style.transform = 'scale(1)'
+                }}
+              >
+                🎙️
+              </button>
+            )}
+
+            {/* Voice bubble — above mascot */}
+            {appMode === 'pet' && largeMascot && voiceBubbleVisible && voiceBubbleText && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+                style={{
+                  position: 'absolute',
+                  bottom: largeMascotVisualSize + 20,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  maxWidth: '80%',
+                  minWidth: 120,
+                  padding: '10px 16px',
+                  background: 'rgba(255, 255, 255, 0.95)',
+                  borderRadius: 16,
+                  color: '#333',
+                  fontSize: 14,
+                  lineHeight: '1.4',
+                  textAlign: 'center',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                  zIndex: 200,
+                  maxHeight: 60,
+                  overflow: 'hidden',
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
+                }}
+              >
+                {voiceBubbleText}
+                {/* Triangle pointer */}
+                <div style={{
+                  position: 'absolute',
+                  bottom: -8,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  width: 0,
+                  height: 0,
+                  borderLeft: '8px solid transparent',
+                  borderRight: '8px solid transparent',
+                  borderTop: '8px solid rgba(255, 255, 255, 0.95)',
+                }} />
+              </motion.div>
             )}
 
           </div>
