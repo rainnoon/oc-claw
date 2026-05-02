@@ -9100,19 +9100,18 @@ async fn start_rtc_voice_chat(
         format!("001{}{}", app_id_env, general_purpose::STANDARD.encode(&content))
     };
 
-    // Build request body
+    // Build request body — VisualVoiceChat StartVoiceChat API structure
     let body = serde_json::json!({
         "AppId": app_id,
-        "RoomId": room_id.clone(),
-        "TaskId": room_id.clone(),
+        "RoomId": room_id,
+        "TaskId": room_id,
         "Config": {
             "WelcomeMessage": "你好！我在这里陪你！",
-            "TargetUserId": [user_id.clone()],
-            "BotConfig": {
-                "BotName": "小宠物",
-                "BotUserId": bot_user_id,
+            "TargetUserId": [user_id],
+            "AgentConfig": {
+                "UserId": bot_user_id,
                 "Token": bot_token,
-                "Language": "zh-CN",
+                "WelcomeMessage": "你好！我是你的桌面宠物，有什么需要我帮忙的吗？",
                 "ASRConfig": {
                     "ProviderType": "volcano",
                     "ProviderParams": {
@@ -9164,7 +9163,7 @@ async fn start_rtc_voice_chat(
         &sk,
     )?;
 
-    log::info!("[RTC] sending StartVoiceChat request");
+    log::info!("[RTC] sending StartVoiceChat request body={}", body_str);
 
     // Make the API call
     let client = reqwest::Client::new();
