@@ -258,6 +258,14 @@ export class VoiceRTCClient {
       await this.engine.startAudioCapture()
       rlog('info', 'mic started')
 
+      // Explicitly publish audio stream (isAutoPublish may not work in all VERTC versions)
+      try {
+        await this.engine.publishStream(MediaType.AUDIO)
+        rlog('info', 'publishStream(AUDIO) OK — mic stream published to room')
+      } catch (err: any) {
+        rlog('warn', `publishStream: ${err?.message} (may already be auto-published)`)
+      }
+
       // 7. Call Volcano StartVoiceChat API via Rust
       rlog('info', 'calling start_rtc_voice_chat...')
       await invoke('start_rtc_voice_chat', {
