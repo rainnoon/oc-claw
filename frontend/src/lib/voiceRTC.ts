@@ -125,8 +125,11 @@ export class VoiceRTCClient {
       const localEvt = Object.keys(VERTC.events).find(k => k.toLowerCase().includes('local') && k.toLowerCase().includes('audio'))
       rlog('info', `local audio event name: ${localEvt} = ${(VERTC.events as any)[localEvt ?? '']}`)
 
-      // Also enable with includeLocalUser flag (some VERTC versions)
-      this.engine.enableAudioPropertiesReport({ interval: 1000, includeLocalUser: true })
+      // Enable audio level reporting (remote + local)
+      this.engine.enableAudioPropertiesReport({ interval: 500, includeLocalUser: true, smooth: false })
+      // Some VERTC versions have a separate method for local reporting
+      try { this.engine.enableLocalAudioPropertiesReport({ interval: 500 }) } catch (_) {}
+
       this.engine.on(VERTC.events.onRemoteAudioPropertiesReport, (infos: any[]) => {
         if (infos && infos.length > 0) {
           // Log full structure once to understand the schema
