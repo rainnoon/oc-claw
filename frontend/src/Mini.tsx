@@ -1652,19 +1652,25 @@ export default function Mini() {
     }
   }, [])
 
-  const handleVoiceStart = useCallback(async () => {
-    if (voicePressingRef.current) return
-    voicePressingRef.current = true
-    setIsVoicePressing(true)
-    const pressToken = ++voicePressTokenRef.current
-    const isSamePress = () => voicePressingRef.current && pressToken === voicePressTokenRef.current
+  const handleVoiceToggle = useCallback(async () => {
+    // If already active → stop and disconnect
+    if (voiceClientRef.current?.isActive()) {
+      try {
+        await voiceClientRef.current.stopVoiceChat()
+      } catch (e: any) {
+        invoke('js_log', { level: 'error', msg: `[voice] stop failed: ${e?.message}` }).catch(() => {})
+      }
+      voiceClientRef.current = null
+      setIsVoiceActive(false)
+      setIsVoicePressing(false)
+      return
+    }
 
+    // Start RTC voice chat
     try {
-      // Load store config, then merge env overrides from Rust
       const storeCfg = await loadVoiceConfig()
       const envCfg = await invoke<Record<string, string>>('get_env_voice_config')
       const voiceCfg = { ...storeCfg }
-      // env values override store values when non-empty
       for (const [k, v] of Object.entries(envCfg)) {
         if (v && v.trim()) (voiceCfg as any)[k] = v
       }
@@ -1676,27 +1682,9 @@ export default function Mini() {
         return
       }
 
-      // Reuse existing RTC session and only resume user speech.
-      if (voiceClientRef.current?.isActive()) {
-        await voiceClientRef.current.startVoiceChat()
-        if (!isSamePress()) {
-          await voiceClientRef.current.endUserSpeechTurn().catch(() => {})
-          setIsVoiceActive(false)
-          return
-        }
-        setIsVoiceActive(true)
-        return
-      }
-
-      // Start RTC voice chat
       const client = new VoiceRTCClient(voiceCfg)
       voiceClientRef.current = client
       await client.startVoiceChat()
-      if (!isSamePress()) {
-        await client.endUserSpeechTurn().catch(() => {})
-        setIsVoiceActive(false)
-        return
-      }
       setIsVoiceActive(true)
       invoke('js_log', { level: 'info', msg: '[voice] RTC voice chat started' }).catch(() => {})
     } catch (e: any) {
@@ -1704,48 +1692,9 @@ export default function Mini() {
       console.error(msg)
       invoke('js_log', { level: 'error', msg }).catch(() => {})
       voiceClientRef.current = null
-      voicePressingRef.current = false
-      setIsVoicePressing(false)
       setIsVoiceActive(false)
     }
   }, [handleVoiceTalk])
-
-  const handleVoiceStop = useCallback(async () => {
-    const wasPressing = voicePressingRef.current
-    voicePressingRef.current = false
-    setIsVoicePressing(false)
-    voicePressTokenRef.current += 1
-
-    if (!wasPressing) return
-
-    if (voiceClientRef.current) {
-      try {
-        await voiceClientRef.current.endUserSpeechTurn()
-        console.log('[voice] user speech ended, waiting for AI response')
-      } catch (e) {
-        console.error('[voice] Failed to end speech turn:', e)
-      }
-    }
-    setIsVoiceActive(false)
-  }, [isVoiceActive])
-
-  useEffect(() => {
-    if (!isVoicePressing) return
-
-    const onGlobalPointerUp = () => { void handleVoiceStop() }
-    const onGlobalPointerCancel = () => { void handleVoiceStop() }
-    const onWindowBlur = () => { void handleVoiceStop() }
-
-    window.addEventListener('pointerup', onGlobalPointerUp)
-    window.addEventListener('pointercancel', onGlobalPointerCancel)
-    window.addEventListener('blur', onWindowBlur)
-
-    return () => {
-      window.removeEventListener('pointerup', onGlobalPointerUp)
-      window.removeEventListener('pointercancel', onGlobalPointerCancel)
-      window.removeEventListener('blur', onWindowBlur)
-    }
-  }, [isVoicePressing, handleVoiceStop])
 
   useEffect(() => {
     return () => {
@@ -4054,17 +4003,12 @@ export default function Mini() {
               </div>
             )}
 
-            {/* Voice talk button — bottom-right corner */}
+            {/* Voice talk button — bottom-right corner, toggle mode */}
             {appMode === 'pet' && largeMascot && !petContextMenuOpen && !settingsMode && (
               <button
-                onMouseDown={(e) => { e.stopPropagation(); handleVoiceStart() }}
-                onMouseUp={(e) => { e.stopPropagation(); handleVoiceStop() }}
-                onMouseLeave={(e) => { e.stopPropagation(); handleVoiceStop() }}
-                onTouchStart={(e) => { e.stopPropagation(); handleVoiceStart() }}
-                onTouchEnd={(e) => { e.stopPropagation(); handleVoiceStop() }}
+                onClick={(e) => { e.stopPropagation(); handleVoiceToggle() }}
                 onPointerDown={(e) => e.stopPropagation()}
-                onPointerUp={(e) => { e.stopPropagation(); handleVoiceStop() }}
-                onPointerCancel={(e) => { e.stopPropagation(); handleVoiceStop() }}
+                title={isVoiceActive ? '点击退出语音模式' : '点击开始语音对话'}
                 style={{
                   position: 'absolute',
                   bottom: 20,
@@ -4072,9 +4016,13 @@ export default function Mini() {
                   width: 44,
                   height: 44,
                   borderRadius: '50%',
-                  background: isVoicePressing ? 'rgba(255, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.15)',
+                  background: isVoiceActive
+                    ? 'rgba(99, 202, 183, 0.45)'
+                    : 'rgba(255, 255, 255, 0.15)',
                   backdropFilter: 'blur(10px)',
-                  border: isVoicePressing ? '1px solid rgba(255, 0, 0, 0.5)' : '1px solid rgba(255, 255, 255, 0.2)',
+                  border: isVoiceActive
+                    ? '1.5px solid rgba(99, 202, 183, 0.8)'
+                    : '1px solid rgba(255, 255, 255, 0.2)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -4082,21 +4030,24 @@ export default function Mini() {
                   transition: 'all 0.2s',
                   fontSize: 20,
                   zIndex: 100,
+                  boxShadow: isVoiceActive ? '0 0 10px rgba(99, 202, 183, 0.5)' : 'none',
                 }}
                 onMouseEnter={(e) => {
-                  if (!isVoicePressing) {
+                  if (!isVoiceActive) {
                     e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)'
+                    e.currentTarget.style.transform = 'scale(1.1)'
+                  } else {
                     e.currentTarget.style.transform = 'scale(1.1)'
                   }
                 }}
                 onMouseLeave={(e) => {
-                  if (!isVoicePressing) {
+                  e.currentTarget.style.transform = 'scale(1)'
+                  if (!isVoiceActive) {
                     e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)'
-                    e.currentTarget.style.transform = 'scale(1)'
                   }
                 }}
               >
-                🎙️
+                {isVoiceActive ? '🔊' : '🎙️'}
               </button>
             )}
 
