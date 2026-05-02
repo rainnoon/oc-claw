@@ -56,19 +56,35 @@ export class VoiceRTCClient {
         rlog('warn', `AudioContext unlock failed: ${e}`)
       }
 
+      // Enumerate audio devices to find a real microphone
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const audioInputs = devices.filter(d => d.kind === 'audioinput')
+        rlog('info', `audio inputs (${audioInputs.length}): ${audioInputs.map(d => `[${d.deviceId.slice(0,8)}] ${d.label}`).join(' | ')}`)
+      } catch (e: any) {
+        rlog('warn', `enumerateDevices failed: ${e?.message}`)
+      }
+
       // Quick mic sanity check — detect if mic is real or fake/silent
       try {
         const testStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        const track = testStream.getAudioTracks()[0]
+        rlog('info', `mic track: label="${track?.label}" enabled=${track?.enabled} readyState=${track?.readyState}`)
         const testAC = new AudioContext()
         await testAC.resume()
         const src2 = testAC.createMediaStreamSource(testStream)
         const analyser = testAC.createAnalyser()
         src2.connect(analyser)
-        await new Promise(r => setTimeout(r, 500))
-        const data = new Float32Array(analyser.fftSize)
-        analyser.getFloatTimeDomainData(data)
-        const rms = Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length)
-        rlog('info', `mic test RMS=${rms.toFixed(6)} ${rms > 0.001 ? '✅ REAL mic (has signal)' : '⚠️ SILENT mic (fake or muted)'}`)
+        // Wait longer and check multiple times
+        let maxRms = 0
+        for (let i = 0; i < 6; i++) {
+          await new Promise(r => setTimeout(r, 300))
+          const data = new Float32Array(analyser.fftSize)
+          analyser.getFloatTimeDomainData(data)
+          const rms = Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length)
+          if (rms > maxRms) maxRms = rms
+        }
+        rlog('info', `mic test maxRMS=${maxRms.toFixed(6)} ${maxRms > 0.001 ? '✅ REAL mic (has signal)' : '⚠️ SILENT mic (fake or muted)'}`)
         testStream.getTracks().forEach(t => t.stop())
         testAC.close()
       } catch (err: any) {
