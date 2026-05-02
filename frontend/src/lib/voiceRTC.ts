@@ -15,6 +15,12 @@ export interface RTCVoiceConfig {
   characterPrompt: string
 }
 
+// Forward JS logs to Rust terminal (visible in `tauri dev` output)
+function rlog(level: 'info' | 'warn' | 'error', msg: string) {
+  console[level]('[VoiceRTC]', msg)
+  invoke('js_log', { level, msg: `[VoiceRTC] ${msg}` }).catch(() => {})
+}
+
 export class VoiceRTCClient {
   private config: RTCVoiceConfig
   private engine: any = null
@@ -32,6 +38,8 @@ export class VoiceRTCClient {
     if (this.active) return
 
     try {
+      rlog('info', `starting — roomId=${this.roomId} userId=${this.userId}`)
+
       // 1. Generate RTC token via Rust
       const token = await invoke<string>('generate_rtc_token', {
         appId: this.config.rtcAppId,
@@ -41,24 +49,28 @@ export class VoiceRTCClient {
         accessKeyId: this.config.accessKeyId,
         secretAccessKey: this.config.secretAccessKey,
       })
-      console.log('[VoiceRTC] token generated')
+      rlog('info', 'token generated')
 
       // 2. Create engine
+      rlog('info', `createEngine appId=${this.config.rtcAppId}`)
       this.engine = VERTC.createEngine(this.config.rtcAppId)
 
       // 3. Listen for bot joining (AI ready)
       this.engine.on(VERTC.events.onUserJoined, (e: any) => {
-        console.log('[VoiceRTC] user joined:', e.userInfo?.userId)
+        rlog('info', `user joined: ${e.userInfo?.userId}`)
       })
 
       // 4. Auto-subscribe remote audio (AI voice)
       this.engine.on(VERTC.events.onUserPublishStream, async (e: any) => {
+        rlog('info', `onUserPublishStream userId=${e.userId} mediaType=${e.mediaType}`)
         if (e.mediaType === MediaType.AUDIO) {
           await this.engine.subscribeStream(e.userId, MediaType.AUDIO)
+          rlog('info', `subscribed to audio from ${e.userId}`)
         }
       })
 
-      // 5. Join room — Volcano RTC API: joinRoom(token, roomId, userInfo, options)
+      // 5. Join room
+      rlog('info', `joinRoom roomId=${this.roomId}`)
       await this.engine.joinRoom(
         token,
         this.roomId,
@@ -69,13 +81,15 @@ export class VoiceRTCClient {
           roomProfileType: RoomProfileType.chat,
         }
       )
-      console.log('[VoiceRTC] joined room:', this.roomId)
+      rlog('info', 'joined room OK')
 
       // 6. Start mic
+      rlog('info', 'startAudioCapture...')
       await this.engine.startAudioCapture()
-      console.log('[VoiceRTC] mic started')
+      rlog('info', 'mic started')
 
       // 7. Call Volcano StartVoiceChat API via Rust
+      rlog('info', 'calling start_rtc_voice_chat...')
       await invoke('start_rtc_voice_chat', {
         appId: this.config.rtcAppId,
         accessKeyId: this.config.accessKeyId,
@@ -90,11 +104,11 @@ export class VoiceRTCClient {
         llmApiKey: this.config.llmApiKey,
         characterPrompt: this.config.characterPrompt || '你是一只可爱的桌面宠物，陪伴用户玩游戏和工作，回答简短活泼',
       })
-      console.log('[VoiceRTC] StartVoiceChat called')
+      rlog('info', 'StartVoiceChat OK — voice chat active!')
 
       this.active = true
-    } catch (error) {
-      console.error('[VoiceRTC] start failed:', error)
+    } catch (error: any) {
+      rlog('error', `start failed: ${error?.message ?? String(error)}`)
       await this._cleanup()
       throw error
     }
@@ -110,8 +124,8 @@ export class VoiceRTCClient {
         secretAccessKey: this.config.secretAccessKey,
         roomId: this.roomId,
       })
-    } catch (e) {
-      console.warn('[VoiceRTC] stop API error:', e)
+    } catch (e: any) {
+      rlog('warn', `stop API error: ${e?.message ?? String(e)}`)
     }
 
     await this._cleanup()
@@ -123,13 +137,13 @@ export class VoiceRTCClient {
         await this.engine.stopAudioCapture()
         await this.engine.leaveRoom()
         VERTC.destroyEngine(this.engine)
-      } catch (e) {
-        console.warn('[VoiceRTC] cleanup error:', e)
+      } catch (e: any) {
+        rlog('warn', `cleanup error: ${e?.message ?? String(e)}`)
       }
       this.engine = null
     }
     this.active = false
-    console.log('[VoiceRTC] cleaned up')
+    rlog('info', 'cleaned up')
   }
 
   isActive(): boolean {

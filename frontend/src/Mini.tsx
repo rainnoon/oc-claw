@@ -1672,9 +1672,11 @@ export default function Mini() {
       voiceClientRef.current = client
       await client.startVoiceChat()
       setIsVoiceActive(true)
-      console.log('[voice] RTC voice chat started')
-    } catch (e) {
-      console.error('[voice] Failed to start RTC:', e)
+      invoke('js_log', { level: 'info', msg: '[voice] RTC voice chat started' }).catch(() => {})
+    } catch (e: any) {
+      const msg = `[voice] Failed to start RTC: ${e?.message ?? String(e)}`
+      console.error(msg)
+      invoke('js_log', { level: 'error', msg }).catch(() => {})
       voiceClientRef.current = null
       setIsVoiceActive(false)
     }
