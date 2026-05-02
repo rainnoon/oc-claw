@@ -9156,7 +9156,12 @@ async fn start_rtc_voice_chat(
                 "MaxTokens": 1024,
                 "Temperature": 0.7,
                 "TopP": 0.9,
-                "Tools": [
+                "Tools": if enable_video.unwrap_or(false) {
+                    // Video stream active — no need for screenshot tool
+                    serde_json::json!([])
+                } else {
+                    // No video — keep screenshot function call as fallback
+                    serde_json::json!([
                     {
                         "type": "function",
                         "function": {
@@ -9169,7 +9174,8 @@ async fn start_rtc_voice_chat(
                             }
                         }
                     }
-                ]
+                    ])
+                }
             }
         }
     });

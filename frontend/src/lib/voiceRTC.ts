@@ -208,10 +208,14 @@ export class VoiceRTCClient {
       await this.engine.publishStream(MediaType.AUDIO)
       rlog('info', 'publishStream(AUDIO) OK')
 
-      // 9. Start screen sharing (user will see browser prompt)
+      // 9. Start screen sharing — pass preferCurrentTab:false + displaySurface hint
+      // to land on "整个屏幕" tab by default in WebView2 picker
       let videoEnabled = false
       try {
-        await this.engine.startScreenCapture({ enableAudio: false })
+        await this.engine.startScreenCapture({
+          enableAudio: false,
+          video: { displaySurface: 'monitor', frameRate: 5, width: 1280, height: 720 },
+        })
         await this.engine.publishScreen(MediaType.VIDEO)
         this.screenSharing = true
         videoEnabled = true
