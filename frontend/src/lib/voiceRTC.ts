@@ -113,6 +113,7 @@ export class VoiceRTCClient {
 
       // Monitor remote audio levels — confirms data is actually flowing
       this.engine.enableAudioPropertiesReport({ interval: 1000 })
+      this.engine.enableLocalAudioPropertiesReport?.({ interval: 500 })
       this.engine.on(VERTC.events.onRemoteAudioPropertiesReport, (infos: any[]) => {
         if (infos && infos.length > 0) {
           // Log full structure once to understand the schema
@@ -121,11 +122,23 @@ export class VoiceRTCClient {
             rlog('info', `audio report schema: ${JSON.stringify(infos[0])}`)
           }
           const levels = infos.map((i: any) => {
-            const uid = i.streamKey?.userId ?? i.audioPropertiesInfo?.userId ?? '?'
-            const level = i.audioPropertiesInfo?.audioLevel ?? i.audioLevel ?? i.linearVolume ?? '?'
+            const uid = i.streamKey?.userId ?? '?'
+            const level = i.audioPropertiesInfo?.linearVolume ?? '?'
             return `${uid}:${level}`
           }).join(', ')
-          rlog('info', `remote audio levels: ${levels}`)
+          if (levels.includes(':0') === false || Math.random() < 0.1) {
+            rlog('info', `remote audio levels: ${levels}`)
+          }
+        }
+      })
+
+      // Monitor local mic level — confirms our voice is actually being sent
+      this.engine.on(VERTC.events.onLocalAudioPropertiesReport, (infos: any[]) => {
+        if (infos && infos.length > 0) {
+          const level = infos[0]?.audioPropertiesInfo?.linearVolume ?? '?'
+          if (level !== '?' && level > 0) {
+            rlog('info', `local mic level: ${level} (mic is capturing and sending)`)
+          }
         }
       })
 
