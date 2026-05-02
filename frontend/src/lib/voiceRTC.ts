@@ -97,12 +97,20 @@ export class VoiceRTCClient {
           await this.engine.subscribeStream(e.userId, MediaType.AUDIO)
           rlog('info', `subscribed to audio from ${e.userId}`)
 
-          // Set playback volume (confirmed method from SDK introspection)
+          // Set per-user playback volume
           try {
-            this.engine.setPlaybackVolume(100)
-            rlog('info', 'setPlaybackVolume(100) called')
+            this.engine.setPlaybackVolume(e.userId, 100)
+            rlog('info', `setPlaybackVolume(${e.userId}, 100) OK`)
           } catch (err: any) {
-            rlog('warn', `setPlaybackVolume failed: ${err?.message}`)
+            rlog('warn', `setPlaybackVolume error: ${err?.message}`)
+          }
+
+          // Explicitly start playback (VERTC requires this in some environments)
+          try {
+            await this.engine.play(e.userId)
+            rlog('info', `play(${e.userId}) OK — audio should be audible`)
+          } catch (err: any) {
+            rlog('warn', `play() error: ${err?.message}`)
           }
         }
       })
