@@ -6282,8 +6282,13 @@ async fn chat_with_pet(
     llm_api_key: String,
     character_prompt: String,
 ) -> Result<String, String> {
+    // .env.local overrides settings-page values (dev convenience)
+    let endpoint = std::env::var("VOLCANO_LLM_ENDPOINT_ID").unwrap_or(llm_endpoint_id);
+    let api_key  = std::env::var("VOLCANO_LLM_API_KEY").unwrap_or(llm_api_key);
+    let prompt   = std::env::var("VOLCANO_CHARACTER_PROMPT").unwrap_or(character_prompt);
+
     // Fall back to placeholder when keys are empty (dev / no config)
-    if llm_api_key.is_empty() || llm_endpoint_id.is_empty() {
+    if api_key.is_empty() || endpoint.is_empty() {
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let replies = ["哇，你在干嘛呀～", "加油加油！我在看着你呢 ✨", "要不要休息一下？", "看起来很有趣的样子！"];
         let idx = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() % 4) as usize;
@@ -6292,7 +6297,7 @@ async fn chat_with_pet(
 
     let client = reqwest::Client::new();
 
-    let system_msg = serde_json::json!({ "role": "system", "content": character_prompt });
+    let system_msg = serde_json::json!({ "role": "system", "content": prompt });
 
     let user_content = if let Some(img_b64) = screenshot {
         let img_url = format!("data:image/png;base64,{}", img_b64);
@@ -6307,14 +6312,14 @@ async fn chat_with_pet(
     let user_msg = serde_json::json!({ "role": "user", "content": user_content });
 
     let body = serde_json::json!({
-        "model": llm_endpoint_id,
+        "model": endpoint,
         "messages": [system_msg, user_msg],
         "max_tokens": 120
     });
 
     let resp = client
         .post("https://ark.cn-beijing.volces.com/api/v3/chat/completions")
-        .header("Authorization", format!("Bearer {}", llm_api_key))
+        .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
@@ -6338,7 +6343,10 @@ async fn speak_text(
     tts_app_id: String,
     tts_access_token: String,
 ) -> Result<(), String> {
-    if tts_app_id.is_empty() || tts_access_token.is_empty() {
+    let app_id = std::env::var("VOLCANO_TTS_APP_ID").unwrap_or(tts_app_id);
+    let token  = std::env::var("VOLCANO_TTS_ACCESS_TOKEN").unwrap_or(tts_access_token);
+
+    if app_id.is_empty() || token.is_empty() {
         return Ok(()); // silently skip when not configured
     }
 
@@ -6346,7 +6354,7 @@ async fn speak_text(
     let req_id = uuid::Uuid::new_v4().to_string();
 
     let body = serde_json::json!({
-        "app": { "appid": tts_app_id, "token": tts_access_token, "cluster": "volcano_tts" },
+        "app": { "appid": app_id, "token": token, "cluster": "volcano_tts" },
         "user": { "uid": "oc-claw-user" },
         "audio": {
             "voice_type": "ICL_zh_female_keainvsheng_tob",
@@ -6359,7 +6367,7 @@ async fn speak_text(
 
     let resp = client
         .post("https://openspeech.bytedance.com/api/v1/tts")
-        .header("Authorization", format!("Bearer;{}", tts_access_token))
+        .header("Authorization", format!("Bearer;{}", token))
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
@@ -10684,6 +10692,10 @@ fn build_asset_response(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load .env.local / .env for dev-time key overrides (silently ignore if missing)
+    let _ = dotenvy::from_filename(".env.local");
+    let _ = dotenvy::dotenv();
+
     #[cfg(target_os = "windows")]
     {
         // WebView2 hardware video decode can drop VP9 alpha; force software decode.

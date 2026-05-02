@@ -27,6 +27,7 @@ chrono = "0.4"
 dirs = "5"
 percent-encoding = "2"
 xcap = "0.0.14"
+dotenvy = "0.15"
 image = "0.25"
 uuid = { version = "1", features = ["v4"] }
 
