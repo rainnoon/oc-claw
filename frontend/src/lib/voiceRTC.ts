@@ -70,6 +70,21 @@ export class VoiceRTCClient {
       rlog('info', `createEngine appId=${this.config.rtcAppId}`)
       this.engine = VERTC.createEngine(this.config.rtcAppId)
 
+      // Handle VERTC internal autoplay failure — must resume on user gesture
+      this.engine.on(VERTC.events.onAutoplayFailed, async (e: any) => {
+        rlog('warn', `onAutoplayFailed: ${JSON.stringify(e)} — attempting resume via user gesture`)
+        // Force resume: play a silent audio element to unlock browser autoplay
+        try {
+          const audioEl = document.getElementById('rtc-remote-audio') as HTMLAudioElement
+          if (audioEl) {
+            await audioEl.play()
+            rlog('info', 'autoplay unlocked via audio element play()')
+          }
+        } catch (err: any) {
+          rlog('error', `autoplay resume failed: ${err?.message}`)
+        }
+      })
+
       // 3. Listen for bot joining (AI ready)
       this.engine.on(VERTC.events.onUserJoined, (e: any) => {
         rlog('info', `user joined: ${e.userInfo?.userId}`)
@@ -82,42 +97,13 @@ export class VoiceRTCClient {
           await this.engine.subscribeStream(e.userId, MediaType.AUDIO)
           rlog('info', `subscribed to audio from ${e.userId}`)
 
-          // VERTC SDK manages audio playback internally after subscribe.
-          // We must call setAudioPlaybackVolume to ensure it's not muted,
-          // and also try to set a remote audio player element.
+          // Set playback volume (confirmed method from SDK introspection)
           try {
-            // Ensure remote audio volume is at 100%
-            if (typeof this.engine.setRemoteAudioPlaybackVolume === 'function') {
-              this.engine.setRemoteAudioPlaybackVolume(e.userId, 100)
-              rlog('info', `set remote audio volume 100 for ${e.userId}`)
-            }
-            // Try adjusting global playback volume
-            if (typeof this.engine.setAudioPlaybackVolume === 'function') {
-              this.engine.setAudioPlaybackVolume(100)
-              rlog('info', 'set global audio playback volume 100')
-            }
-            // Try setting player element (some VERTC versions need this)
-            if (typeof this.engine.setRemoteAudioPlayer === 'function') {
-              let audioEl = document.getElementById('rtc-remote-audio') as HTMLAudioElement
-              if (!audioEl) {
-                audioEl = document.createElement('audio')
-                audioEl.id = 'rtc-remote-audio'
-                audioEl.autoplay = true
-                audioEl.controls = false
-                audioEl.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;'
-                document.body.appendChild(audioEl)
-              }
-              this.engine.setRemoteAudioPlayer(e.userId, audioEl)
-              rlog('info', `setRemoteAudioPlayer for ${e.userId}`)
-            }
+            this.engine.setPlaybackVolume(100)
+            rlog('info', 'setPlaybackVolume(100) called')
           } catch (err: any) {
-            rlog('warn', `audio setup error: ${err?.message}`)
+            rlog('warn', `setPlaybackVolume failed: ${err?.message}`)
           }
-
-          // Log all properties of the engine to find correct audio API
-          const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(this.engine))
-            .filter(m => m.toLowerCase().includes('audio') || m.toLowerCase().includes('volume') || m.toLowerCase().includes('play'))
-          rlog('info', `engine audio methods: ${methods.join(', ')}`)
         }
       })
 
@@ -149,7 +135,25 @@ export class VoiceRTCClient {
         }
       })
 
-      // 5. Join room
+      // 5. Pre-create audio element and unlock autoplay before joining room
+      {
+        let audioEl = document.getElementById('rtc-remote-audio') as HTMLAudioElement
+        if (!audioEl) {
+          audioEl = document.createElement('audio')
+          audioEl.id = 'rtc-remote-audio'
+          audioEl.autoplay = true
+          audioEl.controls = false
+          audioEl.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;'
+          // Silent MP3 data URI to unlock autoplay
+          audioEl.src = 'data:audio/mpeg;base64,/+MYxAAAAANIAAAAAExBTUUzLjk4LjIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+          document.body.appendChild(audioEl)
+          try { await audioEl.play() } catch (_) {}
+          audioEl.src = ''
+          rlog('info', 'pre-created audio element and unlocked autoplay')
+        }
+      }
+
+      // 6. Join room
       rlog('info', `joinRoom roomId=${this.roomId}`)
       await this.engine.joinRoom(
         token,
