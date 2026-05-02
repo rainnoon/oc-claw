@@ -9177,7 +9177,7 @@ async fn start_rtc_voice_chat(
     // Add VideoConfig if video mode is enabled (screen sharing stream)
     if enable_video.unwrap_or(false) {
         body["Config"]["VideoConfig"] = serde_json::json!({
-            "UserId": user_id_env,
+            "UserId": user_id,
             "StreamType": 1  // 1 = screen capture stream (STREAM_INDEX_SCREEN)
         });
     }
