@@ -9116,8 +9116,9 @@ async fn start_rtc_voice_chat(
                 "ProviderParams": {
                     "AppId": asr_app,
                     "AccessToken": asr_token,
-                    "Mode": "smallmodel",
-                    "Cluster": "volcengine_streaming_common"
+                    "Mode": "bigmodel",
+                    "Cluster": "volcengine_streaming_common",
+                    "ApiResourceId": "volc.bigasr.sauc.duration"
                 },
                 "VADConfig": {
                     "SilenceTime": 600
