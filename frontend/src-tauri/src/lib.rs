@@ -9115,12 +9115,14 @@ async fn start_rtc_voice_chat(
                 "Provider": "volcano",
                 "ProviderParams": {
                     "AppId": asr_app,
+                    "AccessToken": asr_token,
                     "Mode": "smallmodel",
                     "Cluster": "volcengine_streaming_common"
                 },
                 "VADConfig": {
                     "SilenceTime": 600
-                }
+                },
+                "VolumeGain": 1.0
             },
             "TTSConfig": {
                 "Provider": "volcano",
