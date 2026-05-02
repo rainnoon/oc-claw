@@ -27,6 +27,7 @@ export class VoiceRTCClient {
   private roomId: string
   private userId: string
   private active: boolean = false
+  private audioContext: AudioContext | null = null  // shared, user-gesture-unlocked AC
 
   constructor(config: RTCVoiceConfig) {
     this.config = config
@@ -50,6 +51,7 @@ export class VoiceRTCClient {
         src.buffer = buf
         src.connect(ac.destination)
         src.start(0)
+        this.audioContext = ac  // save for later use in track routing
         rlog('info', `AudioContext state: ${ac.state}`)
       } catch (e) {
         rlog('warn', `AudioContext unlock failed: ${e}`)
@@ -69,24 +71,23 @@ export class VoiceRTCClient {
       // 2. Create engine
       // Intercept RTCPeerConnection at the lowest level to capture VERTC's internal audio tracks
       // This is needed because VERTC manages audio internally without exposing the track to DOM
+      const self = this  // capture for closure
       if (!(window as any).__rtcPCPatched) {
         (window as any).__rtcPCPatched = true
         const OrigPC = window.RTCPeerConnection
-        const OrigAC2 = window.AudioContext
         ;(window as any).RTCPeerConnection = new Proxy(OrigPC, {
           construct(target: any, args: any[]) {
             const pc = new target(...args)
             pc.addEventListener('track', (event: RTCTrackEvent) => {
               if (event.track.kind === 'audio') {
                 rlog('info', `RTCPeerConnection track event: audio track captured`)
+                const ac = self.audioContext
+                if (!ac) { rlog('warn', 'no shared AudioContext available'); return }
                 try {
-                  const ac = new OrigAC2()
-                  ac.resume().then(() => {
-                    const stream = event.streams[0] ?? new MediaStream([event.track])
-                    const source = ac.createMediaStreamSource(stream)
-                    source.connect(ac.destination)
-                    rlog('info', `audio track routed to AudioContext destination — should hear now`)
-                  })
+                  const stream = event.streams[0] ?? new MediaStream([event.track])
+                  const source = ac.createMediaStreamSource(stream)
+                  source.connect(ac.destination)
+                  rlog('info', `audio track routed → AC state=${ac.state}`)
                 } catch (err: any) {
                   rlog('error', `track routing error: ${err?.message}`)
                 }
@@ -96,6 +97,10 @@ export class VoiceRTCClient {
           }
         })
         rlog('info', 'RTCPeerConnection track interceptor installed')
+      } else {
+        // Already patched — update the closure reference so new client uses new AC
+        ;(window as any).__rtcSelf = this
+        rlog('info', 'RTCPeerConnection interceptor already installed, updated self ref')
       }
 
       rlog('info', `createEngine appId=${this.config.rtcAppId}`)
