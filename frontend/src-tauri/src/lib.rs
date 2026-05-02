@@ -11139,15 +11139,21 @@ pub fn run() {
 
     #[cfg(target_os = "windows")]
     {
-        // WebView2 hardware video decode can drop VP9 alpha; force software decode.
+        // WebView2 browser args: disable HW video decode (VP9 alpha fix) + enable autoplay + allow mic
         let key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
-        let flag = "--disable-accelerated-video-decode";
-        let merged = match std::env::var(key) {
-            Ok(existing) if !existing.contains(flag) && !existing.trim().is_empty() => format!("{} {}", existing, flag),
-            Ok(existing) if existing.contains(flag) => existing,
-            _ => flag.to_string(),
-        };
-        std::env::set_var(key, merged);
+        let flags = [
+            "--disable-accelerated-video-decode",
+            "--autoplay-policy=no-user-gesture-required",
+            "--use-fake-ui-for-media-stream",
+        ];
+        let mut current = std::env::var(key).unwrap_or_default();
+        for flag in flags {
+            if !current.contains(flag) {
+                if current.is_empty() { current = flag.to_string(); }
+                else { current = format!("{} {}", current, flag); }
+            }
+        }
+        std::env::set_var(key, current);
     }
 
     tauri::Builder::default()

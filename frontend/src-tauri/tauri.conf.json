@@ -26,8 +26,7 @@
         "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "url": "index.html#/mini",
-        "additionalBrowserArgs": "--autoplay-policy=no-user-gesture-required --use-fake-ui-for-media-stream"
+        "url": "index.html#/mini"
       }
     ],
     "security": {
