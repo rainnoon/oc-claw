@@ -75,15 +75,17 @@ export class VoiceRTCClient {
         rlog('info', `user joined: ${e.userInfo?.userId}`)
       })
 
-      // 4. Auto-subscribe remote audio (AI voice)
+      // 4. Auto-subscribe remote audio (AI voice) + attach to <audio> element
       this.engine.on(VERTC.events.onUserPublishStream, async (e: any) => {
         rlog('info', `onUserPublishStream userId=${e.userId} mediaType=${e.mediaType}`)
         if (e.mediaType === MediaType.AUDIO) {
           await this.engine.subscribeStream(e.userId, MediaType.AUDIO)
           rlog('info', `subscribed to audio from ${e.userId}`)
+
           // Play a test beep to confirm audio output works
           try {
             const ac = new AudioContext()
+            if (ac.state === 'suspended') await ac.resume()
             const osc = ac.createOscillator()
             const gain = ac.createGain()
             osc.connect(gain)
@@ -92,9 +94,37 @@ export class VoiceRTCClient {
             gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.3)
             osc.start(ac.currentTime)
             osc.stop(ac.currentTime + 0.3)
-            rlog('info', 'played test beep — if you heard it, audio output works')
-          } catch (e: any) {
-            rlog('warn', `beep failed: ${e?.message}`)
+            rlog('info', 'played test beep — if you heard a short tone, audio output works')
+          } catch (err: any) {
+            rlog('warn', `beep failed: ${err?.message}`)
+          }
+        }
+      })
+
+      // 4b. When remote audio track arrives, attach to DOM <audio> element
+      this.engine.on(VERTC.events.onUserStartAudioCapture, (e: any) => {
+        rlog('info', `onUserStartAudioCapture userId=${e.userId}`)
+      })
+
+      // Some VERTC versions require explicit audio element setup
+      this.engine.on('onTrackAdded' as any, (e: any) => {
+        rlog('info', `onTrackAdded kind=${e?.track?.kind} userId=${e?.userId}`)
+        if (e?.track?.kind === 'audio') {
+          try {
+            let audioEl = document.getElementById('rtc-remote-audio') as HTMLAudioElement
+            if (!audioEl) {
+              audioEl = document.createElement('audio')
+              audioEl.id = 'rtc-remote-audio'
+              audioEl.autoplay = true
+              audioEl.style.display = 'none'
+              document.body.appendChild(audioEl)
+            }
+            const stream = new MediaStream([e.track])
+            audioEl.srcObject = stream
+            audioEl.play().then(() => rlog('info', 'remote audio element playing'))
+              .catch((err: any) => rlog('error', `audio element play failed: ${err?.message}`))
+          } catch (err: any) {
+            rlog('error', `onTrackAdded handler failed: ${err?.message}`)
           }
         }
       })
