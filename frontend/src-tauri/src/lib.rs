@@ -11254,11 +11254,13 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     {
         // WebView2 browser args: disable HW video decode (VP9 alpha fix) + enable autoplay
+        // --auto-select-desktop-capture-source=Entire screen: skip picker, auto select full screen
         // NOTE: do NOT add --use-fake-ui-for-media-stream — it provides a silent fake mic!
         let key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
         let flags = [
             "--disable-accelerated-video-decode",
             "--autoplay-policy=no-user-gesture-required",
+            "--auto-select-desktop-capture-source=Entire screen",
         ];
         let mut current = std::env::var(key).unwrap_or_default();
         for flag in flags {
