@@ -31,8 +31,10 @@ export class VoiceRTCClient {
 
   constructor(config: RTCVoiceConfig) {
     this.config = config
-    this.roomId = `oc_${Date.now()}`
-    this.userId = `u_${Date.now()}`
+    // OPUS prefix required for RTC AIGC server to process audio with ASR
+    const ts = Date.now()
+    this.roomId = `OPUS${ts}`
+    this.userId = `u_${ts}`
   }
 
   async startVoiceChat(): Promise<void> {
