@@ -744,6 +744,9 @@ export default function Mini() {
   const [voiceBubbleVisible, setVoiceBubbleVisible] = useState(false)
   const voiceBubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [isVoiceActive, setIsVoiceActive] = useState(false)
+  const [isVoicePressing, setIsVoicePressing] = useState(false)
+  const voicePressingRef = useRef(false)
+  const voicePressTokenRef = useRef(0)
   const voiceClientRef = useRef<VoiceRTCClient | null>(null)
   const currentPetActionRef = useRef<PetAction>('idle')
   currentPetActionRef.current = currentPetAction
@@ -1650,6 +1653,12 @@ export default function Mini() {
   }, [])
 
   const handleVoiceStart = useCallback(async () => {
+    if (voicePressingRef.current) return
+    voicePressingRef.current = true
+    setIsVoicePressing(true)
+    const pressToken = ++voicePressTokenRef.current
+    const isSamePress = () => voicePressingRef.current && pressToken === voicePressTokenRef.current
+
     try {
       // Load store config, then merge env overrides from Rust
       const storeCfg = await loadVoiceConfig()
@@ -1667,17 +1676,27 @@ export default function Mini() {
         return
       }
 
-      // Stop any existing session first
+      // Reuse existing RTC session and only resume user speech.
       if (voiceClientRef.current?.isActive()) {
-        await voiceClientRef.current.stopVoiceChat()
-        voiceClientRef.current = null
-        setIsVoiceActive(false)
+        await voiceClientRef.current.startVoiceChat()
+        if (!isSamePress()) {
+          await voiceClientRef.current.endUserSpeechTurn().catch(() => {})
+          setIsVoiceActive(false)
+          return
+        }
+        setIsVoiceActive(true)
+        return
       }
 
       // Start RTC voice chat
       const client = new VoiceRTCClient(voiceCfg)
       voiceClientRef.current = client
       await client.startVoiceChat()
+      if (!isSamePress()) {
+        await client.endUserSpeechTurn().catch(() => {})
+        setIsVoiceActive(false)
+        return
+      }
       setIsVoiceActive(true)
       invoke('js_log', { level: 'info', msg: '[voice] RTC voice chat started' }).catch(() => {})
     } catch (e: any) {
@@ -1685,21 +1704,56 @@ export default function Mini() {
       console.error(msg)
       invoke('js_log', { level: 'error', msg }).catch(() => {})
       voiceClientRef.current = null
+      voicePressingRef.current = false
+      setIsVoicePressing(false)
       setIsVoiceActive(false)
     }
   }, [handleVoiceTalk])
 
   const handleVoiceStop = useCallback(async () => {
+    const wasPressing = voicePressingRef.current
+    voicePressingRef.current = false
+    setIsVoicePressing(false)
+    voicePressTokenRef.current += 1
+
+    if (!wasPressing) return
+
     if (voiceClientRef.current) {
       try {
-        await voiceClientRef.current.stopVoiceChat()
-        console.log('[voice] RTC voice chat stopped')
+        await voiceClientRef.current.endUserSpeechTurn()
+        console.log('[voice] user speech ended, waiting for AI response')
       } catch (e) {
-        console.error('[voice] Failed to stop RTC:', e)
+        console.error('[voice] Failed to end speech turn:', e)
       }
-      voiceClientRef.current = null
     }
     setIsVoiceActive(false)
+  }, [isVoiceActive])
+
+  useEffect(() => {
+    if (!isVoicePressing) return
+
+    const onGlobalPointerUp = () => { void handleVoiceStop() }
+    const onGlobalPointerCancel = () => { void handleVoiceStop() }
+    const onWindowBlur = () => { void handleVoiceStop() }
+
+    window.addEventListener('pointerup', onGlobalPointerUp)
+    window.addEventListener('pointercancel', onGlobalPointerCancel)
+    window.addEventListener('blur', onWindowBlur)
+
+    return () => {
+      window.removeEventListener('pointerup', onGlobalPointerUp)
+      window.removeEventListener('pointercancel', onGlobalPointerCancel)
+      window.removeEventListener('blur', onWindowBlur)
+    }
+  }, [isVoicePressing, handleVoiceStop])
+
+  useEffect(() => {
+    return () => {
+      if (voiceClientRef.current) {
+        voiceClientRef.current.stopVoiceChat().catch(e => console.error('[voice] cleanup stop failed:', e))
+        voiceClientRef.current = null
+      }
+    }
   }, [])
 
 
@@ -4009,6 +4063,8 @@ export default function Mini() {
                 onTouchStart={(e) => { e.stopPropagation(); handleVoiceStart() }}
                 onTouchEnd={(e) => { e.stopPropagation(); handleVoiceStop() }}
                 onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => { e.stopPropagation(); handleVoiceStop() }}
+                onPointerCancel={(e) => { e.stopPropagation(); handleVoiceStop() }}
                 style={{
                   position: 'absolute',
                   bottom: 20,
@@ -4016,9 +4072,9 @@ export default function Mini() {
                   width: 44,
                   height: 44,
                   borderRadius: '50%',
-                  background: isVoiceActive ? 'rgba(255, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.15)',
+                  background: isVoicePressing ? 'rgba(255, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.15)',
                   backdropFilter: 'blur(10px)',
-                  border: isVoiceActive ? '1px solid rgba(255, 0, 0, 0.5)' : '1px solid rgba(255, 255, 255, 0.2)',
+                  border: isVoicePressing ? '1px solid rgba(255, 0, 0, 0.5)' : '1px solid rgba(255, 255, 255, 0.2)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -4028,13 +4084,13 @@ export default function Mini() {
                   zIndex: 100,
                 }}
                 onMouseEnter={(e) => {
-                  if (!isVoiceActive) {
+                  if (!isVoicePressing) {
                     e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)'
                     e.currentTarget.style.transform = 'scale(1.1)'
                   }
                 }}
                 onMouseLeave={(e) => {
-                  if (!isVoiceActive) {
+                  if (!isVoicePressing) {
                     e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)'
                     e.currentTarget.style.transform = 'scale(1)'
                   }

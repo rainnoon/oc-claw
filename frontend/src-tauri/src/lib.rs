@@ -9052,12 +9052,17 @@ async fn start_rtc_voice_chat(
     let sk = std::env::var("VOLCANO_SECRET_ACCESS_KEY").unwrap_or(secret_access_key);
     let asr_app = std::env::var("VOLCANO_ASR_APP_ID").unwrap_or(asr_app_id);
     let asr_token = std::env::var("VOLCANO_ASR_ACCESS_TOKEN").unwrap_or(asr_access_token);
+    let asr_resource_id = std::env::var("VOLCANO_ASR_RESOURCE_ID")
+        .unwrap_or_else(|_| "volc.bigasr.sauc.duration".to_string());
     let tts_app = std::env::var("VOLCANO_TTS_APP_ID").unwrap_or(tts_app_id);
     let tts_token = std::env::var("VOLCANO_TTS_ACCESS_TOKEN").unwrap_or(tts_access_token);
     let llm_endpoint = std::env::var("VOLCANO_LLM_ENDPOINT_ID").unwrap_or(llm_endpoint_id);
     let llm_key = std::env::var("VOLCANO_LLM_API_KEY").unwrap_or(llm_api_key);
 
     log::info!("[RTC] start_rtc_voice_chat room={} user={}", room_id, user_id);
+    if asr_token.trim().is_empty() {
+        log::warn!("[RTC] ASR access token is empty; ASR may not recognize user speech");
+    }
 
     // Bot userId must be different from user, alphanumeric only
     let bot_user_id = format!("bot{}", &room_id[room_id.len().saturating_sub(8)..]);
@@ -9115,8 +9120,10 @@ async fn start_rtc_voice_chat(
                 "Provider": "volcano",
                 "ProviderParams": {
                     "AppId": asr_app,
-                    "Mode": "smallmodel",
-                    "Cluster": "volcengine_streaming_common"
+                    "AccessToken": asr_token,
+                    "Mode": "bigmodel",
+                    "ApiResourceId": asr_resource_id,
+                    "StreamMode": 0
                 },
                 "VADConfig": {
                     "SilenceTime": 600
@@ -9140,7 +9147,9 @@ async fn start_rtc_voice_chat(
             "LLMConfig": {
                 "Mode": "ArkV3",
                 "EndPointId": llm_endpoint,
+                "ApiKey": llm_key,
                 "APIKey": llm_key,
+                "SystemPrompt": character_prompt,
                 "SystemMessages": [character_prompt],
                 "MaxTokens": 1024,
                 "Temperature": 0.7,
@@ -9187,6 +9196,77 @@ async fn start_rtc_voice_chat(
     }
 
     log::info!("[RTC] StartVoiceChat success: {}", response_text);
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_rtc_voice_chat(
+    app_id: String,
+    access_key_id: String,
+    secret_access_key: String,
+    room_id: String,
+    command: String,
+    message: Option<String>,
+) -> Result<(), String> {
+    let ak = std::env::var("VOLCANO_ACCESS_KEY_ID").unwrap_or(access_key_id);
+    let sk = std::env::var("VOLCANO_SECRET_ACCESS_KEY").unwrap_or(secret_access_key);
+
+    log::info!(
+        "[RTC] update_rtc_voice_chat room={} command={}",
+        room_id,
+        command
+    );
+
+    let mut body = serde_json::json!({
+        "AppId": app_id,
+        "RoomId": room_id.clone(),
+        "TaskId": room_id.clone(),
+        "Command": command,
+        "command": command,
+    });
+    if let Some(msg) = message {
+        if !msg.trim().is_empty() {
+            body["Message"] = serde_json::Value::String(msg.clone());
+            body["message"] = serde_json::Value::String(msg);
+        }
+    }
+
+    let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON error: {e}"))?;
+
+    let (authorization, x_date) = volcano_sign_request(
+        "POST",
+        "/",
+        "Action=UpdateVoiceChat&Version=2024-12-01",
+        &body_str,
+        &ak,
+        &sk,
+    )?;
+
+    log::info!("[RTC] sending UpdateVoiceChat request body={}", body_str);
+
+    let client = reqwest::Client::new();
+    let url = "https://rtc.volcengineapi.com/?Action=UpdateVoiceChat&Version=2024-12-01";
+
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Host", "rtc.volcengineapi.com")
+        .header("X-Date", x_date)
+        .header("Authorization", authorization)
+        .body(body_str)
+        .send()
+        .await
+        .map_err(|e| format!("Request error: {e}"))?;
+
+    let status = response.status();
+    let response_text = response.text().await.map_err(|e| format!("Response read error: {e}"))?;
+
+    if !status.is_success() {
+        log::error!("[RTC] UpdateVoiceChat failed: {} - {}", status, response_text);
+        return Err(format!("UpdateVoiceChat failed: {} - {}", status, response_text));
+    }
+
+    log::info!("[RTC] UpdateVoiceChat success: {}", response_text);
     Ok(())
 }
 
@@ -11493,7 +11573,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, generate_rtc_token, start_rtc_voice_chat, stop_rtc_voice_chat, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, take_screenshot, chat_with_pet, speak_text, get_env_voice_config, js_log])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, generate_rtc_token, start_rtc_voice_chat, update_rtc_voice_chat, stop_rtc_voice_chat, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, take_screenshot, chat_with_pet, speak_text, get_env_voice_config, js_log])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

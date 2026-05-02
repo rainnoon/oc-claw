@@ -21,24 +21,36 @@ function rlog(level: 'info' | 'warn' | 'error', msg: string) {
   invoke('js_log', { level, msg: `[VoiceRTC] ${msg}` }).catch(() => {})
 }
 
+// Prefer concrete headset devices over abstract "default/communications" aliases.
+const PREFERRED_HEADSET_LABELS = [
+  'cx plus true wireless hands-free ag audio',
+  'hands-free ag audio',
+]
+
 export class VoiceRTCClient {
   private config: RTCVoiceConfig
   private engine: any = null
   private roomId: string
   private userId: string
   private active: boolean = false
+  private micCapturing: boolean = false
+  private endingSpeechTurn: boolean = false
+  private micDeviceId: string | undefined
   private audioContext: AudioContext | null = null  // shared, user-gesture-unlocked AC
 
   constructor(config: RTCVoiceConfig) {
     this.config = config
-    // OPUS prefix required for RTC AIGC server to process audio with ASR
+    // Standard room/user IDs for Web RTC AIGC
     const ts = Date.now()
-    this.roomId = `OPUS${ts}`
+    this.roomId = `oc_${ts}`
     this.userId = `u_${ts}`
   }
 
   async startVoiceChat(): Promise<void> {
-    if (this.active) return
+    if (this.active) {
+      await this.resumeUserSpeech()
+      return
+    }
 
     try {
       rlog('info', `starting — roomId=${this.roomId} userId=${this.userId}`)
@@ -63,9 +75,15 @@ export class VoiceRTCClient {
           rlog('info', `audio outputs (${outputs.length}): ${outputs.map(d => `[${d.deviceId.slice(0,8)}] ${d.label}`).join(' | ')}`)
           const SKIP_OUT = ['voicemeeter', 'vb-audio', 'virtual', 'steam']
           const isRealOut = (d: MediaDeviceInfo) => !SKIP_OUT.some(s => d.label.toLowerCase().includes(s))
-          const commsOut = outputs.find(d => d.deviceId === 'communications' && isRealOut(d))
+          const preferredOut = outputs.find(d =>
+            d.deviceId !== 'default' &&
+            d.deviceId !== 'communications' &&
+            isRealOut(d) &&
+            PREFERRED_HEADSET_LABELS.some(k => d.label.toLowerCase().includes(k))
+          )
           const realOut = outputs.find(d => d.deviceId !== 'default' && d.deviceId !== 'communications' && isRealOut(d))
-          const pickOut = commsOut || realOut
+          const commsOut = outputs.find(d => d.deviceId === 'communications' && isRealOut(d))
+          const pickOut = preferredOut || realOut || commsOut
           if (pickOut && (ac as any).setSinkId) {
             await (ac as any).setSinkId(pickOut.deviceId)
             rlog('info', `AudioContext output set to: [${pickOut.deviceId.slice(0,8)}] ${pickOut.label}`)
@@ -304,7 +322,14 @@ export class VoiceRTCClient {
       await this.engine.joinRoom(
         token,
         this.roomId,
-        { userId: this.userId },
+        {
+          userId: this.userId,
+          extraInfo: JSON.stringify({
+            call_scene: 'RTC-AIGC',
+            user_name: this.userId,
+            user_id: this.userId,
+          }),
+        },
         {
           isAutoPublish: true,
           isAutoSubscribeAudio: true,
@@ -314,18 +339,23 @@ export class VoiceRTCClient {
       rlog('info', 'joined room OK')
 
       // 6. Select best microphone (skip virtual/Voicemeeter devices, prefer communications device)
-      let micDeviceId: string | undefined
       try {
         const devices = await navigator.mediaDevices.enumerateDevices()
         const inputs = devices.filter(d => d.kind === 'audioinput')
-        // Priority: communications device > real named mic > anything non-Voicemeeter > default
+        // Priority: preferred headset label > real mic > communications alias
         const SKIP_LABELS = ['voicemeeter', 'steam streaming', 'vb-audio', 'virtual']
         const isReal = (d: MediaDeviceInfo) => !SKIP_LABELS.some(s => d.label.toLowerCase().includes(s))
-        const commsDev = inputs.find(d => d.deviceId === 'communications' && isReal(d))
+        const preferredDev = inputs.find(d =>
+          d.deviceId !== 'default' &&
+          d.deviceId !== 'communications' &&
+          isReal(d) &&
+          PREFERRED_HEADSET_LABELS.some(k => d.label.toLowerCase().includes(k))
+        )
         const realDev = inputs.find(d => d.deviceId !== 'default' && d.deviceId !== 'communications' && isReal(d))
-        const pick = commsDev || realDev
+        const commsDev = inputs.find(d => d.deviceId === 'communications' && isReal(d))
+        const pick = preferredDev || realDev || commsDev
         if (pick) {
-          micDeviceId = pick.deviceId
+          this.micDeviceId = pick.deviceId
           rlog('info', `selected mic: [${pick.deviceId.slice(0,8)}] ${pick.label}`)
         } else {
           rlog('warn', 'no real mic found, using default (may be silent)')
@@ -334,22 +364,7 @@ export class VoiceRTCClient {
         rlog('warn', `device selection failed: ${e?.message}`)
       }
 
-      // Start mic (pass specific deviceId if found)
-      rlog('info', 'startAudioCapture...')
-      if (micDeviceId) {
-        await this.engine.startAudioCapture(micDeviceId)
-      } else {
-        await this.engine.startAudioCapture()
-      }
-      rlog('info', 'mic started')
-
-      // Explicitly publish audio stream (isAutoPublish may not work in all VERTC versions)
-      try {
-        await this.engine.publishStream(MediaType.AUDIO)
-        rlog('info', 'publishStream(AUDIO) OK — mic stream published to room')
-      } catch (err: any) {
-        rlog('warn', `publishStream: ${err?.message} (may already be auto-published)`)
-      }
+      await this.resumeUserSpeech()
 
       // 7. Call Volcano StartVoiceChat API via Rust
       rlog('info', 'calling start_rtc_voice_chat...')
@@ -394,6 +409,67 @@ export class VoiceRTCClient {
     await this._cleanup()
   }
 
+  async endUserSpeechTurn(): Promise<void> {
+    if (!this.active || !this.engine) return
+    if (!this.micCapturing) {
+      rlog('info', 'endUserSpeechTurn skipped: mic not capturing')
+      return
+    }
+    if (this.endingSpeechTurn) {
+      rlog('info', 'endUserSpeechTurn skipped: already ending')
+      return
+    }
+    this.endingSpeechTurn = true
+
+    try {
+      // Keep a short tail window so server-side VAD can receive trailing silence.
+      await new Promise(r => setTimeout(r, 700))
+      await this.engine.stopAudioCapture()
+      this.micCapturing = false
+      rlog('info', 'mic paused — waiting AI response')
+    } catch (e: any) {
+      rlog('warn', `stopAudioCapture failed: ${e?.message ?? String(e)}`)
+    }
+
+    // Force ASR finalize on push-to-talk release so AI can reply even with noisy input.
+    try {
+      await invoke('update_rtc_voice_chat', {
+        appId: this.config.rtcAppId,
+        accessKeyId: this.config.accessKeyId,
+        secretAccessKey: this.config.secretAccessKey,
+        roomId: this.roomId,
+        command: 'FinishSpeechRecognition',
+      })
+      rlog('info', 'FinishSpeechRecognition sent')
+    } catch (e: any) {
+      rlog('warn', `FinishSpeechRecognition failed: ${e?.message ?? String(e)}`)
+    } finally {
+      this.endingSpeechTurn = false
+    }
+  }
+
+  async resumeUserSpeech(): Promise<void> {
+    if (!this.engine || this.micCapturing) return
+    this.endingSpeechTurn = false
+
+    rlog('info', 'startAudioCapture...')
+    if (this.micDeviceId) {
+      await this.engine.startAudioCapture(this.micDeviceId)
+    } else {
+      await this.engine.startAudioCapture()
+    }
+    this.micCapturing = true
+    rlog('info', 'mic started')
+
+    // Explicitly publish audio stream (isAutoPublish may not work in all VERTC versions)
+    try {
+      await this.engine.publishStream(MediaType.AUDIO)
+      rlog('info', 'publishStream(AUDIO) OK — mic stream published to room')
+    } catch (err: any) {
+      rlog('warn', `publishStream: ${err?.message} (may already be auto-published)`)
+    }
+  }
+
   private async _cleanup() {
     if (this.engine) {
       try {
@@ -406,6 +482,9 @@ export class VoiceRTCClient {
       this.engine = null
     }
     this.active = false
+    this.micCapturing = false
+    this.endingSpeechTurn = false
+    this.micDeviceId = undefined
     rlog('info', 'cleaned up')
   }
 
