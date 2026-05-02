@@ -11079,6 +11079,15 @@ pub fn run() {
         .setup(|app| {
             // Fix PATH so openclaw (Node.js script) and node are both reachable
             fix_path();
+
+            // Auto-open DevTools in debug builds
+            #[cfg(debug_assertions)]
+            {
+                if let Some(win) = app.get_webview_window("main") {
+                    win.open_devtools();
+                }
+            }
+
             #[cfg(target_os = "macos")]
             install_wry_webview_ime_fix();
 
