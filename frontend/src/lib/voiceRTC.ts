@@ -92,16 +92,15 @@ export class VoiceRTCClient {
 
       // Handle VERTC internal autoplay failure — must resume on user gesture
       this.engine.on(VERTC.events.onAutoplayFailed, async (e: any) => {
-        rlog('warn', `onAutoplayFailed: ${JSON.stringify(e)} — attempting resume via user gesture`)
-        // Force resume: play a silent audio element to unlock browser autoplay
-        try {
-          const audioEl = document.getElementById('rtc-remote-audio') as HTMLAudioElement
-          if (audioEl) {
-            await audioEl.play()
-            rlog('info', 'autoplay unlocked via audio element play()')
-          }
-        } catch (err: any) {
-          rlog('error', `autoplay resume failed: ${err?.message}`)
+        rlog('warn', `onAutoplayFailed: ${JSON.stringify(e)}`)
+      })
+
+      // Monitor remote audio levels — confirms data is actually flowing
+      this.engine.enableAudioPropertiesReport({ interval: 1000 })
+      this.engine.on(VERTC.events.onRemoteAudioPropertiesReport, (infos: any[]) => {
+        if (infos && infos.length > 0) {
+          const levels = infos.map((i: any) => `${i.audioPropertiesInfo?.userId ?? i.streamKey?.userId}:${i.audioPropertiesInfo?.audioLevel ?? '?'}`).join(', ')
+          rlog('info', `remote audio levels: ${levels}`)
         }
       })
 
@@ -129,9 +128,9 @@ export class VoiceRTCClient {
             }
             // VERTC play(userId, domElement) — routes audio stream to the element
             await this.engine.play(e.userId, audioEl)
-            rlog('info', `play(${e.userId}, audioEl) OK`)
+            rlog('info', `play(${e.userId}, audioEl) OK — srcObject=${audioEl.srcObject ? 'set' : 'null'} readyState=${audioEl.readyState} paused=${audioEl.paused}`)
             // Also try direct play on the element
-            try { await audioEl.play() } catch (_) {}
+            try { await audioEl.play(); rlog('info', 'audioEl.play() OK') } catch (pe: any) { rlog('warn', `audioEl.play() err: ${pe?.message}`) }
           } catch (err: any) {
             rlog('warn', `play with element error: ${err?.message}`)
             // Fallback: play without element
