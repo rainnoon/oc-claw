@@ -9129,7 +9129,7 @@ async fn start_rtc_voice_chat(
                         "cluster": "volcano_tts"
                     },
                     "audio": {
-                        "voice_type": "BV700_streaming",
+                        "voice_type": "zh_female_mengyatou_mars_bigtts",
                         "speed_ratio": 1.0,
                         "volume_ratio": 1.0
                     },
