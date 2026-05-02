@@ -9100,53 +9100,48 @@ async fn start_rtc_voice_chat(
         format!("001{}{}", app_id_env, general_purpose::STANDARD.encode(&content))
     };
 
-    // Build request body — VisualVoiceChat StartVoiceChat API structure
+    // Build request body — correct structure per VisualVoiceChat API docs
     let body = serde_json::json!({
         "AppId": app_id,
         "RoomId": room_id,
         "TaskId": room_id,
-        "Config": {
-            "WelcomeMessage": "你好！我在这里陪你！",
+        "AgentConfig": {
+            "UserId": bot_user_id,
             "TargetUserId": [user_id],
-            "AgentConfig": {
-                "UserId": bot_user_id,
-                "Token": bot_token,
-                "WelcomeMessage": "你好！我是你的桌面宠物，有什么需要我帮忙的吗？",
-                "ASRConfig": {
-                    "ProviderType": "volcano",
-                    "ProviderParams": {
-                        "Mode": "bigmodel",
-                        "AppId": asr_app,
-                        "AccessToken": asr_token,
-                        "ApiResourceId": "volc.seedasr.sauc.duration",
-                        "StreamMode": 2,
-                        "VolcanoASRParameters": "{\"request\":{\"enable_nonstream\":true}}"
-                    }
-                },
-                "TTSConfig": {
-                    "ProviderType": "volcano",
-                    "ProviderParams": {
-                        "app": {
-                            "appid": tts_app,
-                            "token": tts_token
-                        },
-                        "audio": {
-                            "voice_type": "ICL_zh_female_keainvsheng_tob",
-                            "speech_rate": 0
-                        },
-                        "ResourceId": "seed-tts-1.0"
-                    }
-                },
-                "LLMConfig": {
-                    "ProviderType": "volcano",
-                    "Mode": "ArkV3",
-                    "EndPointId": llm_endpoint,
-                    "ApiKey": llm_key,
-                    "SystemPrompt": character_prompt,
-                    "MaxTokens": 1024,
-                    "Temperature": 0.7,
-                    "TopP": 0.9
+            "WelcomeMessage": "你好！我是你的桌面宠物，有什么需要我帮忙的吗？"
+        },
+        "Config": {
+            "ASRConfig": {
+                "Provider": "volcano",
+                "ProviderParams": {
+                    "AppId": asr_app,
+                    "Mode": "bigmodel"
                 }
+            },
+            "TTSConfig": {
+                "Provider": "volcano",
+                "ProviderParams": {
+                    "app": {
+                        "appid": tts_app,
+                        "token": tts_token,
+                        "cluster": "volcano_tts"
+                    },
+                    "audio": {
+                        "voice_type": "BV700_streaming",
+                        "speed_ratio": 1.0,
+                        "volume_ratio": 1.0
+                    },
+                    "ResourceId": "volc.service_type.10029"
+                }
+            },
+            "LLMConfig": {
+                "Mode": "ArkV3",
+                "EndPointId": llm_endpoint,
+                "APIKey": llm_key,
+                "SystemMessages": [character_prompt],
+                "MaxTokens": 1024,
+                "Temperature": 0.7,
+                "TopP": 0.9
             }
         }
     });
