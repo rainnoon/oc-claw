@@ -115,9 +115,14 @@ export class VoiceRTCClient {
       this.engine.enableAudioPropertiesReport({ interval: 1000 })
       this.engine.on(VERTC.events.onRemoteAudioPropertiesReport, (infos: any[]) => {
         if (infos && infos.length > 0) {
+          // Log full structure once to understand the schema
+          if (!(window as any).__audioLevelLogged) {
+            (window as any).__audioLevelLogged = true
+            rlog('info', `audio report schema: ${JSON.stringify(infos[0])}`)
+          }
           const levels = infos.map((i: any) => {
             const uid = i.streamKey?.userId ?? i.audioPropertiesInfo?.userId ?? '?'
-            const level = i.audioPropertiesInfo?.audioLevel ?? i.audioLevel ?? '?'
+            const level = i.audioPropertiesInfo?.audioLevel ?? i.audioLevel ?? i.linearVolume ?? '?'
             return `${uid}:${level}`
           }).join(', ')
           rlog('info', `remote audio levels: ${levels}`)

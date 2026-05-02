@@ -9117,7 +9117,8 @@ async fn start_rtc_voice_chat(
                     "AppId": asr_app,
                     "AccessToken": asr_token,
                     "Mode": "bigmodel",
-                    "Cluster": "volcengine_streaming_common"
+                    "Cluster": "volcengine_streaming_common",
+                    "ApiResourceId": "volc.seedasr.sauc.duration"
                 }
             },
             "TTSConfig": {
