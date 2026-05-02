@@ -52,6 +52,7 @@ export class VoiceRTCClient {
   private userId: string
   private botUserId: string = ''
   private active: boolean = false
+  private screenSharing: boolean = false
 
   constructor(config: RTCVoiceConfig) {
     this.config = config
@@ -102,6 +103,17 @@ export class VoiceRTCClient {
       this.engine.on(VERTC.events.onAutoplayFailed, (e: any) => {
         rlog('warn', `autoplay failed: ${JSON.stringify(e)}`)
       })
+      // Screen share ended by system (e.g. user clicked "停止共享")
+      this.engine.on(VERTC.events.onTrackEnded, async (e: any) => {
+        if (e.isScreen && e.kind === 'video') {
+          rlog('info', 'screen share ended by system')
+          this.screenSharing = false
+          try {
+            await this.engine.stopScreenCapture()
+            await this.engine.unpublishScreen(MediaType.VIDEO)
+          } catch (_) {}
+        }
+      })
 
       // Audio level monitoring
       this.engine.enableAudioPropertiesReport({ interval: 1000, includeLocalUser: true })
@@ -136,11 +148,10 @@ export class VoiceRTCClient {
         }
       })
 
-      // ── Function Calling via RTC binary message ─────────────────────────
+      // ── Function Calling via RTC binary message (fallback when no video stream) ─
       this.engine.on(VERTC.events.onRoomBinaryMessageReceived, async (e: { userId: string; message: ArrayBuffer }) => {
         try {
           const { type, value } = tlv2String(e.message)
-          rlog('info', `binary msg type=${type} from=${e.userId}`)
           if (type.trim() === 'tool') {
             const parsed = JSON.parse(value)
             const toolCalls: any[] = parsed?.tool_calls ?? []
@@ -159,7 +170,7 @@ export class VoiceRTCClient {
         }
       })
 
-      // 5. Request mic permission
+      // 5. Request permissions (audio only; screen share is user-triggered)
       const perms = await VERTC.enableDevices({ video: false, audio: true })
       rlog('info', `device permissions: audio=${perms.audio}`)
 
@@ -197,7 +208,19 @@ export class VoiceRTCClient {
       await this.engine.publishStream(MediaType.AUDIO)
       rlog('info', 'publishStream(AUDIO) OK')
 
-      // 9. StartVoiceChat API
+      // 9. Start screen sharing (user will see browser prompt)
+      let videoEnabled = false
+      try {
+        await this.engine.startScreenCapture({ enableAudio: false })
+        await this.engine.publishScreen(MediaType.VIDEO)
+        this.screenSharing = true
+        videoEnabled = true
+        rlog('info', 'screen capture started and published ✅')
+      } catch (e: any) {
+        rlog('warn', `screen capture failed (will use function call fallback): ${e?.message}`)
+      }
+
+      // 10. StartVoiceChat API
       rlog('info', 'calling start_rtc_voice_chat...')
       await invoke('start_rtc_voice_chat', {
         appId: this.config.rtcAppId,
@@ -212,8 +235,9 @@ export class VoiceRTCClient {
         llmEndpointId: this.config.llmEndpointId,
         llmApiKey: this.config.llmApiKey,
         characterPrompt: this.config.characterPrompt || '你是一只可爱的桌面宠物，陪伴用户玩游戏和工作，回答简短活泼',
+        enableVideo: videoEnabled,
       })
-      rlog('info', 'StartVoiceChat OK — voice chat active!')
+      rlog('info', `StartVoiceChat OK — voice chat active! (video=${videoEnabled})`)
 
       this.active = true
     } catch (error: any) {
@@ -287,6 +311,11 @@ export class VoiceRTCClient {
     if (this.engine) {
       try {
         await this.engine.stopAudioCapture()
+        if (this.screenSharing) {
+          await this.engine.stopScreenCapture()
+          await this.engine.unpublishScreen(MediaType.VIDEO)
+          this.screenSharing = false
+        }
         await this.engine.leaveRoom()
         VERTC.destroyEngine(this.engine)
       } catch (e: any) {

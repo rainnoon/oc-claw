@@ -9047,6 +9047,7 @@ async fn start_rtc_voice_chat(
     llm_endpoint_id: String,
     llm_api_key: String,
     character_prompt: String,
+    enable_video: Option<bool>,
 ) -> Result<(), String> {
     // Read env overrides
     let ak = std::env::var("VOLCANO_ACCESS_KEY_ID").unwrap_or(access_key_id);
@@ -9172,6 +9173,14 @@ async fn start_rtc_voice_chat(
             }
         }
     });
+
+    // Add VideoConfig if video mode is enabled (screen sharing stream)
+    if enable_video.unwrap_or(false) {
+        body["Config"]["VideoConfig"] = serde_json::json!({
+            "UserId": user_id_env,
+            "StreamType": 1  // 1 = screen capture stream (STREAM_INDEX_SCREEN)
+        });
+    }
 
     let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON error: {e}"))?;
 
