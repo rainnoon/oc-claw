@@ -1667,6 +1667,13 @@ export default function Mini() {
         return
       }
 
+      // Stop any existing session first
+      if (voiceClientRef.current?.isActive()) {
+        await voiceClientRef.current.stopVoiceChat()
+        voiceClientRef.current = null
+        setIsVoiceActive(false)
+      }
+
       // Start RTC voice chat
       const client = new VoiceRTCClient(voiceCfg)
       voiceClientRef.current = client

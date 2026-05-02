@@ -40,6 +40,21 @@ export class VoiceRTCClient {
     try {
       rlog('info', `starting — roomId=${this.roomId} userId=${this.userId}`)
 
+      // Unlock AudioContext on user gesture (required by WebView2 autoplay policy)
+      try {
+        const ac = new AudioContext()
+        if (ac.state === 'suspended') await ac.resume()
+        // Play a silent buffer to fully unlock audio
+        const buf = ac.createBuffer(1, 1, 22050)
+        const src = ac.createBufferSource()
+        src.buffer = buf
+        src.connect(ac.destination)
+        src.start(0)
+        rlog('info', `AudioContext state: ${ac.state}`)
+      } catch (e) {
+        rlog('warn', `AudioContext unlock failed: ${e}`)
+      }
+
       // 1. Generate RTC token via Rust
       const token = await invoke<string>('generate_rtc_token', {
         appId: this.config.rtcAppId,
