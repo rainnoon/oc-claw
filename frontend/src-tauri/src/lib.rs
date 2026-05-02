@@ -9117,14 +9117,12 @@ async fn start_rtc_voice_chat(
                     "AppId": asr_app,
                     "AccessToken": asr_token,
                     "Mode": "bigmodel",
-                    "Cluster": "volcengine_streaming_common",
                     "ApiResourceId": "volc.bigasr.sauc.duration",
                     "StreamMode": 0
                 },
                 "VADConfig": {
                     "SilenceTime": 600
-                },
-                "VolumeGain": 1.0
+                }
             },
             "TTSConfig": {
                 "Provider": "volcano",
