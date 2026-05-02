@@ -42,6 +42,7 @@ export class VoiceRTCClient {
       rlog('info', `starting — roomId=${this.roomId} userId=${this.userId}`)
 
       // Unlock AudioContext on user gesture (required by WebView2 autoplay policy)
+      // Also route output to communications/headphone device (skip Voicemeeter)
       try {
         const ac = new AudioContext()
         if (ac.state === 'suspended') await ac.resume()
@@ -52,6 +53,26 @@ export class VoiceRTCClient {
         src.start(0)
         this.audioContext = ac
         rlog('info', `AudioContext state: ${ac.state}`)
+
+        // Try to route output to the communications/headphone device (not Voicemeeter)
+        try {
+          const allDevices = await navigator.mediaDevices.enumerateDevices()
+          const outputs = allDevices.filter(d => d.kind === 'audiooutput')
+          rlog('info', `audio outputs (${outputs.length}): ${outputs.map(d => `[${d.deviceId.slice(0,8)}] ${d.label}`).join(' | ')}`)
+          const SKIP_OUT = ['voicemeeter', 'vb-audio', 'virtual', 'steam']
+          const isRealOut = (d: MediaDeviceInfo) => !SKIP_OUT.some(s => d.label.toLowerCase().includes(s))
+          const commsOut = outputs.find(d => d.deviceId === 'communications' && isRealOut(d))
+          const realOut = outputs.find(d => d.deviceId !== 'default' && d.deviceId !== 'communications' && isRealOut(d))
+          const pickOut = commsOut || realOut
+          if (pickOut && (ac as any).setSinkId) {
+            await (ac as any).setSinkId(pickOut.deviceId)
+            rlog('info', `AudioContext output set to: [${pickOut.deviceId.slice(0,8)}] ${pickOut.label}`)
+          } else if (pickOut) {
+            rlog('warn', `setSinkId not supported, output device: [${pickOut.deviceId.slice(0,8)}] ${pickOut.label}`)
+          }
+        } catch (e: any) {
+          rlog('warn', `output device selection failed: ${e?.message}`)
+        }
       } catch (e) {
         rlog('warn', `AudioContext unlock failed: ${e}`)
       }
