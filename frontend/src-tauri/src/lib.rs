@@ -8951,39 +8951,40 @@ fn volcano_sign_request(
     body: &str,
     access_key_id: &str,
     secret_access_key: &str,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, String), String> {
     use hmac::{Hmac, Mac};
     use sha2::{Sha256, Digest};
     use chrono::Utc;
 
     type HmacSha256 = Hmac<Sha256>;
 
-    // Step 1: x-date header (current UTC time in format YYYYMMDDTHHmmssZ)
+    // Step 1: timestamps
     let now = Utc::now();
     let x_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let date = now.format("%Y%m%d").to_string();
 
-    // Step 2: credential_scope
-    let credential_scope = format!("{}/cn-north-1/rtc/request", date);
-
-    // Step 3: canonical_headers
-    let canonical_headers = format!(
-        "content-type:application/json\nhost:rtc.volcengineapi.com\nx-date:{}\n",
-        x_date
-    );
-
-    // Step 4: signed_headers
-    let signed_headers = "content-type;host;x-date";
-
-    // Step 5: hashed_payload
+    // Step 2: x-content-sha256 (body hash) — required by Volcano API
     let mut hasher = Sha256::new();
     hasher.update(body.as_bytes());
-    let hashed_payload = hex::encode(hasher.finalize());
+    let x_content_sha256 = hex::encode(hasher.finalize());
+
+    // Step 3: credential_scope
+    let credential_scope = format!("{}/cn-north-1/rtc/request", date);
+
+    // Step 4: canonical_headers
+    // NOTE: content-type is intentionally NOT signed (matches official volcengine SDK behavior)
+    let canonical_headers = format!(
+        "host:rtc.volcengineapi.com\nx-content-sha256:{}\nx-date:{}\n",
+        x_content_sha256, x_date
+    );
+
+    // Step 5: signed_headers — host, x-content-sha256, x-date (NO content-type!)
+    let signed_headers = "host;x-content-sha256;x-date";
 
     // Step 6: canonical_request
     let canonical_request = format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
-        method, path, query, canonical_headers, signed_headers, hashed_payload
+        method, path, query, canonical_headers, signed_headers, x_content_sha256
     );
 
     // Step 7: string_to_sign
@@ -8996,32 +8997,32 @@ fn volcano_sign_request(
         x_date, credential_scope, hashed_canonical_request
     );
 
-    // Step 8: signing_key (nested HMAC)
-    let mut mac = HmacSha256::new_from_slice(secret_access_key.as_bytes())
-        .map_err(|e| format!("HMAC key error: {e}"))?;
-    mac.update(date.as_bytes());
-    let k_date = mac.finalize().into_bytes();
+    // Step 8: signing_key — HMAC(HMAC(HMAC(HMAC(SK, date), region), service), "request")
+    // NOTE: official Python iterates over credential_scope.split("/") + [string_to_sign]
+    // which gives: [date, "cn-north-1", "rtc", "request", string_to_sign]
+    let k_date    = {
+        let mut m = HmacSha256::new_from_slice(secret_access_key.as_bytes()).map_err(|e| format!("HMAC error: {e}"))?;
+        m.update(date.as_bytes()); m.finalize().into_bytes()
+    };
+    let k_region  = {
+        let mut m = HmacSha256::new_from_slice(&k_date).map_err(|e| format!("HMAC error: {e}"))?;
+        m.update(b"cn-north-1"); m.finalize().into_bytes()
+    };
+    let k_service = {
+        let mut m = HmacSha256::new_from_slice(&k_region).map_err(|e| format!("HMAC error: {e}"))?;
+        m.update(b"rtc"); m.finalize().into_bytes()
+    };
+    let k_req     = {
+        let mut m = HmacSha256::new_from_slice(&k_service).map_err(|e| format!("HMAC error: {e}"))?;
+        m.update(b"request"); m.finalize().into_bytes()
+    };
 
-    let mut mac = HmacSha256::new_from_slice(&k_date)
-        .map_err(|e| format!("HMAC key error: {e}"))?;
-    mac.update(b"cn-north-1");
-    let k_region = mac.finalize().into_bytes();
-
-    let mut mac = HmacSha256::new_from_slice(&k_region)
-        .map_err(|e| format!("HMAC key error: {e}"))?;
-    mac.update(b"rtc");
-    let k_service = mac.finalize().into_bytes();
-
-    let mut mac = HmacSha256::new_from_slice(&k_service)
-        .map_err(|e| format!("HMAC key error: {e}"))?;
-    mac.update(b"request");
-    let signing_key = mac.finalize().into_bytes();
-
-    // Step 9: signature
-    let mut mac = HmacSha256::new_from_slice(&signing_key)
-        .map_err(|e| format!("HMAC key error: {e}"))?;
-    mac.update(string_to_sign.as_bytes());
-    let signature = hex::encode(mac.finalize().into_bytes());
+    // Step 9: final signature
+    let signature = {
+        let mut m = HmacSha256::new_from_slice(&k_req).map_err(|e| format!("HMAC error: {e}"))?;
+        m.update(string_to_sign.as_bytes());
+        hex::encode(m.finalize().into_bytes())
+    };
 
     // Step 10: Authorization header
     let authorization = format!(
@@ -9029,7 +9030,7 @@ fn volcano_sign_request(
         access_key_id, credential_scope, signed_headers, signature
     );
 
-    Ok((authorization, x_date))
+    Ok((authorization, x_date, x_content_sha256))
 }
 
 #[tauri::command]
@@ -9161,7 +9162,7 @@ async fn start_rtc_voice_chat(
     let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON error: {e}"))?;
 
     // Sign the request
-    let (authorization, x_date) = volcano_sign_request(
+    let (authorization, x_date, x_content_sha256) = volcano_sign_request(
         "POST",
         "/",
         "Action=StartVoiceChat&Version=2024-12-01",
@@ -9181,6 +9182,7 @@ async fn start_rtc_voice_chat(
         .header("Content-Type", "application/json")
         .header("Host", "rtc.volcengineapi.com")
         .header("X-Date", x_date)
+        .header("X-Content-Sha256", x_content_sha256)
         .header("Authorization", authorization)
         .body(body_str)
         .send()
@@ -9233,7 +9235,7 @@ async fn update_rtc_voice_chat(
 
     let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON error: {e}"))?;
 
-    let (authorization, x_date) = volcano_sign_request(
+    let (authorization, x_date, x_content_sha256) = volcano_sign_request(
         "POST",
         "/",
         "Action=UpdateVoiceChat&Version=2024-12-01",
@@ -9252,6 +9254,7 @@ async fn update_rtc_voice_chat(
         .header("Content-Type", "application/json")
         .header("Host", "rtc.volcengineapi.com")
         .header("X-Date", x_date)
+        .header("X-Content-Sha256", x_content_sha256)
         .header("Authorization", authorization)
         .body(body_str)
         .send()
@@ -9293,7 +9296,7 @@ async fn stop_rtc_voice_chat(
     let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON error: {e}"))?;
 
     // Sign the request
-    let (authorization, x_date) = volcano_sign_request(
+    let (authorization, x_date, x_content_sha256) = volcano_sign_request(
         "POST",
         "/",
         "Action=StopVoiceChat&Version=2024-12-01",
@@ -9313,6 +9316,7 @@ async fn stop_rtc_voice_chat(
         .header("Content-Type", "application/json")
         .header("Host", "rtc.volcengineapi.com")
         .header("X-Date", x_date)
+        .header("X-Content-Sha256", x_content_sha256)
         .header("Authorization", authorization)
         .body(body_str)
         .send()
