@@ -11179,20 +11179,34 @@ pub fn run() {
             fix_path();
 
             // Grant microphone permission to all WebView2 windows automatically
-            // (avoids Windows privacy dialog blocking mic access)
+            // Uses with_webview to intercept PermissionRequested and auto-allow microphone
             #[cfg(target_os = "windows")]
             {
                 use tauri::Manager;
                 for label in ["mini", "main", "pet", "detail", "room"] {
                     if let Some(win) = app.get_webview_window(label) {
-                        // Execute JS to request mic permission immediately on load
-                        let _ = win.eval(r#"
-                            if (navigator.permissions) {
-                                navigator.permissions.query({name:'microphone'}).then(function(r){
-                                    console.log('[mic-perm] state=' + r.state);
-                                });
+                        let _ = win.with_webview(|wv| {
+                            #[cfg(target_os = "windows")]
+                            {
+                                use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                                use windows::core::Interface;
+                                let core = wv.controller().CoreWebView2().unwrap();
+                                let _ = core.add_PermissionRequested(
+                                    &webview2_com::PermissionRequestedEventHandler::create(
+                                        Box::new(|_, args| {
+                                            if let Some(args) = args {
+                                                let kind = args.PermissionKind().unwrap_or(COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION);
+                                                if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                                                    let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+                                                    log::info!("[mic-perm] microphone permission auto-granted");
+                                                }
+                                            }
+                                            Ok(())
+                                        })
+                                    )
+                                );
                             }
-                        "#);
+                        });
                     }
                 }
             }
