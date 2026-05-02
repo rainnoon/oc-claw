@@ -9059,6 +9059,47 @@ async fn start_rtc_voice_chat(
 
     log::info!("[RTC] start_rtc_voice_chat room={} user={}", room_id, user_id);
 
+    // Bot userId must be different from user, alphanumeric only
+    let bot_user_id = format!("bot{}", &room_id[room_id.len().saturating_sub(8)..]);
+    let app_id_env = std::env::var("VOLCANO_RTC_APP_ID").unwrap_or(app_id.clone());
+    let app_key_env = std::env::var("VOLCANO_RTC_APP_KEY").unwrap_or_default();
+
+    // Generate a token for the bot
+    let bot_token = {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        use base64::{Engine as _, engine::general_purpose};
+        let now = unix_now() as u32;
+        let nonce = rand_u32();
+        let expire_at = now + 86400u32;
+        let privileges: &[(u16, u32)] = &[(0,expire_at),(1,expire_at),(2,expire_at),(3,expire_at),(4,expire_at)];
+        fn put_string(buf: &mut Vec<u8>, s: &str) {
+            let b = s.as_bytes();
+            buf.extend_from_slice(&(b.len() as u16).to_le_bytes());
+            buf.extend_from_slice(b);
+        }
+        fn put_bytes(buf: &mut Vec<u8>, b: &[u8]) {
+            buf.extend_from_slice(&(b.len() as u16).to_le_bytes());
+            buf.extend_from_slice(b);
+        }
+        let mut msg: Vec<u8> = Vec::with_capacity(128);
+        msg.extend_from_slice(&nonce.to_le_bytes());
+        msg.extend_from_slice(&now.to_le_bytes());
+        msg.extend_from_slice(&expire_at.to_le_bytes());
+        put_string(&mut msg, &room_id);
+        put_string(&mut msg, &bot_user_id);
+        msg.extend_from_slice(&(privileges.len() as u16).to_le_bytes());
+        for (k, v) in privileges { msg.extend_from_slice(&k.to_le_bytes()); msg.extend_from_slice(&v.to_le_bytes()); }
+        type HmacSha256 = Hmac<Sha256>;
+        let mut mac = HmacSha256::new_from_slice(app_key_env.as_bytes()).map_err(|e| format!("HMAC: {e}"))?;
+        mac.update(&msg);
+        let sig = mac.finalize().into_bytes();
+        let mut content: Vec<u8> = Vec::new();
+        put_bytes(&mut content, &msg);
+        put_bytes(&mut content, sig.as_slice());
+        format!("001{}{}", app_id_env, general_purpose::STANDARD.encode(&content))
+    };
+
     // Build request body
     let body = serde_json::json!({
         "AppId": app_id,
@@ -9069,7 +9110,8 @@ async fn start_rtc_voice_chat(
             "TargetUserId": [user_id.clone()],
             "BotConfig": {
                 "BotName": "小宠物",
-                "BotUserId": "bot_assistant",
+                "BotUserId": bot_user_id,
+                "Token": bot_token,
                 "Language": "zh-CN",
                 "ASRConfig": {
                     "ProviderType": "volcano",
