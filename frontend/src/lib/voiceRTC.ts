@@ -97,20 +97,30 @@ export class VoiceRTCClient {
           await this.engine.subscribeStream(e.userId, MediaType.AUDIO)
           rlog('info', `subscribed to audio from ${e.userId}`)
 
-          // Set per-user playback volume
+          // Attach remote audio to DOM element and play
           try {
-            this.engine.setPlaybackVolume(e.userId, 100)
-            rlog('info', `setPlaybackVolume(${e.userId}, 100) OK`)
+            let audioEl = document.getElementById('rtc-remote-audio') as HTMLAudioElement
+            if (!audioEl) {
+              audioEl = document.createElement('audio')
+              audioEl.id = 'rtc-remote-audio'
+              audioEl.autoplay = true
+              audioEl.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;'
+              document.body.appendChild(audioEl)
+            }
+            // VERTC play(userId, domElement) — routes audio stream to the element
+            await this.engine.play(e.userId, audioEl)
+            rlog('info', `play(${e.userId}, audioEl) OK`)
+            // Also try direct play on the element
+            try { await audioEl.play() } catch (_) {}
           } catch (err: any) {
-            rlog('warn', `setPlaybackVolume error: ${err?.message}`)
-          }
-
-          // Explicitly start playback (VERTC requires this in some environments)
-          try {
-            await this.engine.play(e.userId)
-            rlog('info', `play(${e.userId}) OK — audio should be audible`)
-          } catch (err: any) {
-            rlog('warn', `play() error: ${err?.message}`)
+            rlog('warn', `play with element error: ${err?.message}`)
+            // Fallback: play without element
+            try {
+              await this.engine.play(e.userId)
+              rlog('info', `play(${e.userId}) fallback OK`)
+            } catch (err2: any) {
+              rlog('error', `play fallback error: ${err2?.message}`)
+            }
           }
         }
       })
