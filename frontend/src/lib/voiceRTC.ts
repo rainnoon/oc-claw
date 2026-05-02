@@ -67,6 +67,26 @@ export class VoiceRTCClient {
       rlog('info', 'token generated')
 
       // 2. Create engine
+      // Patch AudioContext BEFORE VERTC creates its internal one — forces auto-resume
+      // This is the only reliable fix for WebView2 autoplay blocking VERTC's internal audio
+      if (!(window as any).__acPatched) {
+        (window as any).__acPatched = true
+        const OrigAC = (window as any).AudioContext || (window as any).webkitAudioContext
+        if (OrigAC) {
+          const Patched = class extends OrigAC {
+            constructor(...args: any[]) {
+              super(...args)
+              if (this.state === 'suspended') {
+                this.resume().catch(() => {})
+              }
+            }
+          }
+          ;(window as any).AudioContext = Patched
+          ;(window as any).webkitAudioContext = Patched
+          rlog('info', 'AudioContext auto-resume patch installed')
+        }
+      }
+
       rlog('info', `createEngine appId=${this.config.rtcAppId}`)
       this.engine = VERTC.createEngine(this.config.rtcAppId)
 
