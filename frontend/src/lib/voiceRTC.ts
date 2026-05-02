@@ -67,24 +67,35 @@ export class VoiceRTCClient {
       rlog('info', 'token generated')
 
       // 2. Create engine
-      // Patch AudioContext BEFORE VERTC creates its internal one — forces auto-resume
-      // This is the only reliable fix for WebView2 autoplay blocking VERTC's internal audio
-      if (!(window as any).__acPatched) {
-        (window as any).__acPatched = true
-        const OrigAC = (window as any).AudioContext || (window as any).webkitAudioContext
-        if (OrigAC) {
-          const Patched = class extends OrigAC {
-            constructor(...args: any[]) {
-              super(...args)
-              if (this.state === 'suspended') {
-                this.resume().catch(() => {})
+      // Intercept RTCPeerConnection at the lowest level to capture VERTC's internal audio tracks
+      // This is needed because VERTC manages audio internally without exposing the track to DOM
+      if (!(window as any).__rtcPCPatched) {
+        (window as any).__rtcPCPatched = true
+        const OrigPC = window.RTCPeerConnection
+        const OrigAC2 = window.AudioContext
+        ;(window as any).RTCPeerConnection = new Proxy(OrigPC, {
+          construct(target: any, args: any[]) {
+            const pc = new target(...args)
+            pc.addEventListener('track', (event: RTCTrackEvent) => {
+              if (event.track.kind === 'audio') {
+                rlog('info', `RTCPeerConnection track event: audio track captured`)
+                try {
+                  const ac = new OrigAC2()
+                  ac.resume().then(() => {
+                    const stream = event.streams[0] ?? new MediaStream([event.track])
+                    const source = ac.createMediaStreamSource(stream)
+                    source.connect(ac.destination)
+                    rlog('info', `audio track routed to AudioContext destination — should hear now`)
+                  })
+                } catch (err: any) {
+                  rlog('error', `track routing error: ${err?.message}`)
+                }
               }
-            }
+            })
+            return pc
           }
-          ;(window as any).AudioContext = Patched
-          ;(window as any).webkitAudioContext = Patched
-          rlog('info', 'AudioContext auto-resume patch installed')
-        }
+        })
+        rlog('info', 'RTCPeerConnection track interceptor installed')
       }
 
       rlog('info', `createEngine appId=${this.config.rtcAppId}`)
@@ -99,7 +110,11 @@ export class VoiceRTCClient {
       this.engine.enableAudioPropertiesReport({ interval: 1000 })
       this.engine.on(VERTC.events.onRemoteAudioPropertiesReport, (infos: any[]) => {
         if (infos && infos.length > 0) {
-          const levels = infos.map((i: any) => `${i.audioPropertiesInfo?.userId ?? i.streamKey?.userId}:${i.audioPropertiesInfo?.audioLevel ?? '?'}`).join(', ')
+          const levels = infos.map((i: any) => {
+            const uid = i.streamKey?.userId ?? i.audioPropertiesInfo?.userId ?? '?'
+            const level = i.audioPropertiesInfo?.audioLevel ?? i.audioLevel ?? '?'
+            return `${uid}:${level}`
+          }).join(', ')
           rlog('info', `remote audio levels: ${levels}`)
         }
       })
