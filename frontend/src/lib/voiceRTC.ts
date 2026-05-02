@@ -20,19 +20,7 @@ function rlog(level: 'info' | 'warn' | 'error', msg: string) {
   invoke('js_log', { level, msg: `[VoiceRTC] ${msg}` }).catch(() => {})
 }
 
-// ── TLV codec (same as official demo) ──────────────────────────────────────
-function string2tlv(str: string, type: string): ArrayBuffer {
-  const typeBuffer = new Uint8Array(4)
-  for (let i = 0; i < type.length; i++) typeBuffer[i] = type.charCodeAt(i)
-  const valueBuffer = new TextEncoder().encode(str)
-  const tlv = new Uint8Array(8 + valueBuffer.length)
-  tlv.set(typeBuffer, 0)
-  const len = valueBuffer.length
-  tlv[4] = (len >> 24) & 0xff; tlv[5] = (len >> 16) & 0xff
-  tlv[6] = (len >> 8) & 0xff;  tlv[7] = len & 0xff
-  tlv.set(valueBuffer, 8)
-  return tlv.buffer
-}
+// ── TLV decoder (receive binary messages from bot) ─────────────────────────
 
 function tlv2String(buf: ArrayBufferLike): { type: string; value: string } {
   const typeBuffer = new Uint8Array(buf, 0, 4)
@@ -148,22 +136,13 @@ export class VoiceRTCClient {
         }
       })
 
-      // ── Function Calling via RTC binary message (fallback when no video stream) ─
+      // ── Function Calling via RTC binary message (kept for non-screenshot tools) ─
       this.engine.on(VERTC.events.onRoomBinaryMessageReceived, async (e: { userId: string; message: ArrayBuffer }) => {
         try {
           const { type, value } = tlv2String(e.message)
           if (type.trim() === 'tool') {
             const parsed = JSON.parse(value)
-            const toolCalls: any[] = parsed?.tool_calls ?? []
-            rlog('info', `function call: ${JSON.stringify(toolCalls)}`)
-            for (const call of toolCalls) {
-              const name: string = call?.function?.name ?? ''
-              const callId: string = call?.id ?? call?.tool_call_id ?? ''
-              if (name === 'take_screenshot') {
-                rlog('info', `executing take_screenshot (tool_call_id=${callId})`)
-                await this._handleScreenshot(callId, e.userId)
-              }
-            }
+            rlog('info', `function call (ignored, video stream active): ${JSON.stringify(parsed?.tool_calls?.map((c: any) => c?.function?.name))}`)
           }
         } catch (err: any) {
           rlog('warn', `binary msg handler error: ${err?.message}`)
@@ -248,47 +227,6 @@ export class VoiceRTCClient {
       rlog('error', `start failed: ${error?.message ?? String(error)}`)
       await this._cleanup()
       throw error
-    }
-  }
-
-  // ── Screenshot function call handler ────────────────────────────────────
-  private async _handleScreenshot(toolCallId: string, botUserId: string): Promise<void> {
-    try {
-      // 1. Take screenshot
-      const imageBase64 = await invoke<string>('take_screenshot')
-      rlog('info', 'screenshot taken')
-
-      // 2. Analyze with vision LLM
-      const description = await invoke<string>('chat_with_pet', {
-        screenshot: imageBase64,
-        message: '请简洁描述屏幕上的主要内容，用户在做什么',
-        llmEndpointId: this.config.llmEndpointId,
-        llmApiKey: this.config.llmApiKey,
-        characterPrompt: '你是屏幕内容分析助手，简洁描述屏幕上的主要内容',
-      })
-      rlog('info', `screenshot analyzed: ${description.slice(0, 100)}`)
-
-      // 3. Send result back via RTC binary message
-      const resultPayload = JSON.stringify({
-        ToolCallID: toolCallId,
-        Content: description,
-      })
-      this.engine.sendUserBinaryMessage(botUserId, string2tlv(resultPayload, 'tool'))
-      rlog('info', `screenshot result sent to ${botUserId}`)
-
-      // 4. Also send via UpdateVoiceChat API as backup
-      await invoke('update_rtc_voice_chat', {
-        appId: this.config.rtcAppId,
-        accessKeyId: this.config.accessKeyId,
-        secretAccessKey: this.config.secretAccessKey,
-        roomId: this.roomId,
-        command: 'function',
-        message: resultPayload,
-      }).catch((e: any) => rlog('warn', `UpdateVoiceChat function result failed: ${e?.message}`))
-    } catch (err: any) {
-      rlog('error', `screenshot handler failed: ${err?.message}`)
-      const errPayload = JSON.stringify({ ToolCallID: toolCallId, Content: '截图失败，无法获取屏幕内容' })
-      try { this.engine.sendUserBinaryMessage(botUserId, string2tlv(errPayload, 'tool')) } catch (_) {}
     }
   }
 
