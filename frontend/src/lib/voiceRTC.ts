@@ -290,9 +290,34 @@ export class VoiceRTCClient {
       )
       rlog('info', 'joined room OK')
 
-      // 6. Start mic
+      // 6. Select best microphone (skip virtual/Voicemeeter devices, prefer communications device)
+      let micDeviceId: string | undefined
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const inputs = devices.filter(d => d.kind === 'audioinput')
+        // Priority: communications device > real named mic > anything non-Voicemeeter > default
+        const SKIP_LABELS = ['voicemeeter', 'steam streaming', 'vb-audio', 'virtual']
+        const isReal = (d: MediaDeviceInfo) => !SKIP_LABELS.some(s => d.label.toLowerCase().includes(s))
+        const commsDev = inputs.find(d => d.deviceId === 'communications' && isReal(d))
+        const realDev = inputs.find(d => d.deviceId !== 'default' && d.deviceId !== 'communications' && isReal(d))
+        const pick = commsDev || realDev
+        if (pick) {
+          micDeviceId = pick.deviceId
+          rlog('info', `selected mic: [${pick.deviceId.slice(0,8)}] ${pick.label}`)
+        } else {
+          rlog('warn', 'no real mic found, using default (may be silent)')
+        }
+      } catch (e: any) {
+        rlog('warn', `device selection failed: ${e?.message}`)
+      }
+
+      // Start mic (pass specific deviceId if found)
       rlog('info', 'startAudioCapture...')
-      await this.engine.startAudioCapture()
+      if (micDeviceId) {
+        await this.engine.startAudioCapture(micDeviceId)
+      } else {
+        await this.engine.startAudioCapture()
+      }
       rlog('info', 'mic started')
 
       // Explicitly publish audio stream (isAutoPublish may not work in all VERTC versions)
