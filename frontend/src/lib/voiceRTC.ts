@@ -111,9 +111,22 @@ export class VoiceRTCClient {
         rlog('warn', `onAutoplayFailed: ${JSON.stringify(e)}`)
       })
 
-      // Monitor remote audio levels — confirms data is actually flowing
-      this.engine.enableAudioPropertiesReport({ interval: 1000 })
-      this.engine.enableLocalAudioPropertiesReport?.({ interval: 500 })
+      // Monitor local mic level — confirms our voice is actually being sent
+      this.engine.on(VERTC.events.onLocalAudioPropertiesReport, (infos: any[]) => {
+        if (infos && infos.length > 0) {
+          const level = infos[0]?.audioPropertiesInfo?.linearVolume ?? '?'
+          if (level !== '?' && level > 0) {
+            rlog('info', `local mic level: ${level}`)
+          }
+        }
+      })
+
+      // Fallback: check if local event name differs
+      const localEvt = Object.keys(VERTC.events).find(k => k.toLowerCase().includes('local') && k.toLowerCase().includes('audio'))
+      rlog('info', `local audio event name: ${localEvt} = ${(VERTC.events as any)[localEvt ?? '']}`)
+
+      // Also enable with includeLocalUser flag (some VERTC versions)
+      this.engine.enableAudioPropertiesReport({ interval: 1000, includeLocalUser: true })
       this.engine.on(VERTC.events.onRemoteAudioPropertiesReport, (infos: any[]) => {
         if (infos && infos.length > 0) {
           // Log full structure once to understand the schema
@@ -126,19 +139,17 @@ export class VoiceRTCClient {
             const level = i.audioPropertiesInfo?.linearVolume ?? '?'
             return `${uid}:${level}`
           }).join(', ')
-          if (levels.includes(':0') === false || Math.random() < 0.1) {
+          if (!levels.split(',').every(s => s.includes(':0'))) {
             rlog('info', `remote audio levels: ${levels}`)
           }
         }
       })
 
-      // Monitor local mic level — confirms our voice is actually being sent
+      // Also listen for local audio properties (same handler in some SDK versions)
       this.engine.on(VERTC.events.onLocalAudioPropertiesReport, (infos: any[]) => {
         if (infos && infos.length > 0) {
-          const level = infos[0]?.audioPropertiesInfo?.linearVolume ?? '?'
-          if (level !== '?' && level > 0) {
-            rlog('info', `local mic level: ${level} (mic is capturing and sending)`)
-          }
+          const level = infos[0]?.audioPropertiesInfo?.linearVolume ?? 0
+          if (level > 5) rlog('info', `local mic level: ${level} ✅ voice being sent`)
         }
       })
 
