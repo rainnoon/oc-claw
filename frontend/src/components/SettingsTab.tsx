@@ -982,6 +982,26 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                   />
                 </div>
                 <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.accessKeyId', 'Access Key ID')}</label>
+                  <input
+                    type="password"
+                    value={voiceConfig.accessKeyId}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, accessKeyId: e.target.value })}
+                    placeholder="Access Key ID"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.secretAccessKey', 'Secret Access Key')}</label>
+                  <input
+                    type="password"
+                    value={voiceConfig.secretAccessKey}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, secretAccessKey: e.target.value })}
+                    placeholder="Secret Access Key"
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
                   <label className="text-xs text-white/40">{t('settings.asrAppId', 'ASR App ID')}</label>
                   <input
                     type="text"

@@ -164,6 +164,8 @@ export function fileToDataUrl(file: File): Promise<string> {
 export interface VoiceConfig {
   rtcAppId: string
   rtcAppKey: string
+  accessKeyId: string
+  secretAccessKey: string
   asrAppId: string
   asrAccessToken: string
   ttsAppId: string
@@ -179,6 +181,8 @@ export async function loadVoiceConfig(): Promise<VoiceConfig> {
   return {
     rtcAppId: saved?.rtcAppId || '',
     rtcAppKey: saved?.rtcAppKey || '',
+    accessKeyId: saved?.accessKeyId || '',
+    secretAccessKey: saved?.secretAccessKey || '',
     asrAppId: saved?.asrAppId || '',
     asrAccessToken: saved?.asrAccessToken || '',
     ttsAppId: saved?.ttsAppId || '',

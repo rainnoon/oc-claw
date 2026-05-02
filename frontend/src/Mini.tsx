@@ -1599,8 +1599,13 @@ export default function Mini() {
       setVoiceBubbleText('思考中...')
       setVoiceBubbleVisible(true)
 
-      // Load voice config (keys)
-      const voiceCfg = await loadVoiceConfig()
+      // Load voice config, merge env overrides
+      const storeCfg = await loadVoiceConfig()
+      const envCfg = await invoke<Record<string, string>>('get_env_voice_config')
+      const voiceCfg = { ...storeCfg }
+      for (const [k, v] of Object.entries(envCfg)) {
+        if (v && v.trim()) (voiceCfg as any)[k] = v
+      }
 
       // Take screenshot
       const screenshot = await invoke<string>('take_screenshot')
@@ -1646,7 +1651,14 @@ export default function Mini() {
 
   const handleVoiceStart = useCallback(async () => {
     try {
-      const voiceCfg = await loadVoiceConfig()
+      // Load store config, then merge env overrides from Rust
+      const storeCfg = await loadVoiceConfig()
+      const envCfg = await invoke<Record<string, string>>('get_env_voice_config')
+      const voiceCfg = { ...storeCfg }
+      // env values override store values when non-empty
+      for (const [k, v] of Object.entries(envCfg)) {
+        if (v && v.trim()) (voiceCfg as any)[k] = v
+      }
 
       // Fall back to HTTP mode if RTC config is incomplete
       if (!voiceCfg.accessKeyId || !voiceCfg.rtcAppId) {
@@ -4035,22 +4047,19 @@ export default function Mini() {
                   bottom: largeMascotVisualSize + 20,
                   left: '50%',
                   transform: 'translateX(-50%)',
-                  maxWidth: '80%',
+                  maxWidth: '85%',
                   minWidth: 120,
                   padding: '10px 16px',
                   background: 'rgba(255, 255, 255, 0.95)',
                   borderRadius: 16,
                   color: '#333',
-                  fontSize: 14,
-                  lineHeight: '1.4',
-                  textAlign: 'center',
+                  fontSize: 13,
+                  lineHeight: '1.5',
+                  textAlign: 'left',
                   boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
                   zIndex: 200,
-                  maxHeight: 60,
-                  overflow: 'hidden',
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical',
+                  wordBreak: 'break-all',
+                  whiteSpace: 'pre-wrap',
                 }}
               >
                 {voiceBubbleText}
