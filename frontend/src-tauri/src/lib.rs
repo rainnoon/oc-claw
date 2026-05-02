@@ -8845,8 +8845,8 @@ async fn generate_rtc_token(
     app_key: String,
     room_id: String,
     user_id: String,
-    access_key_id: String,
-    secret_access_key: String,
+    _access_key_id: String,
+    _secret_access_key: String,
 ) -> Result<String, String> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -8854,50 +8854,94 @@ async fn generate_rtc_token(
 
     // Read env overrides
     let key = std::env::var("VOLCANO_RTC_APP_KEY").unwrap_or(app_key);
+    let app_id = std::env::var("VOLCANO_RTC_APP_ID").unwrap_or(app_id);
 
     log::info!("[RTC] generate_rtc_token for room={} user={}", room_id, user_id);
 
-    // Token fields
-    let version = "001";
-    let app_id_str = &app_id;
-    let room_id_str = &room_id;
-    let user_id_str = &user_id;
+    // ── Binary token format (matches official JS SDK) ──────────────────
+    // token = "001" + appId(24 chars) + base64( putBytes(msgBytes) + putBytes(hmacSha256(appKey, msgBytes)) )
+    //
+    // msgBytes (little-endian):
+    //   uint32  nonce
+    //   uint32  issuedAt
+    //   uint32  expireAt
+    //   putString(roomId)   = uint16(len) + bytes
+    //   putString(userId)   = uint16(len) + bytes
+    //   putTreeMapUInt32(privileges) = uint16(count) + [uint16(key) + uint32(value)]*
 
-    // expire_at: current timestamp + 24 hours
-    let expire_at = unix_now() + 86400;
+    let now = unix_now() as u32;
+    let nonce = rand_u32();
+    let issued_at = now;
+    let expire_at = now + 86400u32; // 24h
 
-    // nonce: random 32-bit number as hex
-    let nonce = format!("{:08x}", rand_u32());
+    // privileges: PrivPublishStream(0), privPublishAudioStream(1), privPublishVideoStream(2),
+    //             privPublishDataStream(3), PrivSubscribeStream(4) — all expire same as token
+    let privileges: &[(u16, u32)] = &[
+        (0, expire_at),
+        (1, expire_at),
+        (2, expire_at),
+        (3, expire_at),
+        (4, expire_at),
+    ];
 
-    // privilege: "Pub=1" means can publish stream
-    let privilege = "Pub=1";
+    // Helper: putString = uint16LE(len) + bytes
+    fn put_string(buf: &mut Vec<u8>, s: &str) {
+        let b = s.as_bytes();
+        buf.extend_from_slice(&(b.len() as u16).to_le_bytes());
+        buf.extend_from_slice(b);
+    }
 
-    // Build the string to sign
-    let sign_content = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        version, app_id_str, room_id_str, user_id_str, expire_at, nonce, privilege
-    );
+    // Helper: putBytes = uint16LE(len) + bytes
+    fn put_bytes(buf: &mut Vec<u8>, b: &[u8]) {
+        buf.extend_from_slice(&(b.len() as u16).to_le_bytes());
+        buf.extend_from_slice(b);
+    }
 
-    // HMAC-SHA256
+    // Build msgBytes
+    let mut msg: Vec<u8> = Vec::with_capacity(128);
+    msg.extend_from_slice(&nonce.to_le_bytes());
+    msg.extend_from_slice(&issued_at.to_le_bytes());
+    msg.extend_from_slice(&expire_at.to_le_bytes());
+    put_string(&mut msg, &room_id);
+    put_string(&mut msg, &user_id);
+    // putTreeMapUInt32
+    msg.extend_from_slice(&(privileges.len() as u16).to_le_bytes());
+    for (k, v) in privileges {
+        msg.extend_from_slice(&k.to_le_bytes());
+        msg.extend_from_slice(&v.to_le_bytes());
+    }
+
+    // HMAC-SHA256(appKey, msgBytes)
     type HmacSha256 = Hmac<Sha256>;
     let mut mac = HmacSha256::new_from_slice(key.as_bytes())
         .map_err(|e| format!("HMAC key error: {e}"))?;
-    mac.update(sign_content.as_bytes());
-    let signature = general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+    mac.update(&msg);
+    let sig = mac.finalize().into_bytes();
+    let sig_bytes = sig.as_slice();
 
-    // Final token format: version:appId:roomId:userId:expireAt:nonce:privilege:signature
-    let token = format!("{}:{}:{}:{}:{}:{}:{}:{}",
-        version, app_id_str, room_id_str, user_id_str, expire_at, nonce, privilege, signature
-    );
+    // content = putBytes(msgBytes) + putBytes(sigBytes)
+    let mut content: Vec<u8> = Vec::with_capacity(msg.len() + sig.len() + 4);
+    put_bytes(&mut content, &msg);
+    put_bytes(&mut content, sig_bytes);
 
-    log::info!("[RTC] generated token for room={} user={}", room_id, user_id);
+    // Final: "001" + appId(24) + base64(content)
+    let token = format!("001{}{}", app_id, general_purpose::STANDARD.encode(&content));
+
+    log::info!("[RTC] generated token (binary format) for room={} user={}", room_id, user_id);
     Ok(token)
 }
 
 fn rand_u32() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
-    ns ^ (ns << 13) ^ (ns >> 7)
+    // xorshift to get better distribution
+    let mut x = ns ^ 0xdeadbeef;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    x
 }
+
 
 /// Helper function to sign Volcano Engine API requests using V4 signature
 fn volcano_sign_request(
