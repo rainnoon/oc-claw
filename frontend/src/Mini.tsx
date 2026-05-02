@@ -12,6 +12,7 @@ import { AgentDetailView } from './components/AgentDetailView'
 import { CreateCharacterModal } from './components/CreateCharacterModal'
 import { ClaudeStatsView } from './components/ClaudeStatsView'
 import { getStore, DEFAULT_CHAR, DEFAULT_CHAR_NAME, loadCharacters, loadOcConnections, saveOcConnections, loadVoiceConfig } from './lib/store'
+import { VoiceRTCClient } from './lib/voiceRTC'
 import { saveAgentCharMap } from './lib/agents'
 import type { AgentMetrics, OcConnection } from './lib/types'
 import { OnboardingModal } from './components/OnboardingModal'
@@ -742,6 +743,8 @@ export default function Mini() {
   const [voiceBubbleText, setVoiceBubbleText] = useState<string | null>(null)
   const [voiceBubbleVisible, setVoiceBubbleVisible] = useState(false)
   const voiceBubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [isVoiceActive, setIsVoiceActive] = useState(false)
+  const voiceClientRef = useRef<VoiceRTCClient | null>(null)
   const currentPetActionRef = useRef<PetAction>('idle')
   currentPetActionRef.current = currentPetAction
   const [walkFlipped, setWalkFlipped] = useState(false)
@@ -1639,6 +1642,43 @@ export default function Mini() {
         setVoiceBubbleText(null)
       }, 2000)
     }
+  }, [])
+
+  const handleVoiceStart = useCallback(async () => {
+    try {
+      const voiceCfg = await loadVoiceConfig()
+
+      // Fall back to HTTP mode if RTC config is incomplete
+      if (!voiceCfg.accessKeyId || !voiceCfg.rtcAppId) {
+        console.log('[voice] RTC config incomplete, using HTTP fallback')
+        await handleVoiceTalk()
+        return
+      }
+
+      // Start RTC voice chat
+      const client = new VoiceRTCClient(voiceCfg)
+      voiceClientRef.current = client
+      await client.startVoiceChat()
+      setIsVoiceActive(true)
+      console.log('[voice] RTC voice chat started')
+    } catch (e) {
+      console.error('[voice] Failed to start RTC:', e)
+      voiceClientRef.current = null
+      setIsVoiceActive(false)
+    }
+  }, [handleVoiceTalk])
+
+  const handleVoiceStop = useCallback(async () => {
+    if (voiceClientRef.current) {
+      try {
+        await voiceClientRef.current.stopVoiceChat()
+        console.log('[voice] RTC voice chat stopped')
+      } catch (e) {
+        console.error('[voice] Failed to stop RTC:', e)
+      }
+      voiceClientRef.current = null
+    }
+    setIsVoiceActive(false)
   }, [])
 
 
@@ -3942,7 +3982,12 @@ export default function Mini() {
             {/* Voice talk button — bottom-right corner */}
             {appMode === 'pet' && largeMascot && !petContextMenuOpen && !settingsMode && (
               <button
-                onClick={handleVoiceTalk}
+                onMouseDown={(e) => { e.stopPropagation(); handleVoiceStart() }}
+                onMouseUp={(e) => { e.stopPropagation(); handleVoiceStop() }}
+                onMouseLeave={(e) => { e.stopPropagation(); handleVoiceStop() }}
+                onTouchStart={(e) => { e.stopPropagation(); handleVoiceStart() }}
+                onTouchEnd={(e) => { e.stopPropagation(); handleVoiceStop() }}
+                onPointerDown={(e) => e.stopPropagation()}
                 style={{
                   position: 'absolute',
                   bottom: 20,
@@ -3950,9 +3995,9 @@ export default function Mini() {
                   width: 44,
                   height: 44,
                   borderRadius: '50%',
-                  background: 'rgba(255, 255, 255, 0.15)',
+                  background: isVoiceActive ? 'rgba(255, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.15)',
                   backdropFilter: 'blur(10px)',
-                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  border: isVoiceActive ? '1px solid rgba(255, 0, 0, 0.5)' : '1px solid rgba(255, 255, 255, 0.2)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -3962,12 +4007,16 @@ export default function Mini() {
                   zIndex: 100,
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)'
-                  e.currentTarget.style.transform = 'scale(1.1)'
+                  if (!isVoiceActive) {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)'
+                    e.currentTarget.style.transform = 'scale(1.1)'
+                  }
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)'
-                  e.currentTarget.style.transform = 'scale(1)'
+                  if (!isVoiceActive) {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)'
+                    e.currentTarget.style.transform = 'scale(1)'
+                  }
                 }}
               >
                 🎙️
