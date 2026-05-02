@@ -6405,6 +6405,7 @@ async fn speak_text(
     }
 
     Ok(())
+}
 
 // ─── Claude Code session state ───
 
@@ -8810,6 +8811,335 @@ async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>,
 }
 
 #[tauri::command]
+async fn generate_rtc_token(
+    app_id: String,
+    app_key: String,
+    room_id: String,
+    user_id: String,
+    access_key_id: String,
+    secret_access_key: String,
+) -> Result<String, String> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use base64::{Engine as _, engine::general_purpose};
+
+    // Read env overrides
+    let key = std::env::var("VOLCANO_RTC_APP_KEY").unwrap_or(app_key);
+
+    log::info!("[RTC] generate_rtc_token for room={} user={}", room_id, user_id);
+
+    // Token fields
+    let version = "001";
+    let app_id_str = &app_id;
+    let room_id_str = &room_id;
+    let user_id_str = &user_id;
+
+    // expire_at: current timestamp + 24 hours
+    let expire_at = unix_now() + 86400;
+
+    // nonce: random 32-bit number as hex
+    let nonce = format!("{:08x}", rand_u32());
+
+    // privilege: "Pub=1" means can publish stream
+    let privilege = "Pub=1";
+
+    // Build the string to sign
+    let sign_content = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        version, app_id_str, room_id_str, user_id_str, expire_at, nonce, privilege
+    );
+
+    // HMAC-SHA256
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(key.as_bytes())
+        .map_err(|e| format!("HMAC key error: {e}"))?;
+    mac.update(sign_content.as_bytes());
+    let signature = general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+
+    // Final token format: version:appId:roomId:userId:expireAt:nonce:privilege:signature
+    let token = format!("{}:{}:{}:{}:{}:{}:{}:{}",
+        version, app_id_str, room_id_str, user_id_str, expire_at, nonce, privilege, signature
+    );
+
+    log::info!("[RTC] generated token for room={} user={}", room_id, user_id);
+    Ok(token)
+}
+
+fn rand_u32() -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+    ns ^ (ns << 13) ^ (ns >> 7)
+}
+
+/// Helper function to sign Volcano Engine API requests using V4 signature
+fn volcano_sign_request(
+    method: &str,
+    path: &str,
+    query: &str,
+    body: &str,
+    access_key_id: &str,
+    secret_access_key: &str,
+) -> Result<(String, String), String> {
+    use hmac::{Hmac, Mac};
+    use sha2::{Sha256, Digest};
+    use chrono::Utc;
+
+    type HmacSha256 = Hmac<Sha256>;
+
+    // Step 1: x-date header (current UTC time in format YYYYMMDDTHHmmssZ)
+    let now = Utc::now();
+    let x_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let date = now.format("%Y%m%d").to_string();
+
+    // Step 2: credential_scope
+    let credential_scope = format!("{}/cn-north-1/rtc/request", date);
+
+    // Step 3: canonical_headers
+    let canonical_headers = format!(
+        "content-type:application/json\nhost:rtc.volcengineapi.com\nx-date:{}\n",
+        x_date
+    );
+
+    // Step 4: signed_headers
+    let signed_headers = "content-type;host;x-date";
+
+    // Step 5: hashed_payload
+    let mut hasher = Sha256::new();
+    hasher.update(body.as_bytes());
+    let hashed_payload = hex::encode(hasher.finalize());
+
+    // Step 6: canonical_request
+    let canonical_request = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method, path, query, canonical_headers, signed_headers, hashed_payload
+    );
+
+    // Step 7: string_to_sign
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_request.as_bytes());
+    let hashed_canonical_request = hex::encode(hasher.finalize());
+
+    let string_to_sign = format!(
+        "HMAC-SHA256\n{}\n{}\n{}",
+        x_date, credential_scope, hashed_canonical_request
+    );
+
+    // Step 8: signing_key (nested HMAC)
+    let mut mac = HmacSha256::new_from_slice(secret_access_key.as_bytes())
+        .map_err(|e| format!("HMAC key error: {e}"))?;
+    mac.update(date.as_bytes());
+    let k_date = mac.finalize().into_bytes();
+
+    let mut mac = HmacSha256::new_from_slice(&k_date)
+        .map_err(|e| format!("HMAC key error: {e}"))?;
+    mac.update(b"cn-north-1");
+    let k_region = mac.finalize().into_bytes();
+
+    let mut mac = HmacSha256::new_from_slice(&k_region)
+        .map_err(|e| format!("HMAC key error: {e}"))?;
+    mac.update(b"rtc");
+    let k_service = mac.finalize().into_bytes();
+
+    let mut mac = HmacSha256::new_from_slice(&k_service)
+        .map_err(|e| format!("HMAC key error: {e}"))?;
+    mac.update(b"request");
+    let signing_key = mac.finalize().into_bytes();
+
+    // Step 9: signature
+    let mut mac = HmacSha256::new_from_slice(&signing_key)
+        .map_err(|e| format!("HMAC key error: {e}"))?;
+    mac.update(string_to_sign.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+
+    // Step 10: Authorization header
+    let authorization = format!(
+        "HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
+        access_key_id, credential_scope, signed_headers, signature
+    );
+
+    Ok((authorization, x_date))
+}
+
+#[tauri::command]
+async fn start_rtc_voice_chat(
+    app_id: String,
+    access_key_id: String,
+    secret_access_key: String,
+    room_id: String,
+    user_id: String,
+    asr_app_id: String,
+    asr_access_token: String,
+    tts_app_id: String,
+    tts_access_token: String,
+    llm_endpoint_id: String,
+    llm_api_key: String,
+    character_prompt: String,
+) -> Result<(), String> {
+    // Read env overrides
+    let ak = std::env::var("VOLCANO_ACCESS_KEY_ID").unwrap_or(access_key_id);
+    let sk = std::env::var("VOLCANO_SECRET_ACCESS_KEY").unwrap_or(secret_access_key);
+    let asr_app = std::env::var("VOLCANO_ASR_APP_ID").unwrap_or(asr_app_id);
+    let asr_token = std::env::var("VOLCANO_ASR_ACCESS_TOKEN").unwrap_or(asr_access_token);
+    let tts_app = std::env::var("VOLCANO_TTS_APP_ID").unwrap_or(tts_app_id);
+    let tts_token = std::env::var("VOLCANO_TTS_ACCESS_TOKEN").unwrap_or(tts_access_token);
+    let llm_endpoint = std::env::var("VOLCANO_LLM_ENDPOINT_ID").unwrap_or(llm_endpoint_id);
+    let llm_key = std::env::var("VOLCANO_LLM_API_KEY").unwrap_or(llm_api_key);
+
+    log::info!("[RTC] start_rtc_voice_chat room={} user={}", room_id, user_id);
+
+    // Build request body
+    let body = serde_json::json!({
+        "AppId": app_id,
+        "RoomId": room_id.clone(),
+        "TaskId": room_id.clone(),
+        "Config": {
+            "WelcomeMessage": "你好！我在这里陪你！",
+            "TargetUserId": [user_id.clone()],
+            "BotConfig": {
+                "BotName": "小宠物",
+                "BotUserId": "bot_assistant",
+                "Language": "zh-CN",
+                "ASRConfig": {
+                    "ProviderType": "volcano",
+                    "ProviderParams": {
+                        "Mode": "bigmodel",
+                        "AppId": asr_app,
+                        "AccessToken": asr_token,
+                        "ApiResourceId": "volc.seedasr.sauc.duration",
+                        "StreamMode": 2,
+                        "VolcanoASRParameters": "{\"request\":{\"enable_nonstream\":true}}"
+                    }
+                },
+                "TTSConfig": {
+                    "ProviderType": "volcano",
+                    "ProviderParams": {
+                        "app": {
+                            "appid": tts_app,
+                            "token": tts_token
+                        },
+                        "audio": {
+                            "voice_type": "ICL_zh_female_keainvsheng_tob",
+                            "speech_rate": 0
+                        },
+                        "ResourceId": "seed-tts-1.0"
+                    }
+                },
+                "LLMConfig": {
+                    "ProviderType": "volcano",
+                    "Mode": "ArkV3",
+                    "EndPointId": llm_endpoint,
+                    "ApiKey": llm_key,
+                    "SystemPrompt": character_prompt,
+                    "MaxTokens": 1024,
+                    "Temperature": 0.7,
+                    "TopP": 0.9
+                }
+            }
+        }
+    });
+
+    let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON error: {e}"))?;
+
+    // Sign the request
+    let (authorization, x_date) = volcano_sign_request(
+        "POST",
+        "/",
+        "Action=StartVoiceChat&Version=2024-12-01",
+        &body_str,
+        &ak,
+        &sk,
+    )?;
+
+    log::info!("[RTC] sending StartVoiceChat request");
+
+    // Make the API call
+    let client = reqwest::Client::new();
+    let url = "https://rtc.volcengineapi.com/?Action=StartVoiceChat&Version=2024-12-01";
+
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Host", "rtc.volcengineapi.com")
+        .header("X-Date", x_date)
+        .header("Authorization", authorization)
+        .body(body_str)
+        .send()
+        .await
+        .map_err(|e| format!("Request error: {e}"))?;
+
+    let status = response.status();
+    let response_text = response.text().await.map_err(|e| format!("Response read error: {e}"))?;
+
+    if !status.is_success() {
+        log::error!("[RTC] StartVoiceChat failed: {} - {}", status, response_text);
+        return Err(format!("StartVoiceChat failed: {} - {}", status, response_text));
+    }
+
+    log::info!("[RTC] StartVoiceChat success: {}", response_text);
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_rtc_voice_chat(
+    app_id: String,
+    access_key_id: String,
+    secret_access_key: String,
+    room_id: String,
+) -> Result<(), String> {
+    // Read env overrides
+    let ak = std::env::var("VOLCANO_ACCESS_KEY_ID").unwrap_or(access_key_id);
+    let sk = std::env::var("VOLCANO_SECRET_ACCESS_KEY").unwrap_or(secret_access_key);
+
+    log::info!("[RTC] stop_rtc_voice_chat room={}", room_id);
+
+    // Build request body
+    let body = serde_json::json!({
+        "AppId": app_id,
+        "RoomId": room_id.clone(),
+        "TaskId": room_id.clone()
+    });
+
+    let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON error: {e}"))?;
+
+    // Sign the request
+    let (authorization, x_date) = volcano_sign_request(
+        "POST",
+        "/",
+        "Action=StopVoiceChat&Version=2024-12-01",
+        &body_str,
+        &ak,
+        &sk,
+    )?;
+
+    log::info!("[RTC] sending StopVoiceChat request");
+
+    // Make the API call
+    let client = reqwest::Client::new();
+    let url = "https://rtc.volcengineapi.com/?Action=StopVoiceChat&Version=2024-12-01";
+
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Host", "rtc.volcengineapi.com")
+        .header("X-Date", x_date)
+        .header("Authorization", authorization)
+        .body(body_str)
+        .send()
+        .await
+        .map_err(|e| format!("Request error: {e}"))?;
+
+    let status = response.status();
+    let response_text = response.text().await.map_err(|e| format!("Response read error: {e}"))?;
+
+    if !status.is_success() {
+        log::error!("[RTC] StopVoiceChat failed: {} - {}", status, response_text);
+        return Err(format!("StopVoiceChat failed: {} - {}", status, response_text));
+    }
+
+    log::info!("[RTC] StopVoiceChat success: {}", response_text);
+    Ok(())
+}
+
+#[tauri::command]
 async fn install_claude_hooks() -> Result<(), String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
     let claude_dir = home.join(".claude");
@@ -11000,7 +11330,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, take_screenshot, chat_with_pet, speak_text])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, generate_rtc_token, start_rtc_voice_chat, stop_rtc_voice_chat, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, take_screenshot, chat_with_pet, speak_text])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())
