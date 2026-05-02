@@ -11186,16 +11186,16 @@ pub fn run() {
                 for label in ["mini", "main", "pet", "detail", "room"] {
                     if let Some(win) = app.get_webview_window(label) {
                         let _ = win.with_webview(|wv| {
-                            #[cfg(target_os = "windows")]
-                            {
-                                use webview2_com::Microsoft::Web::WebView2::Win32::*;
-                                use windows::core::Interface;
+                            use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                            unsafe {
                                 let core = wv.controller().CoreWebView2().unwrap();
+                                let mut token = 0i64;
                                 let _ = core.add_PermissionRequested(
                                     &webview2_com::PermissionRequestedEventHandler::create(
                                         Box::new(|_, args| {
                                             if let Some(args) = args {
-                                                let kind = args.PermissionKind().unwrap_or(COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION);
+                                                let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+                                                let _ = args.PermissionKind(&mut kind);
                                                 if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
                                                     let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
                                                     log::info!("[mic-perm] microphone permission auto-granted");
@@ -11203,7 +11203,8 @@ pub fn run() {
                                             }
                                             Ok(())
                                         })
-                                    )
+                                    ),
+                                    &mut token,
                                 );
                             }
                         });
