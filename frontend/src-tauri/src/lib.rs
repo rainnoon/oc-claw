@@ -11137,12 +11137,12 @@ pub fn run() {
 
     #[cfg(target_os = "windows")]
     {
-        // WebView2 browser args: disable HW video decode (VP9 alpha fix) + enable autoplay + allow mic
+        // WebView2 browser args: disable HW video decode (VP9 alpha fix) + enable autoplay
+        // NOTE: do NOT add --use-fake-ui-for-media-stream — it provides a silent fake mic!
         let key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
         let flags = [
             "--disable-accelerated-video-decode",
             "--autoplay-policy=no-user-gesture-required",
-            "--use-fake-ui-for-media-stream",
         ];
         let mut current = std::env::var(key).unwrap_or_default();
         for flag in flags {
@@ -11151,6 +11151,8 @@ pub fn run() {
                 else { current = format!("{} {}", current, flag); }
             }
         }
+        // Remove fake-ui flag if previously set
+        current = current.replace("--use-fake-ui-for-media-stream", "").trim().to_string();
         std::env::set_var(key, current);
     }
 
