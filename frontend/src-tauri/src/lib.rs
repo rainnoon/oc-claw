@@ -11178,6 +11178,25 @@ pub fn run() {
             // Fix PATH so openclaw (Node.js script) and node are both reachable
             fix_path();
 
+            // Grant microphone permission to all WebView2 windows automatically
+            // (avoids Windows privacy dialog blocking mic access)
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager;
+                for label in ["mini", "main", "pet", "detail", "room"] {
+                    if let Some(win) = app.get_webview_window(label) {
+                        // Execute JS to request mic permission immediately on load
+                        let _ = win.eval(r#"
+                            if (navigator.permissions) {
+                                navigator.permissions.query({name:'microphone'}).then(function(r){
+                                    console.log('[mic-perm] state=' + r.state);
+                                });
+                            }
+                        "#);
+                    }
+                }
+            }
+
             // Auto-open DevTools in debug builds
             #[cfg(debug_assertions)]
             {
