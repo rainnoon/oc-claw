@@ -9151,30 +9151,30 @@ async fn start_rtc_voice_chat(
                 "EndPointId": llm_endpoint,
                 "ApiKey": llm_key,
                 "APIKey": llm_key,
-                "SystemPrompt": if enable_video.unwrap_or(false) {
-                    format!("{}\n\n【重要】你现在可以实时看到用户的屏幕画面（通过视频流传入）。当用户问"你看到什么"、"我在做什么"、"帮我看看屏幕"时，直接描述你看到的画面内容，不要说"我看不到"。", character_prompt)
-                } else {
-                    character_prompt.clone()
-                },
-                "SystemMessages": [if enable_video.unwrap_or(false) {
-                    format!("{}\n\n【重要】你现在可以实时看到用户的屏幕画面（通过视频流传入）。当用户问"你看到什么"、"我在做什么"、"帮我看看屏幕"时，直接描述你看到的画面内容，不要说"我看不到"。", character_prompt)
-                } else {
-                    character_prompt.clone()
-                }],
+                "SystemPrompt": character_prompt,
+                "SystemMessages": [character_prompt],
                 "MaxTokens": 1024,
                 "Temperature": 0.7,
-                "TopP": 0.9
+                "TopP": 0.9,
+                "VisionConfig": if enable_video.unwrap_or(false) {
+                    serde_json::json!({
+                        "Enable": true,
+                        "SnapshotConfig": {
+                            "StreamType": 1,       // 1 = 屏幕共享流
+                            "ImageDetail": "auto",
+                            "Height": 720,
+                            "Interval": 1000,
+                            "ImagesLimit": 2
+                        }
+                    })
+                } else {
+                    serde_json::json!({ "Enable": false })
+                }
             }
         }
     });
 
-    // Add VideoConfig if video mode is enabled (screen sharing stream)
-    if enable_video.unwrap_or(false) {
-        body["Config"]["VideoConfig"] = serde_json::json!({
-            "UserId": user_id,
-            "StreamType": 1  // 1 = screen capture stream (STREAM_INDEX_SCREEN)
-        });
-    }
+    // Remove old VideoConfig block (replaced by LLMConfig.VisionConfig)
 
     let body_str = serde_json::to_string(&body).map_err(|e| format!("JSON error: {e}"))?;
 
