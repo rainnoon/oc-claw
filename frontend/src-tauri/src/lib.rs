@@ -9212,7 +9212,12 @@ async fn start_rtc_voice_chat(
         format!("001{}{}", app_id_env, general_purpose::STANDARD.encode(&content))
     };
 
-    // Build request body — correct structure per VisualVoiceChat API docs
+    let tts_params = format!(
+        r#"{{"req_params":{{"speaker":"{}","audio_params":{{"speech_rate":0}}}}}}"#,
+        tts_voice
+    );
+
+    // Build request body — aligned with official 2025-06-01 docs
     let mut body = serde_json::json!({
         "AppId": app_id,
         "RoomId": room_id,
@@ -9220,7 +9225,8 @@ async fn start_rtc_voice_chat(
         "AgentConfig": {
             "UserId": bot_user_id,
             "TargetUserId": [user_id],
-            "WelcomeMessage": "你好！我是你的桌面宠物，有什么需要我帮忙的吗？"
+            "WelcomeMessage": "你好！我是你的桌面宠物，有什么需要我帮忙的吗？",
+            "Burst": { "Enable": false, "BufferSize": 0, "Interval": 0 }
         },
         "Config": {
             "ASRConfig": {
@@ -9229,25 +9235,25 @@ async fn start_rtc_voice_chat(
                     "AppId": asr_app,
                     "AccessToken": asr_token,
                     "Mode": "bigmodel",
-                    "ApiResourceId": "volc.bigasr.sauc.duration",
+                    "ApiResourceId": asr_resource_id,
                     "StreamMode": 0
                 },
                 "VADConfig": {
-                    "SilenceTime": 600
-                }
+                    "SilenceTime": 600,
+                    "AIVAD": true
+                },
+                "InterruptConfig": {}
             },
             "TTSConfig": {
-                "Provider": "volcano",
+                "Provider": "volcano_bidirection",
                 "ProviderParams": {
                     "app": {
                         "appid": tts_app,
-                        "token": tts_token,
-                        "cluster": tts_cluster
+                        "token": tts_token
                     },
                     "audio": {
                         "voice_type": tts_voice,
-                        "speed_ratio": 1.0,
-                        "volume_ratio": 1.0
+                        "speech_rate": 0
                     },
                     "ResourceId": tts_resource_id
                 }
@@ -9260,13 +9266,15 @@ async fn start_rtc_voice_chat(
                 "SystemPrompt": character_prompt,
                 "SystemMessages": [character_prompt],
                 "MaxTokens": 1024,
+                "HistoryLength": 10,
                 "Temperature": 0.7,
                 "TopP": 0.9,
+                "ThinkingType": "disabled",
                 "VisionConfig": if enable_video.unwrap_or(false) {
                     serde_json::json!({
                         "Enable": true,
                         "SnapshotConfig": {
-                            "StreamType": 1,       // 1 = 屏幕共享流
+                            "StreamType": 1,
                             "ImageDetail": "auto",
                             "Height": 720,
                             "Interval": 1000,
@@ -9276,7 +9284,10 @@ async fn start_rtc_voice_chat(
                 } else {
                     serde_json::json!({ "Enable": false })
                 }
-            }
+            },
+            "SubtitleConfig": {},
+            "InterruptMode": 0,
+            "MemoryConfig": {}
         }
     });
 

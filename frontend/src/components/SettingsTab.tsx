@@ -19,6 +19,7 @@ const PET_VOICE_CHOICES = [
   { value: 'ICL_zh_female_bingjiaomengmei_tob', label: '病娇萌妹' },
   { value: 'ICL_zh_female_keainvsheng_tob', label: '可爱女生' },
   { value: 'ICL_zh_female_bingruoshaonv_tob', label: '病弱少女' },
+  { value: 'ICL_zh_female_wuxi_tob', label: 'wuxi' },
   { value: 'ICL_zh_female_huoponvhai_tob', label: '活泼女孩' },
   { value: 'ICL_zh_female_jiaoruoluoli_tob', label: '娇弱萝莉' },
   { value: 'ICL_zh_female_nuanxinxuejie_tob', label: '暖心学姐' },
@@ -49,9 +50,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
       role="switch"
       aria-checked={checked}
     >
-      <span
-        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${checked ? 'translate-x-5' : 'translate-x-0'}`}
-      />
+      <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
     </button>
   )
 }
@@ -62,7 +61,11 @@ function CopyCode({ text }: { text: string }) {
     <div className="flex items-center gap-1 bg-black/40 rounded overflow-hidden">
       <code className="flex-1 px-2 py-1 text-[11px] text-white/60 font-mono select-all">{text}</code>
       <button
-        onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
+        onClick={() => {
+          navigator.clipboard.writeText(text)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        }}
         className="px-1.5 py-1 text-white/30 hover:text-white/60 transition-colors shrink-0"
       >
         {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
@@ -95,7 +98,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
         // Query which SSH key was used for this connection
         let keyInfo = ''
         try {
-          const key = await invoke('get_ssh_key_info', { sshHost: conn.host, sshUser: conn.user }) as string | null
+          const key = (await invoke('get_ssh_key_info', { sshHost: conn.host, sshUser: conn.user })) as string | null
           if (key) keyInfo = ` · ${t('settings.key')} ${key}`
         } catch {}
         setTestMsg(`${result.length} ${t('settings.agents')}${keyInfo}`)
@@ -146,9 +149,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
               )
             })}
           </div>
-          <span className="text-xs text-white/30">
-            {conn.type === 'local' ? '~/.openclaw' : conn.host ? `${conn.user || 'root'}@${conn.host}` : t('settings.notConfigured')}
-          </span>
+          <span className="text-xs text-white/30">{conn.type === 'local' ? '~/.openclaw' : conn.host ? `${conn.user || 'root'}@${conn.host}` : t('settings.notConfigured')}</span>
         </div>
         <button onClick={onDelete} className="p-1.5 text-white/20 hover:text-red-400 transition-colors rounded-lg hover:bg-red-500/10">
           <Trash2 className="w-3.5 h-3.5" />
@@ -157,12 +158,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
 
       <AnimatePresence>
         {conn.type === 'remote' && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="flex flex-col gap-3 overflow-hidden"
-          >
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="flex flex-col gap-3 overflow-hidden">
             <div className="flex gap-2">
               <input
                 type="text"
@@ -183,21 +179,13 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
                 className="flex-1 bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
               />
             </div>
-            <button
-              onClick={() => setShowGuide(!showGuide)}
-              className="flex items-center gap-1 text-xs text-white/40 hover:text-white/60 transition-colors w-fit"
-            >
+            <button onClick={() => setShowGuide(!showGuide)} className="flex items-center gap-1 text-xs text-white/40 hover:text-white/60 transition-colors w-fit">
               <ChevronDown className={`w-3 h-3 transition-transform ${showGuide ? 'rotate-0' : '-rotate-90'}`} />
               {t('settings.howToConnect')}
             </button>
             <AnimatePresence>
               {showGuide && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="overflow-hidden"
-                >
+                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
                   <div className="bg-white/3 border border-white/5 rounded-lg p-3 flex flex-col gap-2 text-xs text-white/50 leading-relaxed">
                     <p className="text-white/70 font-medium">{t('settings.prerequisites')}</p>
                     <p>{t('settings.prerequisitesDesc')}</p>
@@ -227,10 +215,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
           {t('common.test')}
         </button>
         {testing && (
-          <button
-            onClick={cancelTest}
-            className="px-3 py-1.5 bg-white/5 hover:bg-red-500/20 border border-white/10 rounded-lg text-xs font-medium text-white/50 hover:text-red-400 transition-colors"
-          >
+          <button onClick={cancelTest} className="px-3 py-1.5 bg-white/5 hover:bg-red-500/20 border border-white/10 rounded-lg text-xs font-medium text-white/50 hover:text-red-400 transition-colors">
             {t('common.cancel')}
           </button>
         )}
@@ -252,7 +237,73 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petAlwaysOnTop, onTogglePetAlwaysOnTop, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petAlwaysOnTop?: boolean; onTogglePetAlwaysOnTop?: (v: boolean) => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
+export function SettingsTab({
+  notifySound,
+  onChangeNotifySound,
+  waitingSound,
+  onToggleWaitingSound,
+  soundEnabled,
+  onToggleSoundEnabled,
+  codexSoundEnabled,
+  onToggleCodexSoundEnabled,
+  cursorSoundEnabled,
+  onToggleCursorSoundEnabled,
+  autoCloseCompletion,
+  onToggleAutoCloseCompletion,
+  autoExpandOnTask,
+  onToggleAutoExpandOnTask,
+  islandBg,
+  onChangeIslandBg,
+  bgPos,
+  onChangeBgPos,
+  panelMaxHeight,
+  onChangePanelMaxHeight,
+  hoverDelay,
+  onChangeHoverDelay,
+  largeMascotScale,
+  onChangeLargeMascotScale,
+  appMode,
+  onChangeAppMode,
+  petAlwaysOnTop,
+  onTogglePetAlwaysOnTop,
+  petSfxEnabled,
+  onTogglePetSfxEnabled,
+  petIdleIntervalMin,
+  onChangePetIdleIntervalMin,
+}: {
+  notifySound: 'default' | 'manbo'
+  onChangeNotifySound: (v: 'default' | 'manbo') => void
+  waitingSound: boolean
+  onToggleWaitingSound: (v: boolean) => void
+  soundEnabled: boolean
+  onToggleSoundEnabled: (v: boolean) => void
+  codexSoundEnabled: boolean
+  onToggleCodexSoundEnabled: (v: boolean) => void
+  cursorSoundEnabled: boolean
+  onToggleCursorSoundEnabled: (v: boolean) => void
+  autoCloseCompletion: boolean
+  onToggleAutoCloseCompletion: (v: boolean) => void
+  autoExpandOnTask: boolean
+  onToggleAutoExpandOnTask: (v: boolean) => void
+  islandBg: string
+  onChangeIslandBg: (v: string) => void
+  bgPos: { x: number; y: number }
+  onChangeBgPos: (v: { x: number; y: number }) => void
+  panelMaxHeight: number
+  onChangePanelMaxHeight: (v: number) => void
+  hoverDelay: number
+  onChangeHoverDelay: (v: number) => void
+  largeMascotScale: number
+  onChangeLargeMascotScale: (v: number) => void
+  appMode?: 'coding' | 'pet' | null
+  onChangeAppMode?: (v: 'coding' | 'pet') => void
+  petAlwaysOnTop?: boolean
+  onTogglePetAlwaysOnTop?: (v: boolean) => void
+  petSfxEnabled?: boolean
+  onTogglePetSfxEnabled?: (v: boolean) => void
+  petIdleIntervalMin?: number
+  onChangePetIdleIntervalMin?: (v: number) => void
+}) {
   const { t, i18n } = useTranslation()
   const isWindowsPlatform = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
   const [connections, setConnections] = useState<OcConnection[]>([])
@@ -289,37 +340,43 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
   const [audioDevicesLoading, setAudioDevicesLoading] = useState(false)
   const [audioDevicesError, setAudioDevicesError] = useState('')
   const isPetMode = appMode === 'pet'
-  const resolveUpdateProgressText = useCallback((stage?: string, fallbackMessage?: string) => {
-    if (stage) {
-      const key = `updateModal.progress.${stage}`
-      const localized = t(key)
-      if (localized !== key) return localized
-    }
-    return fallbackMessage || ''
-  }, [t])
+  const resolveUpdateProgressText = useCallback(
+    (stage?: string, fallbackMessage?: string) => {
+      if (stage) {
+        const key = `updateModal.progress.${stage}`
+        const localized = t(key)
+        if (localized !== key) return localized
+      }
+      return fallbackMessage || ''
+    },
+    [t],
+  )
 
-  const checkForUpdate = useCallback(async (showFeedback = false) => {
-    setUpdateChecking(true)
-    if (showFeedback) {
-      setUpdateCheckResult(null)
-      setUpdateCheckMsg('')
-    }
-    try {
-      const info = await invoke('check_for_update', { lang: i18n.language }) as { current: string; latest: string; hasUpdate: boolean; url: string; notes?: string }
-      setUpdateInfo(info)
+  const checkForUpdate = useCallback(
+    async (showFeedback = false) => {
+      setUpdateChecking(true)
       if (showFeedback) {
-        setUpdateCheckResult('success')
-        setUpdateCheckMsg(info.hasUpdate ? `${t('settings.newVersionFound')} v${info.latest}` : t('settings.alreadyLatest'))
+        setUpdateCheckResult(null)
+        setUpdateCheckMsg('')
       }
-    } catch (e: any) {
-      if (showFeedback) {
-        setUpdateCheckResult('error')
-        setUpdateCheckMsg(`${t('settings.checkFailed')}${String(e)}`)
+      try {
+        const info = (await invoke('check_for_update', { lang: i18n.language })) as { current: string; latest: string; hasUpdate: boolean; url: string; notes?: string }
+        setUpdateInfo(info)
+        if (showFeedback) {
+          setUpdateCheckResult('success')
+          setUpdateCheckMsg(info.hasUpdate ? `${t('settings.newVersionFound')} v${info.latest}` : t('settings.alreadyLatest'))
+        }
+      } catch (e: any) {
+        if (showFeedback) {
+          setUpdateCheckResult('error')
+          setUpdateCheckMsg(`${t('settings.checkFailed')}${String(e)}`)
+        }
+      } finally {
+        setUpdateChecking(false)
       }
-    } finally {
-      setUpdateChecking(false)
-    }
-  }, [i18n.language, t])
+    },
+    [i18n.language, t],
+  )
 
   const refreshAudioDevices = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
@@ -332,18 +389,18 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     setAudioDevicesError('')
     try {
       let devices = await navigator.mediaDevices.enumerateDevices()
-      const labelsMissing = devices.some(d => (d.kind === 'audioinput' || d.kind === 'audiooutput') && !d.label)
+      const labelsMissing = devices.some((d) => (d.kind === 'audioinput' || d.kind === 'audiooutput') && !d.label)
       if (labelsMissing && navigator.mediaDevices.getUserMedia) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-          stream.getTracks().forEach(track => track.stop())
+          stream.getTracks().forEach((track) => track.stop())
           devices = await navigator.mediaDevices.enumerateDevices()
         } catch {
           // Keep best-effort results even if permission prompt is denied.
         }
       }
-      setAudioInputs(devices.filter(d => d.kind === 'audioinput'))
-      setAudioOutputs(devices.filter(d => d.kind === 'audiooutput'))
+      setAudioInputs(devices.filter((d) => d.kind === 'audioinput'))
+      setAudioOutputs(devices.filter((d) => d.kind === 'audiooutput'))
     } catch (e: any) {
       setAudioDevicesError(String(e?.message || e || 'Failed to enumerate devices'))
       setAudioInputs([])
@@ -377,7 +434,9 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     })()
     void checkForUpdate()
     if (showIslandBackgroundSettings) {
-      invoke('list_backgrounds').then((list: any) => setBackgrounds(list as string[])).catch(() => {})
+      invoke('list_backgrounds')
+        .then((list: any) => setBackgrounds(list as string[]))
+        .catch(() => {})
     }
   }, [checkForUpdate])
 
@@ -391,7 +450,9 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
 
   useEffect(() => {
     if (!isPetMode || typeof navigator === 'undefined' || !navigator.mediaDevices?.addEventListener) return
-    const onDeviceChange = () => { void refreshAudioDevices() }
+    const onDeviceChange = () => {
+      void refreshAudioDevices()
+    }
     navigator.mediaDevices.addEventListener('devicechange', onDeviceChange)
     return () => {
       navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange)
@@ -404,7 +465,9 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       setUpdateProgress(typeof payload.progress === 'number' ? payload.progress : null)
       setUpdateProgressMsg(resolveUpdateProgressText(payload.stage, payload.message))
     })
-    return () => { unlisten.then((fn) => fn()) }
+    return () => {
+      unlisten.then((fn) => fn())
+    }
   }, [resolveUpdateProgressText])
 
   // Load preview image for current background
@@ -412,68 +475,90 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     if (!showIslandBackgroundSettings || !islandBg) return
     // Try public path first (bundled), fallback to Rust command (custom)
     const img = new Image()
-    img.onload = () => { setBgPreviewUrl(img.src); setBgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight }) }
+    img.onload = () => {
+      setBgPreviewUrl(img.src)
+      setBgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight })
+    }
     img.onerror = () => {
-      invoke('get_background_data', { fileName: islandBg }).then((dataUrl: any) => {
-        const img2 = new Image()
-        img2.onload = () => { setBgPreviewUrl(dataUrl as string); setBgNaturalSize({ w: img2.naturalWidth, h: img2.naturalHeight }) }
-        img2.src = dataUrl as string
-      }).catch(() => {})
+      invoke('get_background_data', { fileName: islandBg })
+        .then((dataUrl: any) => {
+          const img2 = new Image()
+          img2.onload = () => {
+            setBgPreviewUrl(dataUrl as string)
+            setBgNaturalSize({ w: img2.naturalWidth, h: img2.naturalHeight })
+          }
+          img2.src = dataUrl as string
+        })
+        .catch(() => {})
     }
     img.src = `/assets/backgrounds/${islandBg}`
   }, [islandBg])
 
   // Handle file upload for custom background
-  const handleBgUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = async () => {
-      const dataUrl = reader.result as string
-      try {
-        const saved = await invoke('save_background', { fileName: file.name, dataUrl }) as string
-        // Refresh list and select
-        const list = await invoke('list_backgrounds') as string[]
-        setBackgrounds(list)
-        onChangeIslandBg(saved)
-      } catch (e: any) { console.error('save bg:', e) }
-    }
-    reader.readAsDataURL(file)
-    e.target.value = ''
-  }, [onChangeIslandBg])
+  const handleBgUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = async () => {
+        const dataUrl = reader.result as string
+        try {
+          const saved = (await invoke('save_background', { fileName: file.name, dataUrl })) as string
+          // Refresh list and select
+          const list = (await invoke('list_backgrounds')) as string[]
+          setBackgrounds(list)
+          onChangeIslandBg(saved)
+        } catch (e: any) {
+          console.error('save bg:', e)
+        }
+      }
+      reader.readAsDataURL(file)
+      e.target.value = ''
+    },
+    [onChangeIslandBg],
+  )
 
   // Drag handler for crop rectangle
-  const handleCropDrag = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    e.preventDefault()
-    const container = cropContainerRef.current
-    if (!container || !bgNaturalSize) return
-    draggingRef.current = true
-    const rect = container.getBoundingClientRect()
-    const update = (clientX: number, clientY: number) => {
-      // The crop rect aspect ratio is ~7:1 (island width:height)
-      // Container shows full image, crop rect shows visible portion
-      const x = Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100))
-      const y = Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100))
-      onChangeBgPos({ x: Math.round(x), y: Math.round(y) })
-    }
-    const isTouch = 'touches' in e
-    if (isTouch) {
-      const t = (e as React.TouchEvent).touches[0]
-      update(t.clientX, t.clientY)
-    } else {
-      update((e as React.MouseEvent).clientX, (e as React.MouseEvent).clientY)
-    }
-    const onMove = (ev: MouseEvent | TouchEvent) => {
-      if (!draggingRef.current) return
-      const p = 'touches' in ev ? (ev as TouchEvent).touches[0] : (ev as MouseEvent)
-      update(p.clientX, p.clientY)
-    }
-    const onUp = () => { draggingRef.current = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); window.removeEventListener('touchmove', onMove); window.removeEventListener('touchend', onUp) }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    window.addEventListener('touchmove', onMove)
-    window.addEventListener('touchend', onUp)
-  }, [bgNaturalSize, onChangeBgPos])
+  const handleCropDrag = useCallback(
+    (e: React.MouseEvent | React.TouchEvent) => {
+      e.preventDefault()
+      const container = cropContainerRef.current
+      if (!container || !bgNaturalSize) return
+      draggingRef.current = true
+      const rect = container.getBoundingClientRect()
+      const update = (clientX: number, clientY: number) => {
+        // The crop rect aspect ratio is ~7:1 (island width:height)
+        // Container shows full image, crop rect shows visible portion
+        const x = Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100))
+        const y = Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100))
+        onChangeBgPos({ x: Math.round(x), y: Math.round(y) })
+      }
+      const isTouch = 'touches' in e
+      if (isTouch) {
+        const t = (e as React.TouchEvent).touches[0]
+        update(t.clientX, t.clientY)
+      } else {
+        update((e as React.MouseEvent).clientX, (e as React.MouseEvent).clientY)
+      }
+      const onMove = (ev: MouseEvent | TouchEvent) => {
+        if (!draggingRef.current) return
+        const p = 'touches' in ev ? (ev as TouchEvent).touches[0] : (ev as MouseEvent)
+        update(p.clientX, p.clientY)
+      }
+      const onUp = () => {
+        draggingRef.current = false
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        window.removeEventListener('touchmove', onMove)
+        window.removeEventListener('touchend', onUp)
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+      window.addEventListener('touchmove', onMove)
+      window.addEventListener('touchend', onUp)
+    },
+    [bgNaturalSize, onChangeBgPos],
+  )
 
   const updateConnection = (idx: number, conn: OcConnection) => {
     const updated = [...connections]
@@ -494,7 +579,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
 
   const addConnection = () => {
     // Default to remote if a local connection already exists (only one local allowed)
-    const hasLocal = connections.some(c => c.type === 'local')
+    const hasLocal = connections.some((c) => c.type === 'local')
     const updated = [...connections, { id: crypto.randomUUID(), type: (hasLocal ? 'remote' : 'local') as OcConnection['type'] }]
     setConnections(updated)
     saveOcConnections(updated)
@@ -556,17 +641,15 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           <h2 className="text-lg font-medium text-white">{t('settings.appMode', 'Mode')}</h2>
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden p-4">
             <div className="flex gap-3">
-              {([
+              {[
                 { mode: 'coding' as const, label: t('settings.codingMode'), icon: '💻', desc: t('settings.codingModeDesc') },
                 { mode: 'pet' as const, label: t('settings.petMode'), icon: '🐾', desc: t('settings.petModeDesc') },
-              ]).map(({ mode, label, icon, desc }) => (
+              ].map(({ mode, label, icon, desc }) => (
                 <button
                   key={mode}
                   onClick={() => onChangeAppMode(mode)}
                   className={`flex-1 flex items-center gap-3 p-3 rounded-xl border transition-all ${
-                    appMode === mode
-                      ? 'bg-white/10 border-white/20'
-                      : 'bg-white/2 border-white/5 hover:bg-white/5 hover:border-white/10'
+                    appMode === mode ? 'bg-white/10 border-white/20' : 'bg-white/2 border-white/5 hover:bg-white/5 hover:border-white/10'
                   }`}
                 >
                   <span className="text-xl">{icon}</span>
@@ -586,17 +669,15 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           <h2 className="text-lg font-medium text-white">{t('settings.tabs', '设置分类')}</h2>
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden p-2">
             <div className="flex gap-2">
-              {([
+              {[
                 { key: 'general' as const, label: t('settings.generalTab', '通用') },
                 { key: 'audio' as const, label: t('settings.audioTab', '音频') },
-              ]).map((tab) => (
+              ].map((tab) => (
                 <button
                   key={tab.key}
                   onClick={() => setPetSettingsTab(tab.key)}
                   className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    petSettingsTab === tab.key
-                      ? 'bg-white/12 text-white border border-white/20'
-                      : 'bg-white/2 text-white/60 border border-white/5 hover:bg-white/5 hover:text-white/80'
+                    petSettingsTab === tab.key ? 'bg-white/12 text-white border border-white/20' : 'bg-white/2 text-white/60 border border-white/5 hover:bg-white/5 hover:text-white/80'
                   }`}
                 >
                   {tab.label}
@@ -620,15 +701,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                 </div>
                 <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
               </div>
-              <input
-                type="range"
-                min={4}
-                max={6}
-                step={0.1}
-                value={largeMascotScale}
-                onChange={(e) => onChangeLargeMascotScale(Number(e.target.value))}
-                className="w-full accent-white/60 h-1"
-              />
+              <input type="range" min={4} max={6} step={0.1} value={largeMascotScale} onChange={(e) => onChangeLargeMascotScale(Number(e.target.value))} className="w-full accent-white/60 h-1" />
             </div>
           </div>
         </section>
@@ -695,392 +768,372 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </section>
       )}
 
-      {!isPetMode && <>
-      {/* OpenClaw 连接 */}
-      <section className="flex flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-medium text-white">{t('settings.ocConnections')}</h2>
-          <button
-            onClick={addConnection}
-            className="flex items-center gap-1 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-white transition-colors"
-          >
-            <Plus className="w-3 h-3" /> {t('common.add')}
-          </button>
-        </div>
-        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden divide-y divide-white/5">
-          {connections.length === 0 ? (
-            <div className="text-center text-white/30 py-8 text-sm">
-              {t('settings.noConnections')}
+      {!isPetMode && (
+        <>
+          {/* OpenClaw 连接 */}
+          <section className="flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium text-white">{t('settings.ocConnections')}</h2>
+              <button
+                onClick={addConnection}
+                className="flex items-center gap-1 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-white transition-colors"
+              >
+                <Plus className="w-3 h-3" /> {t('common.add')}
+              </button>
             </div>
-          ) : (
-            connections.map((conn, idx) => (
-              <ConnectionRow
-                key={conn.id}
-                conn={conn}
-                onUpdate={(c) => updateConnection(idx, c)}
-                onDelete={() => deleteConnection(idx)}
-                disableLocal={connections.some((c, i) => i !== idx && c.type === 'local')}
-              />
-            ))
-          )}
-        </div>
-      </section>
+            <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden divide-y divide-white/5">
+              {connections.length === 0 ? (
+                <div className="text-center text-white/30 py-8 text-sm">{t('settings.noConnections')}</div>
+              ) : (
+                connections.map((conn, idx) => (
+                  <ConnectionRow
+                    key={conn.id}
+                    conn={conn}
+                    onUpdate={(c) => updateConnection(idx, c)}
+                    onDelete={() => deleteConnection(idx)}
+                    disableLocal={connections.some((c, i) => i !== idx && c.type === 'local')}
+                  />
+                ))
+              )}
+            </div>
+          </section>
 
-      {/* Claude Code */}
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">Claude Code</h2>
-        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeCode')}</span>
-              <span className="text-xs text-white/40">{t('settings.enableClaudeCodeDesc')}</span>
-              {hookStatus && <span className="text-xs text-white/30 mt-1">{hookStatus}</span>}
-            </div>
-            <Toggle checked={enableClaudeCode} onChange={toggleClaudeCode} />
-          </div>
-        </div>
-      </section>
-
-      {!isWindowsPlatform && (
-      <>
-      {/* Codex */}
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">{t('settings.codex', 'Codex')}</h2>
-        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.enableCodex', 'Enable Codex')}</span>
-              <span className="text-xs text-white/40">{t('settings.enableCodexDesc', 'Monitor local Codex sessions via Hooks')}</span>
-              {codexHookStatus && <span className="text-xs text-white/30 mt-1">{codexHookStatus}</span>}
-            </div>
-            <Toggle checked={enableCodex} onChange={toggleCodex} />
-          </div>
-        </div>
-      </section>
-
-      {/* Cursor */}
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">Cursor</h2>
-        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.enableCursor', 'Enable Cursor')}</span>
-              <span className="text-xs text-white/40">{t('settings.enableCursorDesc', 'Monitor local Cursor agent sessions via Hooks')}</span>
-              {cursorHookStatus && <span className="text-xs text-white/30 mt-1">{cursorHookStatus}</span>}
-            </div>
-            <Toggle checked={enableCursor} onChange={toggleCursor} />
-          </div>
-        </div>
-      </section>
-      </>
-      )}
-
-      {/* 显示设置 */}
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
-        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4 border-b border-white/5">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.autoExpandOnTask', 'Auto Popup')}</span>
-              <span className="text-xs text-white/40">{t('settings.autoExpandOnTaskDesc', 'Automatically expand panel when a task completes or needs input')}</span>
-            </div>
-            <Toggle checked={autoExpandOnTask} onChange={onToggleAutoExpandOnTask} />
-          </div>
-          <div className="p-4 border-b border-white/5">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-white/90">{t('settings.panelMaxHeight', 'Panel Height')}</span>
-                <span className="text-xs text-white/40">{t('settings.panelMaxHeightDesc', 'Maximum height of the expanded panel')}</span>
+          {/* Claude Code */}
+          <section className="flex flex-col gap-4">
+            <h2 className="text-lg font-medium text-white">Claude Code</h2>
+            <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+              <div className="flex items-center justify-between p-4">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeCode')}</span>
+                  <span className="text-xs text-white/40">{t('settings.enableClaudeCodeDesc')}</span>
+                  {hookStatus && <span className="text-xs text-white/30 mt-1">{hookStatus}</span>}
+                </div>
+                <Toggle checked={enableClaudeCode} onChange={toggleClaudeCode} />
               </div>
-              <span className="text-sm text-white/60 tabular-nums">{panelMaxHeight}px</span>
             </div>
-            <input
-              type="range"
-              min={200}
-              max={500}
-              step={10}
-              value={panelMaxHeight}
-              onChange={(e) => onChangePanelMaxHeight(Number(e.target.value))}
-              className="w-full accent-white/60 h-1"
-            />
-          </div>
-          <div className={`p-4 ${showIslandBackgroundSettings ? 'border-b border-white/5' : ''}`}>
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-white/90">{t('settings.hoverDelay', 'Hover Trigger Delay')}</span>
-                <span className="text-xs text-white/40">{t('settings.hoverDelayDesc', 'Delay before expanding panel on hover')}</span>
-              </div>
-              <span className="text-sm text-white/60 tabular-nums">{hoverDelay.toFixed(1)}s</span>
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={2}
-              step={0.1}
-              value={hoverDelay}
-              onChange={(e) => onChangeHoverDelay(Number(e.target.value))}
-              className="w-full accent-white/60 h-1"
-            />
-          </div>
+          </section>
+
           {!isWindowsPlatform && (
-          <div className="p-4 border-b border-white/5">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Large Mascot Size')}</span>
-                <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for large mascot mode')}</span>
-              </div>
-              <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
-            </div>
-            <input
-              type="range"
-              min={1}
-              max={6}
-              step={0.1}
-              value={largeMascotScale}
-              onChange={(e) => onChangeLargeMascotScale(Number(e.target.value))}
-              className="w-full accent-white/60 h-1"
-            />
-          </div>
-          )}
-          {showIslandBackgroundSettings && (
-            <div className="p-4">
-              <div className="flex flex-col gap-1 mb-3">
-                <span className="text-sm font-medium text-white/90">{t('settings.islandBg')}</span>
-                <span className="text-xs text-white/40">{t('settings.islandBgDesc')}</span>
-              </div>
-
-              <div className="flex gap-2 flex-wrap mb-3">
-                <button
-                  onClick={() => onChangeIslandBg('__anime__')}
-                  className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === '__anime__' ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
-                >
-                  <div style={{ width: '100%', height: '100%', background: '#F0D140' }}>
-                    <div style={{ width: '100%', height: '100%', backgroundImage: 'linear-gradient(to right, #00000015 1px, transparent 1px), linear-gradient(to bottom, #00000015 1px, transparent 1px)', backgroundSize: '8px 8px' }} />
-                  </div>
-                </button>
-                {backgrounds.map((bg) => (
-                  <button
-                    key={bg}
-                    onClick={() => onChangeIslandBg(bg)}
-                    className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === bg ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
-                  >
-                    <div style={{ width: '100%', height: '100%', backgroundImage: `url(/assets/backgrounds/${bg})`, backgroundSize: 'cover' }} />
-                  </button>
-                ))}
-                <label className="relative w-14 h-9 rounded-lg overflow-hidden border-2 border-dashed border-white/20 hover:border-white/40 transition-all cursor-pointer flex items-center justify-center">
-                  <Plus className="w-4 h-4 text-white/40" />
-                  <input type="file" accept="image/*" onChange={handleBgUpload} className="hidden" />
-                </label>
-              </div>
-
-              {islandBg !== '__anime__' && bgPreviewUrl && bgNaturalSize && (
-                <div className="flex flex-col items-center gap-2">
-                  <div
-                    ref={cropContainerRef}
-                    className="relative rounded-lg overflow-hidden cursor-crosshair select-none"
-                    style={{ width: '100%', maxWidth: 360, aspectRatio: `${bgNaturalSize.w} / ${bgNaturalSize.h}` }}
-                    onMouseDown={handleCropDrag}
-                    onTouchStart={handleCropDrag}
-                  >
-                    <img src={bgPreviewUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.4 }} />
-                    {(() => {
-                      const cropAspect = 7
-                      const imgAspect = bgNaturalSize.w / bgNaturalSize.h
-                      let cropW: number, cropH: number
-                      if (imgAspect > cropAspect) {
-                        cropH = 100
-                        cropW = (cropAspect / imgAspect) * 100
-                      } else {
-                        cropW = 100
-                        cropH = (imgAspect / cropAspect) * 100
-                      }
-                      const maxX = 100 - cropW
-                      const maxY = 100 - cropH
-                      const left = (bgPos.x / 100) * maxX
-                      const top = (bgPos.y / 100) * maxY
-                      return (
-                        <div
-                          style={{
-                            position: 'absolute',
-                            left: `${left}%`, top: `${top}%`,
-                            width: `${cropW}%`, height: `${cropH}%`,
-                            border: '2px solid white',
-                            borderRadius: 4,
-                            boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
-                            pointerEvents: 'none',
-                          }}
-                        />
-                      )
-                    })()}
-                  </div>
-                  <div className="rounded-lg overflow-hidden border border-white/10" style={{ width: '100%', maxWidth: 360, height: 50 }}>
-                    <div style={{
-                      width: '100%', height: '100%',
-                      backgroundImage: `url(${bgPreviewUrl})`,
-                      backgroundSize: 'cover',
-                      backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
-                    }} />
+            <>
+              {/* Codex */}
+              <section className="flex flex-col gap-4">
+                <h2 className="text-lg font-medium text-white">{t('settings.codex', 'Codex')}</h2>
+                <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+                  <div className="flex items-center justify-between p-4">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-medium text-white/90">{t('settings.enableCodex', 'Enable Codex')}</span>
+                      <span className="text-xs text-white/40">{t('settings.enableCodexDesc', 'Monitor local Codex sessions via Hooks')}</span>
+                      {codexHookStatus && <span className="text-xs text-white/30 mt-1">{codexHookStatus}</span>}
+                    </div>
+                    <Toggle checked={enableCodex} onChange={toggleCodex} />
                   </div>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
-      </section>
+              </section>
 
-      {/* 提示音 */}
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">{t('settings.sound')}</h2>
-        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4 border-b border-white/5">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.completionSound')}</span>
-              <span className="text-xs text-white/40">{t('settings.completionSoundDesc')}</span>
-            </div>
-            <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
-              {(['default', 'manbo'] as const).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => onChangeNotifySound(s)}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${notifySound === s ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
-                >
-                  {s === 'default' ? t('settings.defaultSound') : t('settings.manboSound')}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center justify-between p-4 border-b border-white/5">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.ccSound', 'Claude Code Completion Sound')}</span>
-              <span className="text-xs text-white/40">{t('settings.ccSoundDesc', 'Play sound when Claude Code finishes a task')}</span>
-            </div>
-            <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
-          </div>
-          {!isWindowsPlatform && (
-          <div className="flex items-center justify-between p-4 border-b border-white/5">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.codexSound', 'Codex Completion Sound')}</span>
-              <span className="text-xs text-white/40">{t('settings.codexSoundDesc', 'Play sound when Codex finishes a task')}</span>
-            </div>
-            <Toggle checked={codexSoundEnabled} onChange={onToggleCodexSoundEnabled} />
-          </div>
+              {/* Cursor */}
+              <section className="flex flex-col gap-4">
+                <h2 className="text-lg font-medium text-white">Cursor</h2>
+                <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+                  <div className="flex items-center justify-between p-4">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-medium text-white/90">{t('settings.enableCursor', 'Enable Cursor')}</span>
+                      <span className="text-xs text-white/40">{t('settings.enableCursorDesc', 'Monitor local Cursor agent sessions via Hooks')}</span>
+                      {cursorHookStatus && <span className="text-xs text-white/30 mt-1">{cursorHookStatus}</span>}
+                    </div>
+                    <Toggle checked={enableCursor} onChange={toggleCursor} />
+                  </div>
+                </div>
+              </section>
+            </>
           )}
-          {!isWindowsPlatform && (
-          <div className="flex items-center justify-between p-4 border-b border-white/5">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.cursorSound', 'Cursor Completion Sound')}</span>
-              <span className="text-xs text-white/40">{t('settings.cursorSoundDesc', 'Play sound when Cursor finishes a task')}</span>
-            </div>
-            <Toggle checked={cursorSoundEnabled} onChange={onToggleCursorSoundEnabled} />
-          </div>
-          )}
-          <div className="flex items-center justify-between p-4 border-b border-white/5">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.waitingSound')}</span>
-              <span className="text-xs text-white/40">{t('settings.waitingSoundDesc')}</span>
-            </div>
-            <Toggle checked={waitingSound} onChange={onToggleWaitingSound} />
-          </div>
-          <div className="flex items-center justify-between p-4">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.autoCloseCompletion', 'Auto-close Completion Popup')}</span>
-              <span className="text-xs text-white/40">{t('settings.autoCloseCompletionDesc', 'Automatically close the completion popup after 5 seconds')}</span>
-            </div>
-            <Toggle checked={autoCloseCompletion} onChange={onToggleAutoCloseCompletion} />
-          </div>
-        </div>
-      </section>
 
-      </>}
-      {/* 关于 */}
-      {showPetGeneral && (
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">{t('settings.about')}</h2>
-        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.currentVersion')}</span>
-              <span className="text-xs text-white/40">
-                {updateInfo ? `v${updateInfo.current}` : '...'}
-                {updateInfo && !updateInfo.hasUpdate && ` (${t('settings.latest')})`}
-                {updateInfo?.hasUpdate && (
-                  <span className="ml-2 text-emerald-400">v{updateInfo.latest} {t('settings.available')}</span>
-                )}
-              </span>
-              {updateCheckResult === 'success' && updateCheckMsg && (
-                <span className="text-xs text-emerald-400">{updateCheckMsg}</span>
+          {/* 显示设置 */}
+          <section className="flex flex-col gap-4">
+            <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
+            <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+              <div className="flex items-center justify-between p-4 border-b border-white/5">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.autoExpandOnTask', 'Auto Popup')}</span>
+                  <span className="text-xs text-white/40">{t('settings.autoExpandOnTaskDesc', 'Automatically expand panel when a task completes or needs input')}</span>
+                </div>
+                <Toggle checked={autoExpandOnTask} onChange={onToggleAutoExpandOnTask} />
+              </div>
+              <div className="p-4 border-b border-white/5">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium text-white/90">{t('settings.panelMaxHeight', 'Panel Height')}</span>
+                    <span className="text-xs text-white/40">{t('settings.panelMaxHeightDesc', 'Maximum height of the expanded panel')}</span>
+                  </div>
+                  <span className="text-sm text-white/60 tabular-nums">{panelMaxHeight}px</span>
+                </div>
+                <input type="range" min={200} max={500} step={10} value={panelMaxHeight} onChange={(e) => onChangePanelMaxHeight(Number(e.target.value))} className="w-full accent-white/60 h-1" />
+              </div>
+              <div className={`p-4 ${showIslandBackgroundSettings ? 'border-b border-white/5' : ''}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium text-white/90">{t('settings.hoverDelay', 'Hover Trigger Delay')}</span>
+                    <span className="text-xs text-white/40">{t('settings.hoverDelayDesc', 'Delay before expanding panel on hover')}</span>
+                  </div>
+                  <span className="text-sm text-white/60 tabular-nums">{hoverDelay.toFixed(1)}s</span>
+                </div>
+                <input type="range" min={0} max={2} step={0.1} value={hoverDelay} onChange={(e) => onChangeHoverDelay(Number(e.target.value))} className="w-full accent-white/60 h-1" />
+              </div>
+              {!isWindowsPlatform && (
+                <div className="p-4 border-b border-white/5">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Large Mascot Size')}</span>
+                      <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for large mascot mode')}</span>
+                    </div>
+                    <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
+                  </div>
+                  <input type="range" min={1} max={6} step={0.1} value={largeMascotScale} onChange={(e) => onChangeLargeMascotScale(Number(e.target.value))} className="w-full accent-white/60 h-1" />
+                </div>
               )}
-              {updateCheckResult === 'error' && updateCheckMsg && (
-                <span className="text-xs text-red-400 break-all">{updateCheckMsg}</span>
-              )}
-              {updateRunResult === 'success' && updateRunMsg && (
-                <span className="text-xs text-emerald-400">{updateRunMsg}</span>
-              )}
-              {updateRunResult === 'error' && updateRunMsg && (
-                <span className="text-xs text-red-400 break-all">{updateRunMsg}</span>
-              )}
-              {(updating || updateProgressMsg) && (
-                <div className="flex flex-col gap-1 pt-1">
-                  <span className="text-xs text-white/50">
-                    {updateProgressMsg}
-                    {typeof updateProgress === 'number' && updateProgress < 100 && ` · ${updateProgress}%`}
-                  </span>
-                  {typeof updateProgress === 'number' && (
-                    <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+              {showIslandBackgroundSettings && (
+                <div className="p-4">
+                  <div className="flex flex-col gap-1 mb-3">
+                    <span className="text-sm font-medium text-white/90">{t('settings.islandBg')}</span>
+                    <span className="text-xs text-white/40">{t('settings.islandBgDesc')}</span>
+                  </div>
+
+                  <div className="flex gap-2 flex-wrap mb-3">
+                    <button
+                      onClick={() => onChangeIslandBg('__anime__')}
+                      className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === '__anime__' ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
+                    >
+                      <div style={{ width: '100%', height: '100%', background: '#F0D140' }}>
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            backgroundImage: 'linear-gradient(to right, #00000015 1px, transparent 1px), linear-gradient(to bottom, #00000015 1px, transparent 1px)',
+                            backgroundSize: '8px 8px',
+                          }}
+                        />
+                      </div>
+                    </button>
+                    {backgrounds.map((bg) => (
+                      <button
+                        key={bg}
+                        onClick={() => onChangeIslandBg(bg)}
+                        className={`relative w-14 h-9 rounded-lg overflow-hidden border-2 transition-all ${islandBg === bg ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-white/10 hover:border-white/30'}`}
+                      >
+                        <div style={{ width: '100%', height: '100%', backgroundImage: `url(/assets/backgrounds/${bg})`, backgroundSize: 'cover' }} />
+                      </button>
+                    ))}
+                    <label className="relative w-14 h-9 rounded-lg overflow-hidden border-2 border-dashed border-white/20 hover:border-white/40 transition-all cursor-pointer flex items-center justify-center">
+                      <Plus className="w-4 h-4 text-white/40" />
+                      <input type="file" accept="image/*" onChange={handleBgUpload} className="hidden" />
+                    </label>
+                  </div>
+
+                  {islandBg !== '__anime__' && bgPreviewUrl && bgNaturalSize && (
+                    <div className="flex flex-col items-center gap-2">
                       <div
-                        className="h-full bg-blue-500 transition-all duration-200"
-                        style={{ width: `${Math.max(updateProgress, 2)}%` }}
-                      />
+                        ref={cropContainerRef}
+                        className="relative rounded-lg overflow-hidden cursor-crosshair select-none"
+                        style={{ width: '100%', maxWidth: 360, aspectRatio: `${bgNaturalSize.w} / ${bgNaturalSize.h}` }}
+                        onMouseDown={handleCropDrag}
+                        onTouchStart={handleCropDrag}
+                      >
+                        <img src={bgPreviewUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.4 }} />
+                        {(() => {
+                          const cropAspect = 7
+                          const imgAspect = bgNaturalSize.w / bgNaturalSize.h
+                          let cropW: number, cropH: number
+                          if (imgAspect > cropAspect) {
+                            cropH = 100
+                            cropW = (cropAspect / imgAspect) * 100
+                          } else {
+                            cropW = 100
+                            cropH = (imgAspect / cropAspect) * 100
+                          }
+                          const maxX = 100 - cropW
+                          const maxY = 100 - cropH
+                          const left = (bgPos.x / 100) * maxX
+                          const top = (bgPos.y / 100) * maxY
+                          return (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                left: `${left}%`,
+                                top: `${top}%`,
+                                width: `${cropW}%`,
+                                height: `${cropH}%`,
+                                border: '2px solid white',
+                                borderRadius: 4,
+                                boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
+                                pointerEvents: 'none',
+                              }}
+                            />
+                          )
+                        })()}
+                      </div>
+                      <div className="rounded-lg overflow-hidden border border-white/10" style={{ width: '100%', maxWidth: 360, height: 50 }}>
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            backgroundImage: `url(${bgPreviewUrl})`,
+                            backgroundSize: 'cover',
+                            backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
+                          }}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-2">
-              {updateInfo?.hasUpdate && (
-                <button
-                  onClick={async () => {
-                    setUpdating(true)
-                    setUpdateProgress(0)
-                    setUpdateProgressMsg(resolveUpdateProgressText('preparing', t('settings.preparingDownload')))
-                    setUpdateRunResult(null)
-                    setUpdateRunMsg('')
-                    try {
-                      await invoke('run_update', { dmgUrl: updateInfo?.url || '' })
-                      setUpdateRunResult('success')
-                      setUpdateRunMsg(t('settings.downloadComplete'))
-                      window.setTimeout(() => {
-                        void invoke('exit_app').catch((e: any) => {
-                          setUpdating(false)
-                          setUpdateRunResult('error')
-                          setUpdateRunMsg(`${t('settings.exitFailed')}${String(e)}`)
-                        })
-                      }, 600)
-                    } catch (e: any) {
-                      setUpdateProgress(null)
-                      setUpdateProgressMsg('')
-                      setUpdateRunResult('error')
-                      setUpdateRunMsg(`${t('settings.updateFailed')}${String(e)}`)
-                      setUpdating(false)
-                    }
-                  }}
-                  disabled={updating}
-                  className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-                >
-                  {updating ? t('settings.updating') : t('settings.updateNow')}
-                </button>
+          </section>
+
+          {/* 提示音 */}
+          <section className="flex flex-col gap-4">
+            <h2 className="text-lg font-medium text-white">{t('settings.sound')}</h2>
+            <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+              <div className="flex items-center justify-between p-4 border-b border-white/5">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.completionSound')}</span>
+                  <span className="text-xs text-white/40">{t('settings.completionSoundDesc')}</span>
+                </div>
+                <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
+                  {(['default', 'manbo'] as const).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => onChangeNotifySound(s)}
+                      className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${notifySound === s ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
+                    >
+                      {s === 'default' ? t('settings.defaultSound') : t('settings.manboSound')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center justify-between p-4 border-b border-white/5">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.ccSound', 'Claude Code Completion Sound')}</span>
+                  <span className="text-xs text-white/40">{t('settings.ccSoundDesc', 'Play sound when Claude Code finishes a task')}</span>
+                </div>
+                <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
+              </div>
+              {!isWindowsPlatform && (
+                <div className="flex items-center justify-between p-4 border-b border-white/5">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium text-white/90">{t('settings.codexSound', 'Codex Completion Sound')}</span>
+                    <span className="text-xs text-white/40">{t('settings.codexSoundDesc', 'Play sound when Codex finishes a task')}</span>
+                  </div>
+                  <Toggle checked={codexSoundEnabled} onChange={onToggleCodexSoundEnabled} />
+                </div>
               )}
-              <button
-                onClick={() => { void checkForUpdate(true) }}
-                disabled={updateChecking}
-                className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50"
-              >
-                {updateChecking ? t('settings.checking') : t('settings.checkUpdate')}
-              </button>
+              {!isWindowsPlatform && (
+                <div className="flex items-center justify-between p-4 border-b border-white/5">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium text-white/90">{t('settings.cursorSound', 'Cursor Completion Sound')}</span>
+                    <span className="text-xs text-white/40">{t('settings.cursorSoundDesc', 'Play sound when Cursor finishes a task')}</span>
+                  </div>
+                  <Toggle checked={cursorSoundEnabled} onChange={onToggleCursorSoundEnabled} />
+                </div>
+              )}
+              <div className="flex items-center justify-between p-4 border-b border-white/5">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.waitingSound')}</span>
+                  <span className="text-xs text-white/40">{t('settings.waitingSoundDesc')}</span>
+                </div>
+                <Toggle checked={waitingSound} onChange={onToggleWaitingSound} />
+              </div>
+              <div className="flex items-center justify-between p-4">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.autoCloseCompletion', 'Auto-close Completion Popup')}</span>
+                  <span className="text-xs text-white/40">{t('settings.autoCloseCompletionDesc', 'Automatically close the completion popup after 5 seconds')}</span>
+                </div>
+                <Toggle checked={autoCloseCompletion} onChange={onToggleAutoCloseCompletion} />
+              </div>
+            </div>
+          </section>
+        </>
+      )}
+      {/* 关于 */}
+      {showPetGeneral && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.about')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+            <div className="flex items-center justify-between p-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.currentVersion')}</span>
+                <span className="text-xs text-white/40">
+                  {updateInfo ? `v${updateInfo.current}` : '...'}
+                  {updateInfo && !updateInfo.hasUpdate && ` (${t('settings.latest')})`}
+                  {updateInfo?.hasUpdate && (
+                    <span className="ml-2 text-emerald-400">
+                      v{updateInfo.latest} {t('settings.available')}
+                    </span>
+                  )}
+                </span>
+                {updateCheckResult === 'success' && updateCheckMsg && <span className="text-xs text-emerald-400">{updateCheckMsg}</span>}
+                {updateCheckResult === 'error' && updateCheckMsg && <span className="text-xs text-red-400 break-all">{updateCheckMsg}</span>}
+                {updateRunResult === 'success' && updateRunMsg && <span className="text-xs text-emerald-400">{updateRunMsg}</span>}
+                {updateRunResult === 'error' && updateRunMsg && <span className="text-xs text-red-400 break-all">{updateRunMsg}</span>}
+                {(updating || updateProgressMsg) && (
+                  <div className="flex flex-col gap-1 pt-1">
+                    <span className="text-xs text-white/50">
+                      {updateProgressMsg}
+                      {typeof updateProgress === 'number' && updateProgress < 100 && ` · ${updateProgress}%`}
+                    </span>
+                    {typeof updateProgress === 'number' && (
+                      <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500 transition-all duration-200" style={{ width: `${Math.max(updateProgress, 2)}%` }} />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {updateInfo?.hasUpdate && (
+                  <button
+                    onClick={async () => {
+                      setUpdating(true)
+                      setUpdateProgress(0)
+                      setUpdateProgressMsg(resolveUpdateProgressText('preparing', t('settings.preparingDownload')))
+                      setUpdateRunResult(null)
+                      setUpdateRunMsg('')
+                      try {
+                        await invoke('run_update', { dmgUrl: updateInfo?.url || '' })
+                        setUpdateRunResult('success')
+                        setUpdateRunMsg(t('settings.downloadComplete'))
+                        window.setTimeout(() => {
+                          void invoke('exit_app').catch((e: any) => {
+                            setUpdating(false)
+                            setUpdateRunResult('error')
+                            setUpdateRunMsg(`${t('settings.exitFailed')}${String(e)}`)
+                          })
+                        }, 600)
+                      } catch (e: any) {
+                        setUpdateProgress(null)
+                        setUpdateProgressMsg('')
+                        setUpdateRunResult('error')
+                        setUpdateRunMsg(`${t('settings.updateFailed')}${String(e)}`)
+                        setUpdating(false)
+                      }
+                    }}
+                    disabled={updating}
+                    className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                  >
+                    {updating ? t('settings.updating') : t('settings.updateNow')}
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    void checkForUpdate(true)
+                  }}
+                  disabled={updateChecking}
+                  className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50"
+                >
+                  {updateChecking ? t('settings.checking') : t('settings.checkUpdate')}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
       )}
 
       {/* Voice Companion Configuration */}
@@ -1095,7 +1148,9 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                   <span className="text-xs text-white/40">{t('settings.audioDeviceRoutingDesc', '设置宠物语音使用的麦克风和扬声器')}</span>
                 </div>
                 <button
-                  onClick={() => { void refreshAudioDevices() }}
+                  onClick={() => {
+                    void refreshAudioDevices()
+                  }}
                   disabled={audioDevicesLoading}
                   className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-white transition-colors disabled:opacity-50 flex items-center gap-1.5"
                 >
@@ -1111,8 +1166,10 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                     onChange={(e) => setVoiceConfig({ ...voiceConfig, audioInputDeviceId: e.target.value })}
                     className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30 transition-colors"
                   >
-                    <option value="" className="bg-[#111]">{t('settings.autoPickInput', '自动选择（推荐）')}</option>
-                    {!!voiceConfig.audioInputDeviceId && !audioInputs.some(d => d.deviceId === voiceConfig.audioInputDeviceId) && (
+                    <option value="" className="bg-[#111]">
+                      {t('settings.autoPickInput', '自动选择（推荐）')}
+                    </option>
+                    {!!voiceConfig.audioInputDeviceId && !audioInputs.some((d) => d.deviceId === voiceConfig.audioInputDeviceId) && (
                       <option value={voiceConfig.audioInputDeviceId} className="bg-[#111]">
                         {t('settings.savedDeviceUnavailable', '已保存设备（当前不可用）')}
                       </option>
@@ -1131,8 +1188,10 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                     onChange={(e) => setVoiceConfig({ ...voiceConfig, audioOutputDeviceId: e.target.value })}
                     className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30 transition-colors"
                   >
-                    <option value="" className="bg-[#111]">{t('settings.autoPickOutput', '自动选择（推荐）')}</option>
-                    {!!voiceConfig.audioOutputDeviceId && !audioOutputs.some(d => d.deviceId === voiceConfig.audioOutputDeviceId) && (
+                    <option value="" className="bg-[#111]">
+                      {t('settings.autoPickOutput', '自动选择（推荐）')}
+                    </option>
+                    {!!voiceConfig.audioOutputDeviceId && !audioOutputs.some((d) => d.deviceId === voiceConfig.audioOutputDeviceId) && (
                       <option value={voiceConfig.audioOutputDeviceId} className="bg-[#111]">
                         {t('settings.savedDeviceUnavailable', '已保存设备（当前不可用）')}
                       </option>
@@ -1145,9 +1204,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                   </select>
                 </div>
               </div>
-              {audioDevicesError && (
-                <span className="text-xs text-red-400 break-all">{audioDevicesError}</span>
-              )}
+              {audioDevicesError && <span className="text-xs text-red-400 break-all">{audioDevicesError}</span>}
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-white/40">{t('settings.rtcAppId', 'RTC App ID')}</label>
@@ -1332,9 +1389,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                     <Check className="w-3 h-3" /> {voiceTestMsg}
                   </span>
                 )}
-                {voiceTestResult === 'error' && (
-                  <span className="text-xs text-red-400 break-all">{voiceTestMsg || t('common.failed', '失败')}</span>
-                )}
+                {voiceTestResult === 'error' && <span className="text-xs text-red-400 break-all">{voiceTestMsg || t('common.failed', '失败')}</span>}
               </div>
             </div>
           </div>
@@ -1343,40 +1398,47 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
 
       {/* Language selector */}
       {showPetGeneral && (
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-medium text-white">{t('settings.language')}</h2>
-        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.language')}</span>
-              <span className="text-xs text-white/40">{t('settings.languageDesc')}</span>
-            </div>
-            <div className="flex flex-wrap bg-black/50 p-0.5 rounded-lg border border-white/5 gap-0.5">
-              {(['zh', 'en', 'ja', 'ko', 'es', 'fr'] as const).map((lng) => (
-                <button
-                  key={lng}
-                  onClick={async () => { i18n.changeLanguage(lng); localStorage.setItem('oc-claw-lang', lng); const store = await getStore(); await store.set('oc-claw-lang', lng); await store.save(); invoke('update_tray_language', { lang: lng }).catch(() => {}) }}
-                  className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${i18n.language === lng ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
-                >
-                  {t(`settings.lang${lng.charAt(0).toUpperCase() + lng.slice(1)}`)}
-                </button>
-              ))}
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.language')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+            <div className="flex items-center justify-between p-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.language')}</span>
+                <span className="text-xs text-white/40">{t('settings.languageDesc')}</span>
+              </div>
+              <div className="flex flex-wrap bg-black/50 p-0.5 rounded-lg border border-white/5 gap-0.5">
+                {(['zh', 'en', 'ja', 'ko', 'es', 'fr'] as const).map((lng) => (
+                  <button
+                    key={lng}
+                    onClick={async () => {
+                      i18n.changeLanguage(lng)
+                      localStorage.setItem('oc-claw-lang', lng)
+                      const store = await getStore()
+                      await store.set('oc-claw-lang', lng)
+                      await store.save()
+                      invoke('update_tray_language', { lang: lng }).catch(() => {})
+                    }}
+                    className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${i18n.language === lng ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
+                  >
+                    {t(`settings.lang${lng.charAt(0).toUpperCase() + lng.slice(1)}`)}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
       )}
 
       {/* Exit app */}
       {showPetGeneral && (
-      <section className="pt-4">
-        <button
-          onClick={() => invoke('exit_app').catch(() => {})}
-          className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 rounded-xl text-sm font-medium transition-colors"
-        >
-          {t('settings.exitApp')}
-        </button>
-      </section>
+        <section className="pt-4">
+          <button
+            onClick={() => invoke('exit_app').catch(() => {})}
+            className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 rounded-xl text-sm font-medium transition-colors"
+          >
+            {t('settings.exitApp')}
+          </button>
+        </section>
       )}
     </div>
   )

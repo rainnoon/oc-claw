@@ -10,12 +10,8 @@ export async function getStore() {
 // On Windows, WebView2 maps custom URI schemes to http://<scheme>.localhost/
 // instead of <scheme>://localhost/. Detect platform to use the correct prefix.
 const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
-const ASSET_PREFIX = import.meta.env.DEV
-  ? '/assets/builtin'
-  : isWindows ? 'http://localasset.localhost' : 'localasset://localhost'
-export const CUSTOM_ASSET_PREFIX = import.meta.env.DEV
-  ? '/assets/custom'
-  : isWindows ? 'http://customasset.localhost' : 'customasset://localhost'
+const ASSET_PREFIX = import.meta.env.DEV ? '/assets/builtin' : isWindows ? 'http://localasset.localhost' : 'localasset://localhost'
+export const CUSTOM_ASSET_PREFIX = import.meta.env.DEV ? '/assets/custom' : isWindows ? 'http://customasset.localhost' : 'customasset://localhost'
 
 export const DEFAULT_CHAR_NAME = '诗歌剧'
 
@@ -24,10 +20,7 @@ export const DEFAULT_CHAR: CharacterMeta = {
   workGifs: [],
   restGifs: [],
   miniActions: {
-    top: [
-      `${ASSET_PREFIX}/${DEFAULT_CHAR_NAME}/mini/top/sleeping.gif`,
-      `${ASSET_PREFIX}/${DEFAULT_CHAR_NAME}/mini/top/working.gif`,
-    ],
+    top: [`${ASSET_PREFIX}/${DEFAULT_CHAR_NAME}/mini/top/sleeping.gif`, `${ASSET_PREFIX}/${DEFAULT_CHAR_NAME}/mini/top/working.gif`],
   },
 }
 
@@ -60,7 +53,10 @@ export async function loadCharacters(): Promise<CharacterMeta[]> {
   const charMap = ((await store.get('agent_char_map')) as Record<string, string>) || {}
   let mapDirty = false
   for (const [k, v] of Object.entries(charMap)) {
-    if (v && !validNames.has(v)) { charMap[k] = DEFAULT_CHAR_NAME; mapDirty = true }
+    if (v && !validNames.has(v)) {
+      charMap[k] = DEFAULT_CHAR_NAME
+      mapDirty = true
+    }
   }
   if (mapDirty) await store.set('agent_char_map', charMap)
 
@@ -128,7 +124,7 @@ export async function setActiveCharacter(name: string) {
 /** Load OC connections, migrating from old single-connection format if needed. */
 export async function loadOcConnections(): Promise<OcConnection[]> {
   const store = await getStore()
-  const existing = await store.get('oc_connections') as OcConnection[] | null
+  const existing = (await store.get('oc_connections')) as OcConnection[] | null
   if (existing) return existing
 
   // Migrate from old format
@@ -180,7 +176,7 @@ export interface VoiceConfig {
 
 export async function loadVoiceConfig(): Promise<VoiceConfig> {
   const store = await getStore()
-  const saved = await store.get('voice_config') as Partial<VoiceConfig> | null
+  const saved = (await store.get('voice_config')) as Partial<VoiceConfig> | null
   return {
     rtcAppId: saved?.rtcAppId || '',
     rtcAppKey: saved?.rtcAppKey || '',
@@ -204,4 +200,3 @@ export async function saveVoiceConfig(cfg: VoiceConfig): Promise<void> {
   await store.set('voice_config', cfg)
   await store.save()
 }
-
