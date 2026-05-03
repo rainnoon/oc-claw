@@ -170,6 +170,9 @@ export interface VoiceConfig {
   asrAccessToken: string
   ttsAppId: string
   ttsAccessToken: string
+  ttsVoiceType: string
+  audioInputDeviceId: string
+  audioOutputDeviceId: string
   llmEndpointId: string
   llmApiKey: string
   characterPrompt: string
@@ -187,6 +190,9 @@ export async function loadVoiceConfig(): Promise<VoiceConfig> {
     asrAccessToken: saved?.asrAccessToken || '',
     ttsAppId: saved?.ttsAppId || '',
     ttsAccessToken: saved?.ttsAccessToken || '',
+    ttsVoiceType: saved?.ttsVoiceType || 'ICL_zh_female_bingjiaomengmei_tob',
+    audioInputDeviceId: saved?.audioInputDeviceId || '',
+    audioOutputDeviceId: saved?.audioOutputDeviceId || '',
     llmEndpointId: saved?.llmEndpointId || '',
     llmApiKey: saved?.llmApiKey || '',
     characterPrompt: saved?.characterPrompt || '你是一只可爱的桌面宠物,陪伴用户玩游戏和工作',

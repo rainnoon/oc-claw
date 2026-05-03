@@ -33,6 +33,7 @@ uuid = { version = "1", features = ["v4"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+rodio = { version = "0.20", features = ["mp3"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }

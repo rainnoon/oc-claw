@@ -683,6 +683,7 @@ export default function Mini() {
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
+  const [petAlwaysOnTop, setPetAlwaysOnTop] = useState(false)
   const [petSfxEnabled, setPetSfxEnabled] = useState(true)
   const petSfxEnabledRef = useRef(true)
   // Pet mode: random idle action trigger interval, in minutes (0.5 – 30, default 2).
@@ -760,6 +761,7 @@ export default function Mini() {
   const [pomodoro, setPomodoro] = useState<PomodoroState | null>(null)
   const pomodoroRef = useRef<PomodoroState | null>(null)
   pomodoroRef.current = pomodoro
+  const dragMoveQueueRef = useRef({ pendingDx: 0, pendingDy: 0, inFlight: false })
   const pomodoroIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const petTickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const activityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -1631,6 +1633,7 @@ export default function Mini() {
         text: response,
         ttsAppId: voiceCfg.ttsAppId,
         ttsAccessToken: voiceCfg.ttsAccessToken,
+        ttsVoiceType: voiceCfg.ttsVoiceType,
       }).catch(e => console.warn('[voice] TTS failed:', e))
 
       // Auto-hide after 4 seconds
@@ -1653,6 +1656,12 @@ export default function Mini() {
   }, [])
 
   const handleVoiceToggle = useCallback(async () => {
+    const resetScreenPickerOverflow = () => {
+      document.documentElement.style.overflowX = ''
+      document.body.style.overflowX = ''
+      const root = document.getElementById('root')
+      if (root) root.style.overflowX = ''
+    }
     // If already active → stop and disconnect
     if (voiceClientRef.current?.isActive()) {
       try {
@@ -1663,10 +1672,56 @@ export default function Mini() {
       voiceClientRef.current = null
       setIsVoiceActive(false)
       setIsVoicePressing(false)
+      if (appModeRef.current === 'pet') {
+        await invoke('set_pet_screen_picker_active', { active: false }).catch(() => {})
+        await invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+        resetScreenPickerOverflow()
+      }
       return
     }
 
     // Start RTC voice chat
+    const shouldGuardScreenPicker = appModeRef.current === 'pet'
+    let hidMascotForScreenPicker = false
+    let pickerOrigin: [number, number] | null = null
+    const restoreScreenPickerWindow = async () => {
+      if (!shouldGuardScreenPicker) return
+      await invoke('set_mini_expanded', {
+        expanded: false,
+        position: mascotPositionRef.current,
+        efficiency: true,
+        mascotScale: mascotScaleRef.current,
+        largeMascot: largeMascotRef.current,
+        largeMascotScale: largeMascotScaleRef.current,
+      }).catch(() => {})
+      await invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      if (pickerOrigin) {
+        const [x, y] = pickerOrigin
+        await invoke('set_mini_origin', { x, y }).catch(() => {})
+      }
+    }
+    if (shouldGuardScreenPicker) {
+      // Match settings behavior: hide mascot while switching to picker window mode.
+      setHiding(true)
+      hidMascotForScreenPicker = true
+      // Keep horizontal overflow enabled while native picker is shown.
+      document.documentElement.style.overflowX = 'auto'
+      document.body.style.overflowX = 'auto'
+      const root = document.getElementById('root')
+      if (root) root.style.overflowX = 'auto'
+      try {
+        pickerOrigin = await invoke<[number, number]>('get_mini_origin')
+      } catch {}
+      // Reuse the same resize path as settings overlay to avoid position drift.
+      await invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
+      await invoke('set_mini_size', {
+        restore: false,
+        position: mascotPositionRef.current,
+        mascotScale: mascotScaleRef.current,
+        centerVertically: true,
+      }).catch(() => {})
+      await invoke('set_pet_screen_picker_active', { active: true }).catch(() => {})
+    }
     try {
       const storeCfg = await loadVoiceConfig()
       const envCfg = await invoke<Record<string, string>>('get_env_voice_config')
@@ -1693,6 +1748,13 @@ export default function Mini() {
       invoke('js_log', { level: 'error', msg }).catch(() => {})
       voiceClientRef.current = null
       setIsVoiceActive(false)
+    } finally {
+      if (shouldGuardScreenPicker) {
+        await invoke('set_pet_screen_picker_active', { active: false }).catch(() => {})
+        await restoreScreenPickerWindow()
+        resetScreenPickerOverflow()
+        if (hidMascotForScreenPicker) setHiding(false)
+      }
     }
   }, [handleVoiceTalk])
 
@@ -1701,6 +1763,14 @@ export default function Mini() {
       if (voiceClientRef.current) {
         voiceClientRef.current.stopVoiceChat().catch(e => console.error('[voice] cleanup stop failed:', e))
         voiceClientRef.current = null
+      }
+      document.documentElement.style.overflowX = ''
+      document.body.style.overflowX = ''
+      const root = document.getElementById('root')
+      if (root) root.style.overflowX = ''
+      invoke('set_pet_screen_picker_active', { active: false }).catch(() => {})
+      if (appModeRef.current === 'pet') {
+        invoke('set_pet_mode_window', { active: true, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
       }
     }
   }, [])
@@ -2223,6 +2293,10 @@ export default function Mini() {
       if (typeof ws === 'boolean') setWaitingSound(ws)
       const acc = await store.get('auto_close_completion')
       if (typeof acc === 'boolean') setAutoCloseCompletion(acc)
+      const paot = await store.get('pet_always_on_top')
+      const nextPetAlwaysOnTop = typeof paot === 'boolean' ? paot : false
+      setPetAlwaysOnTop(nextPetAlwaysOnTop)
+      invoke('set_pet_always_on_top', { enabled: nextPetAlwaysOnTop }).catch(() => {})
       const psfx = await store.get('pet_sfx_enabled')
       if (typeof psfx === 'boolean') { setPetSfxEnabled(psfx); petSfxEnabledRef.current = psfx }
       const piim = await store.get('pet_idle_interval_min')
@@ -2757,6 +2831,31 @@ export default function Mini() {
     e.preventDefault()
   }, [])
 
+  const flushQueuedMiniMove = useCallback(() => {
+    const q = dragMoveQueueRef.current
+    if (q.inFlight) return
+    if (q.pendingDx === 0 && q.pendingDy === 0) return
+    const dx = q.pendingDx
+    const dy = q.pendingDy
+    q.pendingDx = 0
+    q.pendingDy = 0
+    q.inFlight = true
+    invoke('move_mini_by', { dx, dy })
+      .catch(() => {})
+      .finally(() => {
+        q.inFlight = false
+        if (q.pendingDx !== 0 || q.pendingDy !== 0) flushQueuedMiniMove()
+      })
+  }, [])
+
+  const queueMiniMove = useCallback((dx: number, dy: number) => {
+    if (dx === 0 && dy === 0) return
+    const q = dragMoveQueueRef.current
+    q.pendingDx += dx
+    q.pendingDy += dy
+    flushQueuedMiniMove()
+  }, [flushQueuedMiniMove])
+
 
   const handleMascotPointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -2866,7 +2965,7 @@ export default function Mini() {
           const dy = ev.screenY - lastY
           lastX = ev.screenX
           lastY = ev.screenY
-          if (dx !== 0 || dy !== 0) invoke('move_mini_by', { dx, dy })
+          if (dx !== 0 || dy !== 0) queueMiniMove(dx, dy)
         }
 
         const cleanup = () => {
@@ -2978,7 +3077,7 @@ export default function Mini() {
         const dy = ev.screenY - lastY
         lastX = ev.screenX
         lastY = ev.screenY
-        if (dx !== 0 || dy !== 0) invoke('move_mini_by', { dx, dy })
+        if (dx !== 0 || dy !== 0) queueMiniMove(dx, dy)
       }
 
       const cleanup = () => {
@@ -3026,7 +3125,7 @@ export default function Mini() {
       window.addEventListener('pointerup', onUp)
       window.addEventListener('pointercancel', onCancel)
     },
-    [expand],
+    [expand, queueMiniMove],
   )
 
   const enterMoveMode = useCallback(async () => {
@@ -5873,6 +5972,14 @@ export default function Mini() {
                         }}
                         appMode={appMode}
                         onChangeAppMode={handleSelectAppMode}
+                        petAlwaysOnTop={petAlwaysOnTop}
+                        onTogglePetAlwaysOnTop={async (v) => {
+                          setPetAlwaysOnTop(v)
+                          const store = await getStore()
+                          await store.set('pet_always_on_top', v)
+                          await store.save()
+                          invoke('set_pet_always_on_top', { enabled: v }).catch(() => {})
+                        }}
                         petSfxEnabled={petSfxEnabled}
                         onTogglePetSfxEnabled={async (v) => {
                           setPetSfxEnabled(v)

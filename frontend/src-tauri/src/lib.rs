@@ -6,6 +6,8 @@ use std::time::SystemTime;
 
 #[cfg(target_os = "windows")]
 static FULLSCREEN_HIDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static PET_ALWAYS_ON_TOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use percent_encoding::percent_decode_str;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -47,6 +49,10 @@ static PET_CONTEXT_MENU_OPEN: AtomicBool = AtomicBool::new(false);
 /// stop button receives clicks (it sits in the centered hitbox's bottom
 /// inset region and would otherwise pass through to whatever is behind).
 static PET_POMODORO_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the native screen-picker dialog is currently open.
+/// While active, keep the full pet window interactive so picker controls
+/// (tabs, list scrolling, confirm button) are not blocked by click-through.
+static PET_SCREEN_PICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Per-host SSH backoff state.
 struct SshBackoffState {
@@ -3025,7 +3031,9 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
                 let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
             }
-            if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+            if PET_ALWAYS_ON_TOP.load(std::sync::atomic::Ordering::SeqCst)
+                || !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst)
+            {
                 win.show().map_err(|e| e.to_string())?;
                 win.set_focus().map_err(|e| e.to_string())?;
             }
@@ -3117,7 +3125,9 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
             let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
             let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
         }
-        if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+        if PET_ALWAYS_ON_TOP.load(std::sync::atomic::Ordering::SeqCst)
+            || !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst)
+        {
             let _ = win.show();
         }
     }
@@ -3619,7 +3629,9 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 }
             }
         }
-        if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+        if PET_ALWAYS_ON_TOP.load(std::sync::atomic::Ordering::SeqCst)
+            || !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst)
+        {
             let _ = win.set_always_on_top(true);
         }
     }
@@ -4735,7 +4747,9 @@ async fn set_pet_mode_window(
                     let _ = win.set_position(tauri::LogicalPosition::new(x, y));
                 }
             }
-            if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
+            if PET_ALWAYS_ON_TOP.load(std::sync::atomic::Ordering::SeqCst)
+                || !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst)
+            {
                 let _ = win.set_always_on_top(true);
                 let _ = win.show();
             }
@@ -4758,6 +4772,7 @@ async fn set_pet_mode_window(
         PET_PASSTHROUGH_ACTIVE.store(false, Ordering::SeqCst);
         PET_CONTEXT_MENU_OPEN.store(false, Ordering::SeqCst);
         PET_POMODORO_ACTIVE.store(false, Ordering::SeqCst);
+        PET_SCREEN_PICKER_ACTIVE.store(false, Ordering::SeqCst);
 
         // Shrink back to collapsed mascot size and re-enable mouse events.
         #[cfg(target_os = "macos")]
@@ -4813,6 +4828,39 @@ async fn set_pet_mode_window(
 #[tauri::command]
 async fn set_pet_pomodoro_active(active: bool) -> Result<(), String> {
     PET_POMODORO_ACTIVE.store(active, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Tell the pet-mode pass-through poll whether the native screen-picker
+/// is currently open. When true, the entire window stays interactive so
+/// the picker UI is fully clickable/scrollable.
+#[tauri::command]
+async fn set_pet_screen_picker_active(active: bool) -> Result<(), String> {
+    PET_SCREEN_PICKER_ACTIVE.store(active, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Toggle an override that keeps the pet window always on top.
+/// When disabled, window z-order behavior follows the normal fullscreen logic.
+#[tauri::command]
+async fn set_pet_always_on_top(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        PET_ALWAYS_ON_TOP.store(enabled, Ordering::SeqCst);
+        if let Some(win) = app.get_webview_window("mini") {
+            if enabled {
+                FULLSCREEN_HIDING.store(false, Ordering::SeqCst);
+                let _ = win.set_always_on_top(true);
+                let _ = win.show();
+            } else {
+                let _ = win.set_always_on_top(!FULLSCREEN_HIDING.load(Ordering::SeqCst));
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, enabled);
+    }
     Ok(())
 }
 
@@ -5000,9 +5048,10 @@ fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_s
     while PET_PASSTHROUGH_ACTIVE.load(Ordering::SeqCst) {
         let menu_open = PET_CONTEXT_MENU_OPEN.load(Ordering::SeqCst);
         let pomodoro_active = PET_POMODORO_ACTIVE.load(Ordering::SeqCst);
+        let screen_picker_active = PET_SCREEN_PICKER_ACTIVE.load(Ordering::SeqCst);
         let frame = MINI_WINDOW_FRAME.lock().ok().and_then(|g| *g);
 
-        let should_be_interactive = if menu_open || pomodoro_active {
+        let should_be_interactive = if menu_open || pomodoro_active || screen_picker_active {
             true
         } else if let Some((fx, fy, fw, _fh)) = frame {
             let cursor = macos_cursor_position();
@@ -5094,8 +5143,9 @@ fn pet_passthrough_poll_windows(app: tauri::AppHandle, mascot_scale: f64, large_
     while PET_PASSTHROUGH_ACTIVE.load(Ordering::SeqCst) {
         let menu_open = PET_CONTEXT_MENU_OPEN.load(Ordering::SeqCst);
         let pomodoro_active = PET_POMODORO_ACTIVE.load(Ordering::SeqCst);
+        let screen_picker_active = PET_SCREEN_PICKER_ACTIVE.load(Ordering::SeqCst);
 
-        let should_be_interactive = if menu_open || pomodoro_active {
+        let should_be_interactive = if menu_open || pomodoro_active || screen_picker_active {
             true
         } else {
             // Read cursor position and window geometry in physical pixels.
@@ -5194,11 +5244,13 @@ async fn set_mini_size(
     mascot_scale: Option<f64>,
     large_mascot: Option<bool>,
     large_mascot_scale: Option<f64>,
+    center_vertically: Option<bool>,
 ) -> Result<(), String> {
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let pos = position.unwrap_or_else(|| "right".to_string());
     let want_top = keep_on_top.unwrap_or(restore);
     let is_pet_context = pet_context.unwrap_or(false);
+    let center_vertically = center_vertically.unwrap_or(false);
     let mascot_scale = sanitized_mascot_scale(mascot_scale);
     let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
 
@@ -5361,7 +5413,11 @@ async fn set_mini_size(
                         let win_w = (sw * 0.85).round();
                         let win_h = (sh * 0.85).round();
                         let x = sx + (sw - win_w) / 2.0;
-                        let y = sy + sh - win_h;
+                        let y = if center_vertically {
+                            sy + (sh - win_h) / 2.0
+                        } else {
+                            sy + sh - win_h
+                        };
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setLevel: if want_top { 27isize } else { 0isize }];
@@ -5402,7 +5458,11 @@ async fn set_mini_size(
                 let win_w = (base_w * ui).round();
                 let win_h = (base_h * ui).round();
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                let _ = win.set_always_on_top(want_top && !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst));
+                let _ = win.set_always_on_top(
+                    want_top
+                        && (PET_ALWAYS_ON_TOP.load(std::sync::atomic::Ordering::SeqCst)
+                            || !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst)),
+                );
                 if large_mascot.unwrap_or(false) {
                     let margin = (10.0 * ui).round();
                     let x = mx + sw - win_w - margin;
@@ -5417,9 +5477,14 @@ async fn set_mini_size(
                 let win_w = (sw * 0.85).round();
                 let win_h = (sh * 0.85).round();
                 let x = mx + (sw - win_w) / 2.0;
-                let _ = win.set_always_on_top(want_top && !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst));
+                let y = if center_vertically { my + (sh - win_h) / 2.0 } else { my };
+                let _ = win.set_always_on_top(
+                    want_top
+                        && (PET_ALWAYS_ON_TOP.load(std::sync::atomic::Ordering::SeqCst)
+                            || !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst)),
+                );
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, y));
             }
         }
     }
@@ -6342,9 +6407,19 @@ async fn speak_text(
     text: String,
     tts_app_id: String,
     tts_access_token: String,
+    tts_voice_type: Option<String>,
 ) -> Result<(), String> {
     let app_id = std::env::var("VOLCANO_TTS_APP_ID").unwrap_or(tts_app_id);
     let token  = std::env::var("VOLCANO_TTS_ACCESS_TOKEN").unwrap_or(tts_access_token);
+    let voice_type = std::env::var("VOLCANO_TTS_VOICE_TYPE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| tts_voice_type.filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| "ICL_zh_female_bingjiaomengmei_tob".to_string());
+    let tts_cluster = std::env::var("VOLCANO_TTS_CLUSTER")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "volcano_tts".to_string());
 
     if app_id.is_empty() || token.is_empty() {
         return Ok(()); // silently skip when not configured
@@ -6354,10 +6429,10 @@ async fn speak_text(
     let req_id = uuid::Uuid::new_v4().to_string();
 
     let body = serde_json::json!({
-        "app": { "appid": app_id, "token": token, "cluster": "volcano_tts" },
+        "app": { "appid": app_id, "token": token, "cluster": tts_cluster },
         "user": { "uid": "oc-claw-user" },
         "audio": {
-            "voice_type": "ICL_zh_female_keainvsheng_tob",
+            "voice_type": voice_type,
             "encoding": "mp3",
             "speed_ratio": 1.0,
             "volume_ratio": 1.0
@@ -6376,33 +6451,48 @@ async fn speak_text(
 
     let json: serde_json::Value = resp.json().await.map_err(|e| format!("TTS parse error: {e}"))?;
 
+    let code = json["code"].as_i64().unwrap_or(3000);
+    if code != 3000 {
+        let msg = json["message"]
+            .as_str()
+            .or_else(|| json["msg"].as_str())
+            .unwrap_or("unknown error");
+        return Err(format!("TTS API error (code {}): {}", code, msg));
+    }
+
     let audio_b64 = json["data"]["audio"]
         .as_str()
-        .ok_or("No audio field in TTS response")?;
+        .or_else(|| json["data"].as_str())
+        .or_else(|| json["result"]["audio"].as_str())
+        .ok_or_else(|| {
+            let msg = json["message"]
+                .as_str()
+                .or_else(|| json["msg"].as_str())
+                .unwrap_or("unknown response");
+            format!("No audio field in TTS response: {}", msg)
+        })?;
 
     use base64::{Engine as _, engine::general_purpose};
     let audio_bytes = general_purpose::STANDARD
         .decode(audio_b64)
         .map_err(|e| format!("Base64 decode error: {e}"))?;
 
-    let tmp_path = std::env::temp_dir().join("oc_claw_tts.mp3");
-    std::fs::write(&tmp_path, &audio_bytes).map_err(|e| format!("Write tmp file error: {e}"))?;
+    // Play in-process to avoid spawning system media players.
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        use rodio::{Decoder, OutputStream, Sink};
+        use std::io::{BufReader, Cursor};
 
-    #[cfg(target_os = "windows")]
-    {
-        let path_str = tmp_path.to_string_lossy().to_string();
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "/min", "wmplayer", &path_str])
-            .spawn()
-            .map_err(|e| format!("Play error: {e}"))?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("afplay")
-            .arg(&tmp_path)
-            .spawn()
-            .map_err(|e| format!("Play error: {e}"))?;
-    }
+        let cursor = Cursor::new(audio_bytes);
+        let reader = BufReader::new(cursor);
+        let source = Decoder::new(reader).map_err(|e| format!("Decode audio error: {e}"))?;
+        let (_stream, handle) = OutputStream::try_default().map_err(|e| format!("Open output device error: {e}"))?;
+        let sink = Sink::try_new(&handle).map_err(|e| format!("Create sink error: {e}"))?;
+        sink.append(source);
+        sink.sleep_until_end();
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Audio playback task failed: {e}"))??;
 
     Ok(())
 }
@@ -8833,6 +8923,7 @@ fn get_env_voice_config() -> serde_json::Value {
         "asrAccessToken":   std::env::var("VOLCANO_ASR_ACCESS_TOKEN").unwrap_or_default(),
         "ttsAppId":         std::env::var("VOLCANO_TTS_APP_ID").unwrap_or_default(),
         "ttsAccessToken":   std::env::var("VOLCANO_TTS_ACCESS_TOKEN").unwrap_or_default(),
+        "ttsVoiceType":     std::env::var("VOLCANO_TTS_VOICE_TYPE").unwrap_or_default(),
         "llmEndpointId":    std::env::var("VOLCANO_LLM_ENDPOINT_ID").unwrap_or_default(),
         "llmApiKey":        std::env::var("VOLCANO_LLM_API_KEY").unwrap_or_default(),
         "characterPrompt":  std::env::var("VOLCANO_CHARACTER_PROMPT").unwrap_or_default(),
@@ -9044,6 +9135,7 @@ async fn start_rtc_voice_chat(
     asr_access_token: String,
     tts_app_id: String,
     tts_access_token: String,
+    tts_voice_type: Option<String>,
     llm_endpoint_id: String,
     llm_api_key: String,
     character_prompt: String,
@@ -9058,6 +9150,19 @@ async fn start_rtc_voice_chat(
         .unwrap_or_else(|_| "volc.bigasr.sauc.duration".to_string());
     let tts_app = std::env::var("VOLCANO_TTS_APP_ID").unwrap_or(tts_app_id);
     let tts_token = std::env::var("VOLCANO_TTS_ACCESS_TOKEN").unwrap_or(tts_access_token);
+    let tts_voice = std::env::var("VOLCANO_TTS_VOICE_TYPE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| tts_voice_type.filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| "ICL_zh_female_bingjiaomengmei_tob".to_string());
+    let tts_resource_id = std::env::var("VOLCANO_TTS_RESOURCE_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "seed-tts-1.0".to_string());
+    let tts_cluster = std::env::var("VOLCANO_TTS_CLUSTER")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "volcano_tts".to_string());
     let llm_endpoint = std::env::var("VOLCANO_LLM_ENDPOINT_ID").unwrap_or(llm_endpoint_id);
     let llm_key = std::env::var("VOLCANO_LLM_API_KEY").unwrap_or(llm_api_key);
 
@@ -9137,13 +9242,14 @@ async fn start_rtc_voice_chat(
                     "app": {
                         "appid": tts_app,
                         "token": tts_token,
-                        "cluster": "volcano_tts"
+                        "cluster": tts_cluster
                     },
                     "audio": {
-                        "voice_type": "zh_female_mengyatou_mars_bigtts",
+                        "voice_type": tts_voice,
                         "speed_ratio": 1.0,
                         "volume_ratio": 1.0
-                    }
+                    },
+                    "ResourceId": tts_resource_id
                 }
             },
             "LLMConfig": {
@@ -11466,7 +11572,9 @@ pub fn run() {
                                 (Some(fs_mon), Some(mini_mon)) if mini_mon == fs_mon
                             );
 
-                            if same_monitor {
+                            let force_topmost = PET_ALWAYS_ON_TOP.load(std::sync::atomic::Ordering::SeqCst);
+
+                            if same_monitor && !force_topmost {
                                 non_fs_streak = 0;
                                 if !was_hidden {
                                     log::info!("[fullscreen] detected fullscreen app on same monitor, moving mini off-screen");
@@ -11492,8 +11600,12 @@ pub fn run() {
                                     was_hidden = true;
                                 }
                             } else if was_hidden {
-                                non_fs_streak += 1;
-                                if non_fs_streak >= RESTORE_THRESHOLD {
+                                if force_topmost {
+                                    non_fs_streak = RESTORE_THRESHOLD;
+                                } else {
+                                    non_fs_streak += 1;
+                                }
+                                if force_topmost || non_fs_streak >= RESTORE_THRESHOLD {
                                     log::info!("[fullscreen] fullscreen exited or on different monitor, restoring mini position");
                                     FULLSCREEN_HIDING.store(false, std::sync::atomic::Ordering::SeqCst);
                                     if let Some(pos) = saved_pos.take() {
@@ -11595,7 +11707,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, generate_rtc_token, start_rtc_voice_chat, update_rtc_voice_chat, stop_rtc_voice_chat, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, take_screenshot, chat_with_pet, speak_text, get_env_voice_config, js_log])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, generate_rtc_token, start_rtc_voice_chat, update_rtc_voice_chat, stop_rtc_voice_chat, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, set_pet_screen_picker_active, set_pet_always_on_top, get_now_playing, get_system_idle_time, take_screenshot, chat_with_pet, speak_text, get_env_voice_config, js_log])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

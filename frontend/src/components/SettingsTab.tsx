@@ -15,6 +15,32 @@ type UpdateProgressPayload = {
   message?: string
 }
 
+const PET_VOICE_CHOICES = [
+  { value: 'ICL_zh_female_bingjiaomengmei_tob', label: '病娇萌妹' },
+  { value: 'ICL_zh_female_keainvsheng_tob', label: '可爱女生' },
+  { value: 'ICL_zh_female_bingruoshaonv_tob', label: '病弱少女' },
+  { value: 'ICL_zh_female_huoponvhai_tob', label: '活泼女孩' },
+  { value: 'ICL_zh_female_jiaoruoluoli_tob', label: '娇弱萝莉' },
+  { value: 'ICL_zh_female_nuanxinxuejie_tob', label: '暖心学姐' },
+  { value: 'ICL_zh_female_tiaopigongzhu_tob', label: '调皮公主' },
+  { value: 'ICL_zh_female_aojiaonvyou_tob', label: '傲娇女友' },
+  { value: 'ICL_zh_female_tiexinnvyou_tob', label: '贴心女友' },
+  { value: 'ICL_zh_female_qiuling_v1_tob', label: '倾心少女' },
+  { value: 'ICL_zh_female_chunzhenshaonv_e588402fb8ad_tob', label: '纯真少女' },
+  { value: 'ICL_zh_female_tianmei_v1_tob', label: '甜美活泼' },
+  { value: 'ICL_zh_female_yuxin_v1_tob', label: '初恋女友' },
+  { value: 'zh_female_mengyatou_mars_bigtts', label: '萌丫头' },
+  { value: 'zh_female_linjianvhai_moon_bigtts', label: '邻家女孩' },
+  { value: 'zh_female_linjia_mars_bigtts', label: '邻家小妹' },
+  { value: 'zh_female_tianmeixiaoyuan_moon_bigtts', label: '甜美小源' },
+  { value: 'zh_female_tianmeiyueyue_moon_bigtts', label: '甜美悦悦' },
+  { value: 'zh_female_tianmeitaozi_mars_bigtts', label: '甜美桃子' },
+  { value: 'zh_female_qingchezizi_moon_bigtts', label: '清澈梓梓' },
+  { value: 'zh_female_wenrouxiaoya_moon_bigtts', label: '温柔小雅' },
+  { value: 'zh_female_shaoergushi_mars_bigtts', label: '少儿故事' },
+  { value: 'zh_female_yingtaowanzi_mars_bigtts', label: '樱桃丸子' },
+] as const
+
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
@@ -172,7 +198,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
                   exit={{ height: 0, opacity: 0 }}
                   className="overflow-hidden"
                 >
-                  <div className="bg-white/[0.03] border border-white/5 rounded-lg p-3 flex flex-col gap-2 text-xs text-white/50 leading-relaxed">
+                  <div className="bg-white/3 border border-white/5 rounded-lg p-3 flex flex-col gap-2 text-xs text-white/50 leading-relaxed">
                     <p className="text-white/70 font-medium">{t('settings.prerequisites')}</p>
                     <p>{t('settings.prerequisitesDesc')}</p>
                     <p className="text-white/70 font-medium pt-1">{t('settings.steps')}</p>
@@ -226,7 +252,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
+export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petAlwaysOnTop, onTogglePetAlwaysOnTop, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petAlwaysOnTop?: boolean; onTogglePetAlwaysOnTop?: (v: boolean) => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const isWindowsPlatform = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
   const [connections, setConnections] = useState<OcConnection[]>([])
@@ -254,6 +280,15 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
   const [voiceConfig, setVoiceConfig] = useState<VoiceConfig | null>(null)
   const [voiceSaving, setVoiceSaving] = useState(false)
   const [voiceSaveResult, setVoiceSaveResult] = useState<'success' | null>(null)
+  const [voiceTesting, setVoiceTesting] = useState(false)
+  const [voiceTestResult, setVoiceTestResult] = useState<'success' | 'error' | null>(null)
+  const [voiceTestMsg, setVoiceTestMsg] = useState('')
+  const [petSettingsTab, setPetSettingsTab] = useState<'general' | 'audio'>('general')
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
+  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([])
+  const [audioDevicesLoading, setAudioDevicesLoading] = useState(false)
+  const [audioDevicesError, setAudioDevicesError] = useState('')
+  const isPetMode = appMode === 'pet'
   const resolveUpdateProgressText = useCallback((stage?: string, fallbackMessage?: string) => {
     if (stage) {
       const key = `updateModal.progress.${stage}`
@@ -286,6 +321,38 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     }
   }, [i18n.language, t])
 
+  const refreshAudioDevices = useCallback(async () => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
+      setAudioDevicesError(t('settings.audioDevicesUnsupported', '当前环境不支持音频设备枚举'))
+      setAudioInputs([])
+      setAudioOutputs([])
+      return
+    }
+    setAudioDevicesLoading(true)
+    setAudioDevicesError('')
+    try {
+      let devices = await navigator.mediaDevices.enumerateDevices()
+      const labelsMissing = devices.some(d => (d.kind === 'audioinput' || d.kind === 'audiooutput') && !d.label)
+      if (labelsMissing && navigator.mediaDevices.getUserMedia) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          stream.getTracks().forEach(track => track.stop())
+          devices = await navigator.mediaDevices.enumerateDevices()
+        } catch {
+          // Keep best-effort results even if permission prompt is denied.
+        }
+      }
+      setAudioInputs(devices.filter(d => d.kind === 'audioinput'))
+      setAudioOutputs(devices.filter(d => d.kind === 'audiooutput'))
+    } catch (e: any) {
+      setAudioDevicesError(String(e?.message || e || 'Failed to enumerate devices'))
+      setAudioInputs([])
+      setAudioOutputs([])
+    } finally {
+      setAudioDevicesLoading(false)
+    }
+  }, [t])
+
   useEffect(() => {
     ;(async () => {
       const conns = await loadOcConnections()
@@ -313,6 +380,23 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       invoke('list_backgrounds').then((list: any) => setBackgrounds(list as string[])).catch(() => {})
     }
   }, [checkForUpdate])
+
+  useEffect(() => {
+    if (!isPetMode) {
+      setPetSettingsTab('general')
+      return
+    }
+    void refreshAudioDevices()
+  }, [isPetMode, refreshAudioDevices])
+
+  useEffect(() => {
+    if (!isPetMode || typeof navigator === 'undefined' || !navigator.mediaDevices?.addEventListener) return
+    const onDeviceChange = () => { void refreshAudioDevices() }
+    navigator.mediaDevices.addEventListener('devicechange', onDeviceChange)
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange)
+    }
+  }, [isPetMode, refreshAudioDevices])
 
   useEffect(() => {
     const unlisten = listen<UpdateProgressPayload>('update-progress', (event) => {
@@ -461,7 +545,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     }
   }
 
-  const isPetMode = appMode === 'pet'
+  const showPetGeneral = !isPetMode || petSettingsTab === 'general'
+  const showPetAudio = !isPetMode || petSettingsTab === 'audio'
 
   return (
     <div className="max-w-2xl mx-auto pt-10 pb-20 px-6 flex flex-col gap-10">
@@ -481,7 +566,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                   className={`flex-1 flex items-center gap-3 p-3 rounded-xl border transition-all ${
                     appMode === mode
                       ? 'bg-white/10 border-white/20'
-                      : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.05] hover:border-white/10'
+                      : 'bg-white/2 border-white/5 hover:bg-white/5 hover:border-white/10'
                   }`}
                 >
                   <span className="text-xl">{icon}</span>
@@ -496,8 +581,34 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </section>
       )}
 
+      {isPetMode && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.tabs', '设置分类')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden p-2">
+            <div className="flex gap-2">
+              {([
+                { key: 'general' as const, label: t('settings.generalTab', '通用') },
+                { key: 'audio' as const, label: t('settings.audioTab', '音频') },
+              ]).map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setPetSettingsTab(tab.key)}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    petSettingsTab === tab.key
+                      ? 'bg-white/12 text-white border border-white/20'
+                      : 'bg-white/2 text-white/60 border border-white/5 hover:bg-white/5 hover:text-white/80'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Pet mode: mascot size */}
-      {isPetMode && !isWindowsPlatform && (
+      {isPetMode && showPetGeneral && !isWindowsPlatform && (
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -524,7 +635,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       )}
 
       {/* Pet mode: character voice toggle */}
-      {isPetMode && onTogglePetSfxEnabled && (
+      {isPetMode && showPetGeneral && onTogglePetSfxEnabled && (
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-medium text-white">{t('settings.sound')}</h2>
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -539,8 +650,24 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </section>
       )}
 
+      {/* Pet mode: window level */}
+      {isPetMode && showPetGeneral && onTogglePetAlwaysOnTop && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg font-medium text-white">{t('settings.petWindow', '窗口')}</h2>
+          <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+            <div className="flex items-center justify-between p-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.petAlwaysOnTop', '始终置顶')}</span>
+                <span className="text-xs text-white/40">{t('settings.petAlwaysOnTopDesc', '让角色窗口保持在其他窗口上层')}</span>
+              </div>
+              <Toggle checked={petAlwaysOnTop ?? false} onChange={onTogglePetAlwaysOnTop} />
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Pet mode: random idle action interval */}
-      {isPetMode && onChangePetIdleIntervalMin && (
+      {isPetMode && showPetGeneral && onChangePetIdleIntervalMin && (
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-medium text-white">{t('settings.petBehavior', 'Behavior')}</h2>
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -866,6 +993,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
 
       </>}
       {/* 关于 */}
+      {showPetGeneral && (
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.about')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -953,13 +1081,73 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           </div>
         </div>
       </section>
+      )}
 
       {/* Voice Companion Configuration */}
-      {isPetMode && voiceConfig && (
+      {isPetMode && showPetAudio && voiceConfig && (
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-medium text-white">🎙️ {t('settings.voiceCompanion', '语音陪伴配置')}</h2>
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
             <div className="p-4 flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.audioDeviceRouting', '音频设备路由')}</span>
+                  <span className="text-xs text-white/40">{t('settings.audioDeviceRoutingDesc', '设置宠物语音使用的麦克风和扬声器')}</span>
+                </div>
+                <button
+                  onClick={() => { void refreshAudioDevices() }}
+                  disabled={audioDevicesLoading}
+                  className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-white transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {audioDevicesLoading && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {t('settings.refreshDevices', '刷新设备')}
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.audioInputDevice', '输入设备（麦克风）')}</label>
+                  <select
+                    value={voiceConfig.audioInputDeviceId}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, audioInputDeviceId: e.target.value })}
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30 transition-colors"
+                  >
+                    <option value="" className="bg-[#111]">{t('settings.autoPickInput', '自动选择（推荐）')}</option>
+                    {!!voiceConfig.audioInputDeviceId && !audioInputs.some(d => d.deviceId === voiceConfig.audioInputDeviceId) && (
+                      <option value={voiceConfig.audioInputDeviceId} className="bg-[#111]">
+                        {t('settings.savedDeviceUnavailable', '已保存设备（当前不可用）')}
+                      </option>
+                    )}
+                    {audioInputs.map((device, idx) => (
+                      <option key={device.deviceId || `input-${idx}`} value={device.deviceId} className="bg-[#111]">
+                        {device.label || `${t('settings.micFallback', '麦克风')} ${idx + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-white/40">{t('settings.audioOutputDevice', '输出设备（扬声器）')}</label>
+                  <select
+                    value={voiceConfig.audioOutputDeviceId}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, audioOutputDeviceId: e.target.value })}
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30 transition-colors"
+                  >
+                    <option value="" className="bg-[#111]">{t('settings.autoPickOutput', '自动选择（推荐）')}</option>
+                    {!!voiceConfig.audioOutputDeviceId && !audioOutputs.some(d => d.deviceId === voiceConfig.audioOutputDeviceId) && (
+                      <option value={voiceConfig.audioOutputDeviceId} className="bg-[#111]">
+                        {t('settings.savedDeviceUnavailable', '已保存设备（当前不可用）')}
+                      </option>
+                    )}
+                    {audioOutputs.map((device, idx) => (
+                      <option key={device.deviceId || `output-${idx}`} value={device.deviceId} className="bg-[#111]">
+                        {device.label || `${t('settings.speakerFallback', '扬声器')} ${idx + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              {audioDevicesError && (
+                <span className="text-xs text-red-400 break-all">{audioDevicesError}</span>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-white/40">{t('settings.rtcAppId', 'RTC App ID')}</label>
@@ -1041,6 +1229,21 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                     className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
                   />
                 </div>
+                <div className="flex flex-col gap-1 col-span-2">
+                  <label className="text-xs text-white/40">{t('settings.ttsVoiceType', 'TTS 音色')}</label>
+                  <select
+                    value={voiceConfig.ttsVoiceType}
+                    onChange={(e) => setVoiceConfig({ ...voiceConfig, ttsVoiceType: e.target.value })}
+                    className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30 transition-colors"
+                  >
+                    {PET_VOICE_CHOICES.map((voice) => (
+                      <option key={voice.value} value={voice.value} className="bg-[#111]">
+                        {voice.label} · {voice.value}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-[11px] text-white/35">{t('settings.ttsVoiceTypeDesc', '已筛选：可爱、女生、中文')}</span>
+                </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-white/40">{t('settings.llmEndpointId', 'LLM Endpoint ID')}</label>
                   <input
@@ -1075,6 +1278,33 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               <div className="flex items-center gap-2">
                 <button
                   onClick={async () => {
+                    setVoiceTesting(true)
+                    setVoiceTestResult(null)
+                    setVoiceTestMsg('')
+                    try {
+                      await invoke('speak_text', {
+                        text: '你好呀，我是你的桌面宠物，很高兴见到你。',
+                        ttsAppId: voiceConfig.ttsAppId,
+                        ttsAccessToken: voiceConfig.ttsAccessToken,
+                        ttsVoiceType: voiceConfig.ttsVoiceType,
+                      })
+                      setVoiceTestResult('success')
+                      setVoiceTestMsg(t('settings.voiceTestPlayed', '试音已播放'))
+                      setTimeout(() => setVoiceTestResult(null), 2000)
+                    } catch (e: any) {
+                      setVoiceTestResult('error')
+                      setVoiceTestMsg(String(e))
+                    }
+                    setVoiceTesting(false)
+                  }}
+                  disabled={voiceTesting}
+                  className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {voiceTesting && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {t('settings.testVoice', '试音')}
+                </button>
+                <button
+                  onClick={async () => {
                     setVoiceSaving(true)
                     setVoiceSaveResult(null)
                     try {
@@ -1097,6 +1327,14 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
                     <Check className="w-3 h-3" /> {t('common.saved', '已保存')}
                   </span>
                 )}
+                {voiceTestResult === 'success' && (
+                  <span className="text-xs text-emerald-400 flex items-center gap-1">
+                    <Check className="w-3 h-3" /> {voiceTestMsg}
+                  </span>
+                )}
+                {voiceTestResult === 'error' && (
+                  <span className="text-xs text-red-400 break-all">{voiceTestMsg || t('common.failed', '失败')}</span>
+                )}
               </div>
             </div>
           </div>
@@ -1104,6 +1342,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       )}
 
       {/* Language selector */}
+      {showPetGeneral && (
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.language')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -1126,8 +1365,10 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           </div>
         </div>
       </section>
+      )}
 
       {/* Exit app */}
+      {showPetGeneral && (
       <section className="pt-4">
         <button
           onClick={() => invoke('exit_app').catch(() => {})}
@@ -1136,6 +1377,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           {t('settings.exitApp')}
         </button>
       </section>
+      )}
     </div>
   )
 }

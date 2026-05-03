@@ -10,6 +10,9 @@ export interface RTCVoiceConfig {
   asrAccessToken: string
   ttsAppId: string
   ttsAccessToken: string
+  ttsVoiceType: string
+  audioInputDeviceId: string
+  audioOutputDeviceId: string
   llmEndpointId: string
   llmApiKey: string
   characterPrompt: string
@@ -24,7 +27,7 @@ function rlog(level: 'info' | 'warn' | 'error', msg: string) {
 
 function tlv2String(buf: ArrayBufferLike): { type: string; value: string } {
   const typeBuffer = new Uint8Array(buf, 0, 4)
-  const lenBuffer  = new Uint8Array(buf, 4, 4)
+  const lenBuffer = new Uint8Array(buf, 4, 4)
   const valueBuffer = new Uint8Array(buf, 8)
   let type = ''
   for (let i = 0; i < 4; i++) type += String.fromCharCode(typeBuffer[i])
@@ -113,9 +116,7 @@ export class VoiceRTCClient {
         if (!infos?.length) return
         const hasSound = infos.some((i: any) => (i.audioPropertiesInfo?.linearVolume ?? 0) > 0)
         if (hasSound) {
-          const levels = infos.map((i: any) =>
-            `${i.streamKey?.userId}:${i.audioPropertiesInfo?.linearVolume}`
-          ).join(', ')
+          const levels = infos.map((i: any) => `${i.streamKey?.userId}:${i.audioPropertiesInfo?.linearVolume}`).join(', ')
           rlog('info', `remote audio levels: ${levels}`)
         }
       })
@@ -153,55 +154,90 @@ export class VoiceRTCClient {
       const perms = await VERTC.enableDevices({ video: false, audio: true })
       rlog('info', `device permissions: audio=${perms.audio}`)
 
+      // 6. Pick playback device (respect user selection first)
+      const audioOutputs: MediaDeviceInfo[] = await VERTC.enumerateAudioPlaybackDevices()
+      rlog('info', `VERTC audio outputs (${audioOutputs.length}): ${audioOutputs.map((d) => `[${d.deviceId.slice(0, 8)}] ${d.label}`).join(' | ')}`)
+      const SKIP_OUTPUT = ['voicemeeter', 'vb-audio', 'steam streaming']
+      const isRealOutput = (d: MediaDeviceInfo) => !SKIP_OUTPUT.some((s) => d.label.toLowerCase().includes(s))
+      const selectedOutput = this.config.audioOutputDeviceId ? audioOutputs.find((d) => d.deviceId === this.config.audioOutputDeviceId) : undefined
+      const preferredOutput = audioOutputs.find(
+        (d) => d.deviceId !== 'default' && d.deviceId !== 'communications' && isRealOutput(d) && ['hands-free ag audio', 'cx plus', 'headset'].some((k) => d.label.toLowerCase().includes(k)),
+      )
+      const realOutput = audioOutputs.find((d) => d.deviceId !== 'default' && d.deviceId !== 'communications' && isRealOutput(d))
+      const pickedOutput = selectedOutput || preferredOutput || realOutput || audioOutputs[0]
+      if (this.config.audioOutputDeviceId && !selectedOutput) {
+        rlog('warn', `saved output device not found: ${this.config.audioOutputDeviceId}`)
+      }
+      if (pickedOutput) {
+        try {
+          await this.engine.setAudioPlaybackDevice(pickedOutput.deviceId)
+          rlog('info', `selected output: [${pickedOutput.deviceId.slice(0, 8)}] ${pickedOutput.label}`)
+        } catch (e: any) {
+          rlog('warn', `setAudioPlaybackDevice failed: ${e?.message}`)
+        }
+      }
+
       // 6. Pick best mic (skip Voicemeeter)
       const audioInputs: MediaDeviceInfo[] = await VERTC.enumerateAudioCaptureDevices()
-      rlog('info', `VERTC audio inputs (${audioInputs.length}): ${audioInputs.map(d => `[${d.deviceId.slice(0,8)}] ${d.label}`).join(' | ')}`)
+      rlog('info', `VERTC audio inputs (${audioInputs.length}): ${audioInputs.map((d) => `[${d.deviceId.slice(0, 8)}] ${d.label}`).join(' | ')}`)
       const SKIP = ['voicemeeter', 'vb-audio', 'steam streaming']
-      const isReal = (d: MediaDeviceInfo) => !SKIP.some(s => d.label.toLowerCase().includes(s))
+      const isReal = (d: MediaDeviceInfo) => !SKIP.some((s) => d.label.toLowerCase().includes(s))
       const PREFER = ['hands-free ag audio', 'cx plus', 'headset', 'microphone (']
-      const preferredMic = audioInputs.find(d =>
-        d.deviceId !== 'default' && d.deviceId !== 'communications' &&
-        isReal(d) && PREFER.some(k => d.label.toLowerCase().includes(k))
-      )
-      const realMic = audioInputs.find(d =>
-        d.deviceId !== 'default' && d.deviceId !== 'communications' && isReal(d)
-      )
-      const pickedMic = preferredMic || realMic || audioInputs[0]
-      if (pickedMic) rlog('info', `selected mic: [${pickedMic.deviceId.slice(0,8)}] ${pickedMic.label}`)
+      const selectedMic = this.config.audioInputDeviceId ? audioInputs.find((d) => d.deviceId === this.config.audioInputDeviceId) : undefined
+      const preferredMic = audioInputs.find((d) => d.deviceId !== 'default' && d.deviceId !== 'communications' && isReal(d) && PREFER.some((k) => d.label.toLowerCase().includes(k)))
+      const realMic = audioInputs.find((d) => d.deviceId !== 'default' && d.deviceId !== 'communications' && isReal(d))
+      const pickedMic = selectedMic || preferredMic || realMic || audioInputs[0]
+      if (this.config.audioInputDeviceId && !selectedMic) {
+        rlog('warn', `saved input device not found: ${this.config.audioInputDeviceId}`)
+      }
+      if (pickedMic) rlog('info', `selected mic: [${pickedMic.deviceId.slice(0, 8)}] ${pickedMic.label}`)
 
       // 7. Join room
       rlog('info', `joinRoom roomId=${this.roomId}`)
       await this.engine.joinRoom(
-        token, this.roomId,
+        token,
+        this.roomId,
         {
           userId: this.userId,
           extraInfo: JSON.stringify({ call_scene: 'RTC-AIGC', user_name: this.userId, user_id: this.userId }),
         },
-        { isAutoPublish: true, isAutoSubscribeAudio: true, roomProfileType: RoomProfileType.chat }
+        { isAutoPublish: true, isAutoSubscribeAudio: true, roomProfileType: RoomProfileType.chat },
       )
       rlog('info', 'joined room OK')
 
-      // 8. Start mic
-      await this.engine.startAudioCapture(pickedMic?.deviceId)
-      rlog('info', 'mic capture started')
-      await this.engine.publishStream(MediaType.AUDIO)
-      rlog('info', 'publishStream(AUDIO) OK')
-
-      // 9. Start screen sharing — pass preferCurrentTab:false + displaySurface hint
-      // to land on "整个屏幕" tab by default in WebView2 picker
+      // 8. Start screen sharing first.
+      // If user closes picker or denies permission, abort startup and avoid
+      // keeping a microphone-only session alive.
       let videoEnabled = false
       try {
         await this.engine.startScreenCapture({
           enableAudio: false,
-          video: { displaySurface: 'monitor', frameRate: 5, width: 1280, height: 720 },
+          // ScreenConfig fields must be top-level for VERTC.
+          // Prefer full screen first in the native picker.
+          displaySurface: 'monitor',
+          // Reduce tab-based sharing noise in picker ordering.
+          selfBrowserSurface: 'exclude',
+          // Keep picker choices stable during a single capture session.
+          surfaceSwitching: 'exclude',
         })
         await this.engine.publishScreen(MediaType.VIDEO)
         this.screenSharing = true
         videoEnabled = true
         rlog('info', 'screen capture started and published ✅')
       } catch (e: any) {
-        rlog('warn', `screen capture failed (will use function call fallback): ${e?.message}`)
+        rlog('warn', `screen capture cancelled/failed, aborting voice chat startup: ${e?.message}`)
+        throw new Error('Screen sharing is required for voice mode')
       }
+
+      // 9. Start mic after screen sharing is confirmed.
+      if (pickedMic?.deviceId) {
+        await this.engine.startAudioCapture(pickedMic.deviceId)
+      } else {
+        await this.engine.startAudioCapture()
+      }
+      rlog('info', 'mic capture started')
+      await this.engine.publishStream(MediaType.AUDIO)
+      rlog('info', 'publishStream(AUDIO) OK')
 
       // 10. StartVoiceChat API
       rlog('info', 'calling start_rtc_voice_chat...')
@@ -215,6 +251,7 @@ export class VoiceRTCClient {
         asrAccessToken: this.config.asrAccessToken,
         ttsAppId: this.config.ttsAppId,
         ttsAccessToken: this.config.ttsAccessToken,
+        ttsVoiceType: this.config.ttsVoiceType,
         llmEndpointId: this.config.llmEndpointId,
         llmApiKey: this.config.llmApiKey,
         characterPrompt: this.config.characterPrompt || '你是一只可爱的桌面宠物，陪伴用户玩游戏和工作，回答简短活泼',
@@ -269,5 +306,7 @@ export class VoiceRTCClient {
     rlog('info', 'cleaned up')
   }
 
-  isActive(): boolean { return this.active }
+  isActive(): boolean {
+    return this.active
+  }
 }
