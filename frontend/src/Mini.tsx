@@ -28,6 +28,7 @@ import {
   saveMiniPetId,
 } from './lib/petStore'
 import {
+  DEFAULT_PET_QUEUE_IDS,
   loadCodexPetById, loadDefaultCodexPet,
   petStateToCodexState,
   type CodexPet, type CodexPetState,
@@ -632,13 +633,16 @@ export default function Mini() {
       const picked = (savedId ? await loadCodexPetById(savedId) : null) ?? (await loadDefaultCodexPet())
       if (picked) setMiniPet(picked)
       // Load (or seed) the rotation queue alongside the main pet so the
-      // settings UI has something to show on first open.
+      // settings UI has something to show on first open. First-time
+      // users get the curated DEFAULT_PET_QUEUE_IDS list (10 builtins
+      // in manifest order) so different sessions immediately rotate
+      // through different mascots.
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const savedQueue = (await store.get('mini_pet_queue')) as string[] | null
       if (savedQueue && savedQueue.length > 0) {
         setPetQueue(savedQueue)
-      } else if (picked) {
-        setPetQueue([picked.id])
+      } else {
+        setPetQueue(DEFAULT_PET_QUEUE_IDS)
       }
     } catch (e) {
       console.warn('[mini-pet] load failed:', e)

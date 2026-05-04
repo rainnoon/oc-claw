@@ -67,7 +67,23 @@ export function fpsFor(state: CodexPetState): number {
   return STATE_FPS[state] ?? SPRITE_FPS
 }
 
-export const DEFAULT_PET_ID = 'homie'
+export const DEFAULT_PET_ID = 'linnea'
+
+// Default agent rotation queue used when the user hasn't customised one.
+// Ordered to match the picker layout (manifest order, alphabetical by
+// folder), capped at 10 entries.
+export const DEFAULT_PET_QUEUE_IDS: string[] = [
+  'doro',
+  'elaina',
+  'homie',
+  'linnea',
+  'mambo',
+  'naruto',
+  'nezuko',
+  'phoebe',
+  'skirk',
+  'taffy',
+]
 
 // Maps Mini.tsx's `PetState` (idle/working/compacting/waiting) to a codex
 // sprite state. Walking direction and hover are layered on top of this by
