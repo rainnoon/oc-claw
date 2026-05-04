@@ -7559,6 +7559,267 @@ async fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+pub struct CodexPetMeta {
+    pub id: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    pub description: String,
+    #[serde(rename = "spritesheetUrl")]
+    pub spritesheet_url: String,
+}
+
+/// Path to the user's codex CLI pets directory (`~/.codex/pets`). Mirrors
+/// the layout used by the codex CLI hatch-pet skill so users can drop the
+/// same pet folders here and have them show up in the picker.
+fn codex_pets_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".codex").join("pets"))
+}
+
+/// List custom codex pets the user has dropped into `~/.codex/pets`. Each
+/// pet folder must contain a `pet.json` metadata file plus a spritesheet
+/// (.webp/.png/.jpg). Missing pieces are skipped silently.
+#[tauri::command]
+async fn list_custom_codex_pets() -> Result<Vec<CodexPetMeta>, String> {
+    let Some(root) = codex_pets_dir() else {
+        return Ok(Vec::new());
+    };
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir(&root) {
+        Ok(e) => e,
+        Err(_) => return Ok(Vec::new()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let pet_json = path.join("pet.json");
+        if !pet_json.is_file() {
+            continue;
+        }
+        let raw = match std::fs::read_to_string(&pet_json) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let meta: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let id = meta
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            });
+        let display_name = meta
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| id.clone());
+        let description = meta
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_default();
+        let sheet_path = meta
+            .get("spritesheetPath")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| "spritesheet.webp".into());
+        let abs = path.join(&sheet_path);
+        if !abs.is_file() {
+            continue;
+        }
+        let url = codex_asset_url(&abs);
+        out.push(CodexPetMeta {
+            id,
+            display_name,
+            description,
+            spritesheet_url: url,
+        });
+    }
+    out.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+    Ok(out)
+}
+
+/// Open the platform's native folder picker so the user can choose a
+/// codex pet directory to import. Returns the absolute path or `null` if
+/// the user cancelled. Implemented with `osascript` on macOS and
+/// PowerShell's `FolderBrowserDialog` on Windows so we don't need to add
+/// `tauri-plugin-dialog` just for this one flow.
+#[tauri::command]
+async fn pick_codex_pet_folder() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = "POSIX path of (choose folder with prompt \"选择 codex 宠物文件夹\")";
+        let out = std::process::Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            // User cancelled — osascript exits non-zero. Treat as None.
+            return Ok(None);
+        }
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(path))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+            Add-Type -AssemblyName System.Windows.Forms
+            $d = New-Object System.Windows.Forms.FolderBrowserDialog
+            $d.Description = "Select codex pet folder"
+            if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                Write-Output $d.SelectedPath
+            }
+        "#;
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if path.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(path))
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("folder picker not implemented on this platform".into())
+    }
+}
+
+/// Open `~/.codex/pets` in the platform's file manager. Creates the
+/// directory if it doesn't exist yet so the picker's "Open Folder" link
+/// always lands somewhere usable.
+#[tauri::command]
+async fn open_codex_pets_dir() -> Result<String, String> {
+    let Some(dir) = codex_pets_dir() else {
+        return Err("home directory not found".into());
+    };
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    let path = dir.to_string_lossy().to_string();
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(path)
+}
+
+/// Import a dropped pet folder into `~/.codex/pets`. The source must be a
+/// directory containing at minimum a `pet.json` and a spritesheet image.
+/// Existing folders with the same id are overwritten so re-dropping a
+/// pet upgrades it in place.
+#[tauri::command]
+async fn import_codex_pet(src_path: String) -> Result<CodexPetMeta, String> {
+    let src = PathBuf::from(&src_path);
+    if !src.is_dir() {
+        return Err(format!("not a directory: {}", src_path));
+    }
+    let pet_json = src.join("pet.json");
+    if !pet_json.is_file() {
+        return Err("missing pet.json in dropped folder".into());
+    }
+    let raw = std::fs::read_to_string(&pet_json).map_err(|e| e.to_string())?;
+    let meta: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let id = meta
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| {
+            src.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "pet".into())
+        });
+    let Some(root) = codex_pets_dir() else {
+        return Err("home directory not found".into());
+    };
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let dst = root.join(&id);
+    if dst.exists() {
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+    copy_dir_recursive(&src, &dst)?;
+    let display_name = meta
+        .get("displayName")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| id.clone());
+    let description = meta
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_default();
+    let sheet_path = meta
+        .get("spritesheetPath")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| "spritesheet.webp".into());
+    let url = codex_asset_url(&dst.join(&sheet_path));
+    Ok(CodexPetMeta {
+        id,
+        display_name,
+        description,
+        spritesheet_url: url,
+    })
+}
+
+/// Build a Tauri custom-protocol URL the webview can fetch. The path is
+/// resolved relative to `~/.codex/pets/` by the `codexpet://` scheme
+/// registered on the Tauri builder, so files outside the bundled
+/// `public/` folder still load.
+fn codex_asset_url(abs: &std::path::Path) -> String {
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    let Some(root) = codex_pets_dir() else {
+        return String::new();
+    };
+    let rel = match abs.strip_prefix(&root) {
+        Ok(p) => p.to_path_buf(),
+        Err(_) => return String::new(),
+    };
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| utf8_percent_encode(&c.as_os_str().to_string_lossy(), NON_ALPHANUMERIC).to_string())
+        .collect();
+    format!("codexpet://localhost/{}", parts.join("/"))
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// Activate a macOS app by its name (e.g. "Feishu", "Telegram", "Lark").
 #[tauri::command]
 async fn activate_app(app_name: String) -> Result<String, String> {
@@ -10917,6 +11178,16 @@ pub fn run() {
             let file_path = data_dir.join("characters").join(path.trim_start_matches('/'));
             build_asset_response(&req, path.as_ref(), &file_path, cfg!(target_os = "windows"), "customasset")
         })
+        .register_uri_scheme_protocol("codexpet", |_ctx, req| {
+            // Custom codex pets the user dropped into `~/.codex/pets`.
+            // Avatars are loaded through this protocol so the picker can
+            // display sprites that live outside the bundled assets dir.
+            let raw_path = req.uri().path();
+            let path = percent_decode_str(raw_path).decode_utf8_lossy();
+            let root = codex_pets_dir().unwrap_or_default();
+            let file_path = root.join(path.trim_start_matches('/'));
+            build_asset_response(&req, path.as_ref(), &file_path, cfg!(target_os = "windows"), "codexpet")
+        })
         .setup(|app| {
             // Fix PATH so openclaw (Node.js script) and node are both reachable
             fix_path();
@@ -11202,7 +11473,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

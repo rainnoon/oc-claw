@@ -53,10 +53,14 @@ export const SPRITE_FPS = 12
 // Per-state fps overrides. States not listed fall back to SPRITE_FPS.
 // Idle is intentionally slow (subtle breathing-style loop). Jumping plays
 // slower than the default 12fps so the 5-frame animation reads clearly
-// during the brief one-shot.
+// during the brief one-shot. Run/walk-style states are also softened so
+// the dragging mascot doesn't feel jittery.
 export const STATE_FPS: Partial<Record<CodexPetState, number>> = {
   idle: 2,
   jumping: 6,
+  running: 6,
+  'run-left': 8,
+  'run-right': 8,
 }
 
 export function fpsFor(state: CodexPetState): number {
@@ -134,12 +138,45 @@ export function loadCodexPets(): Promise<CodexPet[]> {
 }
 
 export async function loadCodexPetById(id: string): Promise<CodexPet | null> {
-  const pets = await loadCodexPets()
-  return pets.find((p) => p.id === id) ?? null
+  const builtins = await loadCodexPets()
+  const hit = builtins.find((p) => p.id === id)
+  if (hit) return hit
+  const customs = await loadCustomCodexPets()
+  return customs.find((p) => p.id === id) ?? null
 }
 
 export async function loadDefaultCodexPet(): Promise<CodexPet | null> {
   const pets = await loadCodexPets()
   if (pets.length === 0) return null
   return pets.find((p) => p.id === DEFAULT_PET_ID) ?? pets[0]
+}
+
+// Reset the manifest cache so the next call rescans `pets-manifest.json`.
+// Used by the picker's refresh button after the user drops in new assets.
+export function clearCodexPetCache(): void {
+  cachedPets = null
+}
+
+// Pets dropped into `~/.codex/pets/` by the user. Loaded via the Rust
+// `list_custom_codex_pets` command which serves them through the asset
+// protocol so they render outside the bundled `public/` tree.
+export async function loadCustomCodexPets(): Promise<CodexPet[]> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const raw = (await invoke('list_custom_codex_pets')) as Array<{
+      id: string
+      displayName: string
+      description: string
+      spritesheetUrl: string
+    }>
+    return raw.map((m) => ({
+      id: m.id,
+      displayName: m.displayName,
+      description: m.description,
+      spritesheetUrl: m.spritesheetUrl,
+    }))
+  } catch (e) {
+    console.warn('[codexPet] loadCustomCodexPets failed:', e)
+    return []
+  }
 }

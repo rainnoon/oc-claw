@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, ChevronUp, Check, Loader2, Pen, Plus, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud, Maximize, Minimize } from 'lucide-react'
+import { ChevronDown, Loader2, X, Pin, Bell, BellOff, Move, Settings, Asterisk, Trash2, Cloud } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
@@ -12,7 +12,6 @@ import { AgentDetailView } from './components/AgentDetailView'
 import { CreateCharacterModal } from './components/CreateCharacterModal'
 import { ClaudeStatsView } from './components/ClaudeStatsView'
 import { getStore, DEFAULT_CHAR, DEFAULT_CHAR_NAME, loadCharacters, loadOcConnections, saveOcConnections } from './lib/store'
-import { saveAgentCharMap } from './lib/agents'
 import type { AgentMetrics, OcConnection } from './lib/types'
 import { OnboardingModal } from './components/OnboardingModal'
 import { PetContextMenu, PomodoroOverlay } from './components/PetContextMenu'
@@ -26,6 +25,7 @@ import {
   HUNGER_ACTIVITY_PER_HOUR, HUNGER_OFFLINE_FLOOR,
   applyHeadpat,
   loadMiniPetId,
+  saveMiniPetId,
 } from './lib/petStore'
 import {
   loadCodexPetById, loadDefaultCodexPet,
@@ -34,6 +34,7 @@ import {
 } from './lib/codexPet'
 import { MiniPetMascot } from './components/MiniPetMascot'
 import { SpritePet } from './components/SpritePet'
+import { PetPicker } from './components/PetPicker'
 
 interface CharacterMeta {
   name: string
@@ -108,7 +109,7 @@ const MASCOT_BASE_SIZE = 43
 // rendering layer, leaving the underlying window/hitbox math untouched so
 // large-mode video sizing keeps working.
 const MINI_SPRITE_DISPLAY_MULTIPLIER = 2
-const SESSION_SPRITE_DISPLAY_MULTIPLIER = 1.32
+const SESSION_SPRITE_DISPLAY_MULTIPLIER = 0.88
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
 type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
@@ -260,49 +261,6 @@ function ChatList({ messages, accentColor }: { messages: { role: string; text: s
   )
 }
 
-function getMiniGif(char: CharacterMeta | undefined, petState: PetState | boolean, useTop = false): string | undefined {
-  // backward compat: boolean → PetState
-  const state: PetState = typeof petState === 'boolean' ? (petState ? 'working' : 'idle') : petState
-  const c = char?.miniActions && Object.values(char.miniActions).flat().length > 0 ? char : DEFAULT_CHAR
-  if (!c?.miniActions) return undefined
-  if (useTop && c.miniActions['top']?.length) {
-    const topGifs = c.miniActions['top']
-    // Priority: waiting(look) > compacting(eat) > working > idle(sleep)
-    // Each state falls through to the next if no matching GIF is found
-    if (state === 'waiting') {
-      const look = topGifs.find((g) => g.includes('look') || g.includes('wait'))
-      if (look) return look
-    }
-    if (state === 'compacting') {
-      const eat = topGifs.find((g) => g.includes('eat') || g.includes('compact') || g.includes('power'))
-      if (eat) return eat
-    }
-    if (state === 'working' || state === 'compacting' || state === 'waiting') {
-      const work = topGifs.find((g) => g.includes('work'))
-      if (work) return work
-    }
-    const sleep = topGifs.find((g) => g.includes('sleep') || g.includes('idle') || g.includes('rest'))
-    if (sleep) return sleep
-    return topGifs[0]
-  }
-  const allGifs = Object.values(c.miniActions).flat()
-  if (allGifs.length === 0) return undefined
-  if (state === 'waiting') {
-    const lookGifs = allGifs.filter((g) => g.includes('look') || g.includes('wait'))
-    if (lookGifs.length > 0) return lookGifs[0]
-  }
-  if (state === 'compacting') {
-    const eatGifs = allGifs.filter((g) => g.includes('eat') || g.includes('compact') || g.includes('power'))
-    if (eatGifs.length > 0) return eatGifs[0]
-  }
-  const idleGifs = allGifs.filter((g) => /idle|sleep|rest/.test(g))
-  const workGifs = allGifs.filter((g) => g.includes('work'))
-  const actionGifs = allGifs.filter((g) => !/idle|sleep|rest/.test(g))
-  if ((state === 'working' || state === 'compacting' || state === 'waiting') && actionGifs.length > 0) {
-    return workGifs[0] || actionGifs[0]
-  }
-  return idleGifs[0] || allGifs[0]
-}
 
 type LargePetAction = 'work' | 'rest' | 'question' | 'grasp' | 'spin' | 'angry'
 
@@ -359,191 +317,6 @@ function getAlternateLargeVideoUrl(url: string): string | undefined {
   return undefined
 }
 
-function AgentAccordionItem({
-  agent,
-  characters,
-  currentChar,
-  onSelect,
-  isOpen,
-  onToggle,
-  onOpenCreate,
-  onDeleteChar,
-  sourceLabel,
-}: {
-  agent: AgentInfo
-  characters: CharacterMeta[]
-  currentChar: string
-  onSelect: (charName: string) => void
-  isOpen: boolean
-  onToggle: () => void
-  onOpenCreate?: () => void
-  onDeleteChar?: (name: string) => void
-  sourceLabel?: string
-}) {
-  const { t } = useTranslation()
-  const [isEditing, setIsEditing] = useState(false)
-  const charsWithMini = characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0)
-  const charMeta = characters.find((c) => c.name === currentChar)
-  const gif = charMeta ? getMiniGif(charMeta, false) : undefined
-
-  useEffect(() => {
-    if (!isOpen) setIsEditing(false)
-  }, [isOpen])
-
-  return (
-    <div className="flex flex-col border-b border-white/5 last:border-b-0 group">
-      {/* Main Row */}
-      <div className="relative flex items-center justify-between p-4 hover:bg-white/[0.02] transition-colors cursor-pointer" onClick={onToggle}>
-        <div className="flex items-center gap-4">
-          <div className="relative">
-            <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center overflow-hidden">
-              {gif ? (
-                <img key={gif} src={gif} alt="" className="w-full h-full object-contain" style={{ imageRendering: 'pixelated' }} draggable={false} />
-              ) : (
-                <span className="text-white/40 text-xl">{agent.identityEmoji || '?'}</span>
-              )}
-            </div>
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-base font-medium text-white/90">{agent.identityName || agent.id}</span>
-              {agent.identityEmoji && <span className="text-sm">{agent.identityEmoji}</span>}
-              {sourceLabel && <span className="text-[10px] text-white/30 bg-white/5 px-1.5 py-0.5 rounded">{sourceLabel}</span>}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 text-sm text-white/50 group-hover:text-white/80 transition-colors pr-2">
-          <span>{currentChar ? (characters.find((c) => c.name === currentChar)?.builtin ? t(`charNames.${currentChar}`, currentChar) : currentChar) : t('mini.unassigned')}</span>
-          <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
-        </div>
-      </div>
-
-      {/* Expanded Selection Area */}
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden bg-[#0a0a0a]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-4 border-t border-white/5">
-              {/* Action Buttons row */}
-              <div className="flex items-center justify-end gap-2 mb-3">
-                {onOpenCreate && (
-                  <button
-                    onClick={() => onOpenCreate()}
-                    className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-white/5 text-white/60 hover:text-white hover:bg-white/10 border border-transparent"
-                    title={t('mini.createChar')}
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
-                )}
-                <button
-                  onClick={() => setIsEditing(!isEditing)}
-                  className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors ${
-                    isEditing ? 'bg-red-500/20 text-red-400 border border-red-500/20' : 'bg-white/5 text-white/60 hover:text-white hover:bg-white/10 border border-transparent'
-                  }`}
-                  title={isEditing ? t('common.done') : t('common.edit')}
-                >
-                  {isEditing ? <Check className="w-4 h-4" /> : <Pen className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-
-              {/* Character Grid grouped by IP */}
-              <div className="max-h-[260px] overflow-y-auto pr-2 pt-2 scrollbar-white">
-                {(() => {
-                  const groups: { ip: string; chars: typeof charsWithMini }[] = []
-                  const ipOrder: string[] = []
-                  for (const c of charsWithMini) {
-                    const ip = c.ip || '自定义'
-                    if (!ipOrder.includes(ip)) ipOrder.push(ip)
-                  }
-                  // 自定义 always first, 其他 always last
-                  const customIdx = ipOrder.indexOf('自定义')
-                  if (customIdx > 0) {
-                    ipOrder.splice(customIdx, 1)
-                    ipOrder.unshift('自定义')
-                  }
-                  const otherIdx = ipOrder.indexOf('其他')
-                  if (otherIdx >= 0 && otherIdx < ipOrder.length - 1) {
-                    ipOrder.splice(otherIdx, 1)
-                    ipOrder.push('其他')
-                  }
-                  for (const ip of ipOrder) {
-                    groups.push({ ip, chars: charsWithMini.filter((c) => (c.ip || '自定义') === ip) })
-                  }
-                  return groups.map(({ ip, chars }) => (
-                    <div key={ip} className="mb-3 last:mb-0">
-                      <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">
-                        {ip === '自定义' ? t('mini.custom') : ip === '其他' ? t('mini.other') : ip === '原神' ? t('mini.ipGenshin') : ip === '赛马娘' ? t('mini.ipUmaMusume') : ip}
-                      </div>
-                      <div className="grid grid-cols-3 gap-3">
-                        {chars.map((c) => {
-                          const isSelected = c.name === currentChar
-                          const preview = getMiniGif(c, false)
-                          const isDefault = !!c.builtin
-                          return (
-                            <div
-                              key={c.name}
-                              onClick={() => {
-                                if (isEditing && !isDefault) {
-                                  onDeleteChar?.(c.name)
-                                } else if (!isEditing) {
-                                  onSelect(c.name)
-                                }
-                              }}
-                              className={`relative flex items-center gap-3 p-2.5 rounded-xl border transition-all ${
-                                isEditing && !isDefault
-                                  ? 'cursor-pointer hover:bg-red-500/10 border-red-500/30'
-                                  : isEditing && isDefault
-                                    ? 'opacity-40 cursor-not-allowed border-transparent'
-                                    : isSelected
-                                      ? 'bg-white/10 border-white/20 cursor-default'
-                                      : 'bg-white/5 border-transparent hover:bg-white/10 cursor-pointer'
-                              }`}
-                            >
-                              <div className="relative w-9 h-9 shrink-0 rounded-lg overflow-hidden bg-black/50 border border-white/10">
-                                {preview ? (
-                                  <img
-                                    src={preview}
-                                    alt={c.name}
-                                    className={`w-full h-full object-contain transition-opacity ${isEditing && !isDefault ? 'opacity-50' : 'opacity-90'}`}
-                                    style={{ imageRendering: 'pixelated' }}
-                                    draggable={false}
-                                  />
-                                ) : (
-                                  <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
-                                )}
-                              </div>
-                              <span className="text-sm text-white/80 truncate flex-1">{c.builtin ? t(`charNames.${c.name}`, c.name) : c.name}</span>
-                              {isEditing && !isDefault && (
-                                <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center shadow-md z-10 hover:bg-red-600 transition-colors">
-                                  <X className="w-3 h-3 text-white" />
-                                </div>
-                              )}
-                              {!isEditing && isSelected && (
-                                <div className="absolute top-1/2 -translate-y-1/2 right-3">
-                                  <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
-                                </div>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  ))
-                })()}
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  )
-}
 
 type OcParams = { mode?: string; url?: string; token?: string; sshHost?: string; sshUser?: string }
 
@@ -609,6 +382,18 @@ export default function Mini() {
   const claudeSessionsRef = useRef<any[]>([])
   claudeSessionsRef.current = claudeSessions
   const [charQueue, setCharQueue] = useState<string[]>([DEFAULT_CHAR_NAME])
+  // ─── Codex pet rotation queue (mini mode) ───
+  // Each session slot maps to petQueue[i % petQueue.length] so multiple
+  // running agents show different pets. Persisted in settings.json under
+  // `mini_pet_queue`. Defaults to a single-item queue containing the
+  // currently selected mini pet (or DEFAULT_PET_ID).
+  const [petQueue, setPetQueue] = useState<string[]>([])
+  const savePetQueue = useCallback(async (next: string[]) => {
+    setPetQueue(next)
+    const store = await load('settings.json', { defaults: {}, autoSave: true })
+    await store.set('mini_pet_queue', next)
+    await store.save()
+  }, [])
   const [selectedClaudeSession, setSelectedClaudeSession] = useState<string | null>(null)
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
   const [showClaudeStats, setShowClaudeStats] = useState(false)
@@ -644,7 +429,10 @@ export default function Mini() {
   // OC multi-connection: qualifiedId → connection params, qualifiedId → real agent ID, qualifiedId → source label
   const agentConnMapRef = useRef<Map<string, OcParams>>(new Map())
   const agentRealIdMapRef = useRef<Map<string, string>>(new Map())
-  const [agentSourceLabels, setAgentSourceLabels] = useState<Record<string, string>>({})
+  // Source label dictionary is still populated by `fetchAgents` for future
+  // multi-source UI work; the getter is unused after the pairing refactor.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_agentSourceLabels, setAgentSourceLabels] = useState<Record<string, string>>({})
 
   const resolveClaudeStatsSource = useCallback((source?: string): ClaudeStatsSource => {
     if (source === 'cursor') return 'cursor'
@@ -710,8 +498,11 @@ export default function Mini() {
   const [settingsTransitioning, setSettingsTransitioning] = useState(false)
   const settingsTransitioningRef = useRef(false)
   const filePickerOpenRef = useRef(false)
+  // Independent flag for native (Tauri-invoked) folder/dialog flows so
+  // they don't share the auto-reset-on-focus logic used by HTML
+  // <input type="file"> clicks. Owned end-to-end by PetPicker.
+  const nativeDialogActiveRef = useRef(false)
   const [settingsNav, setSettingsNav] = useState<'pairing' | 'settings'>('pairing')
-  const [openAccordionId, setOpenAccordionId] = useState<string | null>(null)
   const [isCreateModalOpen, _setIsCreateModalOpen] = useState(false)
   const isCreateModalOpenRef = useRef(false)
   const setIsCreateModalOpen = (v: boolean) => {
@@ -840,6 +631,15 @@ export default function Mini() {
       const savedId = await loadMiniPetId()
       const picked = (savedId ? await loadCodexPetById(savedId) : null) ?? (await loadDefaultCodexPet())
       if (picked) setMiniPet(picked)
+      // Load (or seed) the rotation queue alongside the main pet so the
+      // settings UI has something to show on first open.
+      const store = await load('settings.json', { defaults: {}, autoSave: true })
+      const savedQueue = (await store.get('mini_pet_queue')) as string[] | null
+      if (savedQueue && savedQueue.length > 0) {
+        setPetQueue(savedQueue)
+      } else if (picked) {
+        setPetQueue([picked.id])
+      }
     } catch (e) {
       console.warn('[mini-pet] load failed:', e)
     }
@@ -3281,6 +3081,10 @@ export default function Mini() {
 
   const exitSettings = useCallback(async () => {
     if (!settingsModeRef.current || settingsTransitioningRef.current) return
+    // Defense in depth: while a native folder picker is in flight (or its
+    // post-close grace window is still active), suppress any path that
+    // would close settings — synthesized clicks, blur events, etc.
+    if (nativeDialogActiveRef.current) return
     settingsTransitioningRef.current = true
     setShowSettingsOverlay(false)
     try {
@@ -3372,6 +3176,7 @@ export default function Mini() {
     }
     const onBlur = () => {
       if (filePickerOpenRef.current) return
+      if (nativeDialogActiveRef.current) return
       // When settings is open, use the dedicated close path so pet mode
       // restores window geometry/state consistently.
       if (settingsModeRef.current) {
@@ -3458,8 +3263,10 @@ export default function Mini() {
   const largeCharForRender = (appMode === 'pet' || appMode === 'coding')
     ? ({ name: '香企鹅', largeActions: petBuiltinLargeActions } as CharacterMeta)
     : miniChar
-  const hasAnyLargeActions = !!(largeCharForRender?.largeActions && Object.keys(largeCharForRender.largeActions).length > 0) || !!(fallbackLargeActions && Object.keys(fallbackLargeActions).length > 0)
-  const showLargeMascotToggle = appMode === 'coding' || (appMode !== 'pet' && hasAnyLargeActions)
+  // hasAnyLargeActions used to gate the legacy header toggle. Toggling is
+  // now driven from the pet picker (selecting 香企鹅 enters large-mascot
+  // mode), so the predicate itself is no longer referenced — but we keep
+  // the computation cheap in case future logic wants to read it.
   const largeVideoBaseUrl = largeMascot
     ? appMode === 'pet'
       ? getLargeVideoPetMode(largeCharForRender ?? undefined, currentPetAction, fallbackLargeActions)
@@ -3583,23 +3390,6 @@ export default function Mini() {
   // and bails out, then never re-runs when hiding flips back to false and the
   // <video> elements remount — leaving the mascot blank after closing a popup.
   }, [largeVideoUrl, expanded, hiding])
-
-  const handleDeleteChar = useCallback(async (name: string) => {
-    try {
-      await invoke('delete_character_assets', { name })
-      const chars = await loadCharacters()
-      setCharacters(chars)
-    } catch (e) {
-      console.warn('delete char failed:', e)
-    }
-  }, [])
-  const saveCharQueue = useCallback(async (queue: string[]) => {
-    setCharQueue(queue)
-    const store = await load('settings.json', { defaults: {}, autoSave: true })
-    await store.set('char_queue', queue)
-    await store.save()
-  }, [])
-  const [queuePickerOpen, setQueuePickerOpen] = useState(false)
 
   const inAgentDetail = selectedAgentId !== null
   const selectedAgent = agents.find((a) => a.id === selectedAgentId)
@@ -4179,28 +3969,6 @@ export default function Mini() {
               >
                 {soundEnabled || codexSoundEnabled || cursorSoundEnabled ? <Bell className="w-4 h-4" strokeWidth={2.5} /> : <BellOff className="w-4 h-4" strokeWidth={2.5} />}
               </button>
-              {showLargeMascotToggle && (
-                <button
-                  data-no-drag
-                  onClick={async (e) => {
-                    e.stopPropagation()
-                    const next = !largeMascot
-                    setLargeMascot(next)
-                    largeMascotRef.current = next
-                    if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
-                    largeActionTimerRef.current = null
-                    setLargePetAction(null)
-                    largePetActionRef.current = null
-                    const store = await load('settings.json', { defaults: {}, autoSave: true })
-                    await store.set('large_mascot', next)
-                    await store.save()
-                  }}
-                  className={`transition-colors ${largeMascot ? 'text-[#F0D140]' : 'text-slate-400 hover:text-slate-200'}`}
-                  title={largeMascot ? '切换到小看板娘' : '切换到大看板娘'}
-                >
-                  {largeMascot ? <Minimize className="w-4 h-4" strokeWidth={2.5} /> : <Maximize className="w-4 h-4" strokeWidth={2.5} />}
-                </button>
-              )}
             </div>
             <div className="flex items-center gap-4">
               {/* Move-mode toggle is Windows-only. macOS supports direct
@@ -4420,7 +4188,11 @@ export default function Mini() {
                                           e.stopPropagation()
                                           openOcDetail()
                                         }}
-                                        className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
+                                        className="relative shrink-0 flex items-center justify-center cursor-pointer"
+                                        style={{
+                                          width: Math.round(40 * SESSION_SPRITE_DISPLAY_MULTIPLIER),
+                                          height: Math.round(40 * SESSION_SPRITE_DISPLAY_MULTIPLIER * (208 / 192)),
+                                        }}
                                       >
                                         <div className="absolute inset-0" style={{ left: -16 }} />
                                         {miniPet ? (
@@ -4579,7 +4351,11 @@ export default function Mini() {
                                             e.stopPropagation()
                                             openClaudeDetail()
                                           }}
-                                          className="relative shrink-0 w-10 h-10 flex items-center justify-center cursor-pointer"
+                                          className="relative shrink-0 flex items-center justify-center cursor-pointer"
+                                          style={{
+                                            width: Math.round(40 * SESSION_SPRITE_DISPLAY_MULTIPLIER),
+                                            height: Math.round(40 * SESSION_SPRITE_DISPLAY_MULTIPLIER * (208 / 192)),
+                                          }}
                                         >
                                           <div className="absolute inset-0" style={{ left: -16 }} />
                                           {miniPet ? (
@@ -5373,11 +5149,16 @@ export default function Mini() {
                 }
               }}
               onClick={(e) => {
-                if (e.target === e.currentTarget) {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  exitSettings()
-                }
+                if (e.target !== e.currentTarget) return
+                // Suppress click-outside-to-close while a native folder
+                // picker is active. macOS synthesises a click on the
+                // webview when the dialog closes; without this guard
+                // that click lands on this transparent overlay and
+                // closes the settings panel right after import.
+                if (nativeDialogActiveRef.current) return
+                e.preventDefault()
+                e.stopPropagation()
+                exitSettings()
               }}
               style={{
                 position: 'fixed',
@@ -5463,38 +5244,6 @@ export default function Mini() {
                     ))}
                   </div>
                 </div>
-                {showLargeMascotToggle && (
-                  <button
-                    data-no-drag
-                    onClick={async (e) => {
-                      e.stopPropagation()
-                      const next = !largeMascot
-                      setLargeMascot(next)
-                      largeMascotRef.current = next
-                      if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
-                      largeActionTimerRef.current = null
-                      setLargePetAction(null)
-                      largePetActionRef.current = null
-                      const store = await load('settings.json', { defaults: {}, autoSave: true })
-                      await store.set('large_mascot', next)
-                      await store.save()
-                    }}
-                    style={{
-                      background: largeMascot ? 'rgba(240,209,64,0.15)' : 'rgba(255,255,255,0.06)',
-                      border: largeMascot ? '1px solid rgba(240,209,64,0.3)' : '1px solid transparent',
-                      color: largeMascot ? '#F0D140' : 'rgba(255,255,255,0.5)',
-                      fontSize: 11,
-                      cursor: 'pointer',
-                      padding: '3px 10px',
-                      borderRadius: 6,
-                      fontWeight: 500,
-                      marginRight: 8,
-                      transition: 'all 0.2s',
-                    }}
-                  >
-                    {largeMascot ? '小看板娘' : '🐧 大看板娘'}
-                  </button>
-                )}
                 <button
                   data-no-drag
                   onClick={(e) => {
@@ -5511,216 +5260,51 @@ export default function Mini() {
                   {settingsNav === 'pairing' && (
                     <div className="h-full overflow-y-auto bg-[#151515] pt-6 px-6 pb-10 scrollbar-hidden">
                       <div className="max-w-3xl mx-auto">
-                        <p className="text-sm text-white/50 mb-10">{t('mini.pairingDesc')}</p>
-                        <div className="mb-8">
-                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">{t('mini.mascot')}</h2>
-                          <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                            <AgentAccordionItem
-                              agent={{ id: '__mini__', identityName: t('mini.mascot') }}
-                              characters={characters}
-                              currentChar={miniChar?.name || ''}
-                              isOpen={openAccordionId === '__mini__'}
-                              onToggle={() => setOpenAccordionId(openAccordionId === '__mini__' ? null : '__mini__')}
-                              onOpenCreate={() => setIsCreateModalOpen(true)}
-                              onDeleteChar={handleDeleteChar}
-                              onSelect={async (name) => {
-                                const store = await load('settings.json', { defaults: {}, autoSave: true })
-                                await store.set('mini_character', name)
-                                await store.save()
-                                loadMiniChar()
-                              }}
-                            />
-                          </div>
-                        </div>
-                        {agents.length > 0 && (
-                          <div className="mb-8">
-                            <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">OpenClaw Agents</h2>
-                            <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                              {agents.map((agent) => (
-                                <AgentAccordionItem
-                                  key={agent.id}
-                                  agent={agent}
-                                  characters={characters}
-                                  currentChar={agentCharMap[agent.id] || DEFAULT_CHAR_NAME}
-                                  isOpen={openAccordionId === agent.id}
-                                  onToggle={() => setOpenAccordionId(openAccordionId === agent.id ? null : agent.id)}
-                                  sourceLabel={agentSourceLabels[agent.id]}
-                                  onOpenCreate={() => setIsCreateModalOpen(true)}
-                                  onDeleteChar={handleDeleteChar}
-                                  onSelect={async (charName) => {
-                                    const updated = { ...agentCharMap, [agent.id]: charName }
-                                    setAgentCharMap(updated)
-                                    await saveAgentCharMap(updated)
-                                  }}
-                                />
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        <div className="mb-8">
-                          <h2 className="text-xs font-bold text-white/30 uppercase tracking-widest mb-3 px-4">{t('mini.charQueue', 'Agent Character Queue')}</h2>
-                          <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
-                            <div className="p-4 space-y-2">
-                              {charQueue.map((name, qi) => {
-                                const charMeta = characters.find((c) => c.name === name)
-                                const preview = charMeta ? getMiniGif(charMeta, false) : undefined
-                                return (
-                                  <div key={`${name}-${qi}`} className="flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
-                                    <span className="text-[11px] text-white/30 w-5 text-center shrink-0">{qi + 1}</span>
-                                    <div className="w-9 h-9 shrink-0 rounded-lg overflow-hidden bg-black/50 border border-white/10">
-                                      {preview ? (
-                                        <img src={preview} alt={name} className="w-full h-full object-contain opacity-90" style={{ imageRendering: 'pixelated' }} draggable={false} />
-                                      ) : (
-                                        <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
-                                      )}
-                                    </div>
-                                    <span className="text-sm text-white/80 truncate flex-1">{charMeta?.builtin ? t(`charNames.${name}`, name) : name}</span>
-                                    <div className="flex items-center gap-1 shrink-0">
-                                      <button
-                                        onClick={() => {
-                                          if (qi === 0) return
-                                          const q = [...charQueue]
-                                          ;[q[qi - 1], q[qi]] = [q[qi], q[qi - 1]]
-                                          saveCharQueue(q)
-                                        }}
-                                        disabled={qi === 0}
-                                        className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
-                                      >
-                                        <ChevronUp className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          if (qi === charQueue.length - 1) return
-                                          const q = [...charQueue]
-                                          ;[q[qi], q[qi + 1]] = [q[qi + 1], q[qi]]
-                                          saveCharQueue(q)
-                                        }}
-                                        disabled={qi === charQueue.length - 1}
-                                        className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
-                                      >
-                                        <ChevronDown className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          if (charQueue.length <= 1) return
-                                          saveCharQueue(charQueue.filter((_, j) => j !== qi))
-                                        }}
-                                        disabled={charQueue.length <= 1}
-                                        className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed ml-1"
-                                      >
-                                        <X className="w-3.5 h-3.5" />
-                                      </button>
-                                    </div>
-                                  </div>
-                                )
-                              })}
-                              <button
-                                onClick={() => setQueuePickerOpen(!queuePickerOpen)}
-                                className="flex items-center gap-2 w-full p-2.5 rounded-xl border border-dashed border-white/10 text-white/40 hover:text-white/70 hover:border-white/20 hover:bg-white/[0.02] transition-colors"
-                              >
-                                <Plus className="w-4 h-4" />
-                                <span className="text-sm">{t('mini.addChar', 'Add Character')}</span>
-                              </button>
-                              <AnimatePresence>
-                                {queuePickerOpen && (
-                                  <motion.div
-                                    initial={{ height: 0, opacity: 0 }}
-                                    animate={{ height: 'auto', opacity: 1 }}
-                                    exit={{ height: 0, opacity: 0 }}
-                                    transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-                                    className="overflow-hidden"
-                                  >
-                                    <div className="pt-2 border-t border-white/5">
-                                      <div className="flex items-center justify-between mb-2">
-                                        <span className="text-[11px] text-white/30">{t('mini.selectToAdd', 'Select a character to add')}</span>
-                                        <button
-                                          onClick={() => setIsCreateModalOpen(true)}
-                                          className="flex items-center justify-center w-6 h-6 rounded text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-                                          title={t('mini.createChar')}
-                                        >
-                                          <Plus className="w-3.5 h-3.5" />
-                                        </button>
-                                      </div>
-                                      <div className="max-h-[220px] overflow-y-auto pr-1 scrollbar-white">
-                                        {(() => {
-                                          const charsWithMini = characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0)
-                                          const groups: { ip: string; chars: typeof charsWithMini }[] = []
-                                          const ipOrder: string[] = []
-                                          for (const c of charsWithMini) {
-                                            const ip = c.ip || '自定义'
-                                            if (!ipOrder.includes(ip)) ipOrder.push(ip)
-                                          }
-                                          const customIdx = ipOrder.indexOf('自定义')
-                                          if (customIdx > 0) {
-                                            ipOrder.splice(customIdx, 1)
-                                            ipOrder.unshift('自定义')
-                                          }
-                                          const otherIdx = ipOrder.indexOf('其他')
-                                          if (otherIdx >= 0 && otherIdx < ipOrder.length - 1) {
-                                            ipOrder.splice(otherIdx, 1)
-                                            ipOrder.push('其他')
-                                          }
-                                          for (const ip of ipOrder) {
-                                            groups.push({ ip, chars: charsWithMini.filter((c) => (c.ip || '自定义') === ip) })
-                                          }
-                                          return groups.map(({ ip, chars }) => (
-                                            <div key={ip} className="mb-3 last:mb-0">
-                                              <div className="text-[10px] font-medium text-white/25 uppercase tracking-wider mb-2 px-1">
-                                                {ip === '自定义'
-                                                  ? t('mini.custom')
-                                                  : ip === '其他'
-                                                    ? t('mini.other')
-                                                    : ip === '原神'
-                                                      ? t('mini.ipGenshin')
-                                                      : ip === '赛马娘'
-                                                        ? t('mini.ipUmaMusume')
-                                                        : ip}
-                                              </div>
-                                              <div className="grid grid-cols-3 gap-2">
-                                                {chars.map((c) => {
-                                                  const cPreview = getMiniGif(c, false)
-                                                  return (
-                                                    <div
-                                                      key={c.name}
-                                                      onClick={() => {
-                                                        saveCharQueue([...charQueue, c.name])
-                                                        setQueuePickerOpen(false)
-                                                      }}
-                                                      className="flex items-center gap-2 p-2 rounded-lg bg-white/5 border border-transparent hover:bg-white/10 hover:border-white/10 cursor-pointer transition-all"
-                                                    >
-                                                      <div className="w-8 h-8 shrink-0 rounded-md overflow-hidden bg-black/50 border border-white/10">
-                                                        {cPreview ? (
-                                                          <img
-                                                            src={cPreview}
-                                                            alt={c.name}
-                                                            className="w-full h-full object-contain opacity-90"
-                                                            style={{ imageRendering: 'pixelated' }}
-                                                            draggable={false}
-                                                          />
-                                                        ) : (
-                                                          <div className="w-full h-full flex items-center justify-center text-white/30 text-xs">?</div>
-                                                        )}
-                                                      </div>
-                                                      <span className="text-xs text-white/70 truncate">{c.builtin ? t(`charNames.${c.name}`, c.name) : c.name}</span>
-                                                    </div>
-                                                  )
-                                                })}
-                                              </div>
-                                            </div>
-                                          ))
-                                        })()}
-                                      </div>
-                                    </div>
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
-                              <p className="text-[11px] text-white/20 px-1 pt-1">{t('mini.queueHint', 'Characters rotate across sessions in queue order.')}</p>
-                            </div>
-                          </div>
-                        </div>
-                        {agents.length > 0 && characters.filter((c) => c.miniActions && Object.keys(c.miniActions).length > 0).length < agents.length && (
-                          <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">{t('mini.notEnoughChars')}</div>
-                        )}
+                        <p className="text-sm text-white/50 mb-6">
+                          选择小看板娘要使用的 codex 像素宠物。大看板娘（香企鹅）由顶部按钮切换。
+                        </p>
+                        <PetPicker
+                          selectedId={largeMascot ? '__xiang-qi-e__' : (miniPet?.id ?? null)}
+                          onSelect={async (pet) => {
+                            await saveMiniPetId(pet.id)
+                            setMiniPet(pet)
+                            if (largeMascot) {
+                              setLargeMascot(false)
+                              largeMascotRef.current = false
+                              const store = await load('settings.json', { defaults: {}, autoSave: true })
+                              await store.set('large_mascot', false)
+                              await store.save()
+                            }
+                          }}
+                          specialPets={[
+                            {
+                              id: '__xiang-qi-e__',
+                              displayName: '香企鹅',
+                              description: '特殊的存在',
+                              avatar: <span style={{ fontSize: 24, lineHeight: 1 }}>🐧</span>,
+                            },
+                          ]}
+                          onSelectSpecial={async (pet) => {
+                            if (pet.id !== '__xiang-qi-e__') return
+                            setLargeMascot(true)
+                            largeMascotRef.current = true
+                            if (largeActionTimerRef.current) clearTimeout(largeActionTimerRef.current)
+                            largeActionTimerRef.current = null
+                            setLargePetAction(null)
+                            largePetActionRef.current = null
+                            const store = await load('settings.json', { defaults: {}, autoSave: true })
+                            await store.set('large_mascot', true)
+                            await store.save()
+                          }}
+                          queueIds={petQueue}
+                          onChangeQueue={savePetQueue}
+                          onNativeDialogStart={() => {
+                            nativeDialogActiveRef.current = true
+                          }}
+                          onNativeDialogEnd={() => {
+                            nativeDialogActiveRef.current = false
+                          }}
+                        />
                       </div>
                     </div>
                   )}
