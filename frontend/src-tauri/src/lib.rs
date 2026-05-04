@@ -48,6 +48,19 @@ static PET_CONTEXT_MENU_OPEN: AtomicBool = AtomicBool::new(false);
 /// inset region and would otherwise pass through to whatever is behind).
 static PET_POMODORO_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Coalesces drag-apply tasks so we never queue more than one
+/// setFrameOrigin: call on the main thread at a time. The poll thread
+/// records the anchor (cursor-to-origin offset at drag start) once; each
+/// scheduled main-thread task simply reads the live cursor position and
+/// snaps the window origin to (cursor - anchor). This is the same pattern
+/// macOS uses for native window dragging and avoids the lag introduced by
+/// accumulating deltas across pre-empted frames.
+static DRAG_TASK_PENDING: AtomicBool = AtomicBool::new(false);
+static DRAG_ANCHOR: std::sync::OnceLock<Mutex<Option<(f64, f64)>>> = std::sync::OnceLock::new();
+fn drag_anchor() -> &'static Mutex<Option<(f64, f64)>> {
+    DRAG_ANCHOR.get_or_init(|| Mutex::new(None))
+}
+
 /// Per-host SSH backoff state.
 struct SshBackoffState {
     fail_count: u32,
@@ -2961,6 +2974,7 @@ async fn get_agent_extra_info(agent_id: String, mode: Option<String>, ssh_host: 
 
 #[tauri::command]
 async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
+    log::info!("[mini-pos] open_mini called");
     if let Some(win) = app.get_webview_window("mini") {
         // Reposition to collapsed position before showing
         #[cfg(target_os = "macos")]
@@ -3001,7 +3015,13 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                             .map(|(_, _, w, h)| (w, h))
                             .unwrap_or_else(|| collapsed_mascot_window_size(1.0));
                         let x = sx + sw / 2.0 + notch_off;
-                        let y = sy + sh - win_h;
+                        // Pull the window down by MASCOT_TOP_INSET so it
+                        // does not sit under the menu bar / notch on launch.
+                        let y = sy + sh - win_h - MASCOT_TOP_INSET;
+                        log::info!(
+                            "[mini-pos] open_mini(existing,mac) target frame x={:.1} y={:.1} w={:.1} h={:.1} inset={:.1} screen=({:.1},{:.1},{:.1},{:.1}) notch_off={:.1}",
+                            x, y, win_w, win_h, MASCOT_TOP_INSET, sx, sy, sw, sh, notch_off
+                        );
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true];
@@ -3029,6 +3049,10 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 let notch_off = (80.0 * ui).round();
                 let x = sw / 2.0 + notch_off;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+                log::info!(
+                    "[mini-pos] open_mini(existing,win) target pos x={:.1} y={:.1} w={:.1} h={:.1} ui={:.2} notch_off={:.1}",
+                    x, 0.0, win_w, win_h, ui, notch_off
+                );
                 let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
             }
             if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
@@ -3091,7 +3115,13 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
                     let (win_w, win_h) = collapsed_mascot_window_size(1.0);
                     let x = sx + sw / 2.0 + notch_off;
-                    let y = sy + sh - win_h;
+                    // Pull the window down by MASCOT_TOP_INSET so the sprite
+                    // is fully visible below the menu bar / notch on launch.
+                    let y = sy + sh - win_h - MASCOT_TOP_INSET;
+                    log::info!(
+                        "[mini-pos] open_mini(new,mac) target frame x={:.1} y={:.1} w={:.1} h={:.1} inset={:.1} screen=({:.1},{:.1},{:.1},{:.1}) notch_off={:.1}",
+                        x, y, win_w, win_h, MASCOT_TOP_INSET, sx, sy, sw, sh, notch_off
+                    );
                     let frame = NSRect::new(
                         NSPoint::new(x, y),
                         NSSize::new(win_w, win_h),
@@ -3121,6 +3151,10 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
             let notch_off = (80.0 * ui).round();
             let x = sw / 2.0 + notch_off;
             let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+            log::info!(
+                "[mini-pos] open_mini(new,win) target pos x={:.1} y={:.1} w={:.1} h={:.1} ui={:.2} notch_off={:.1}",
+                x, 0.0, win_w, win_h, ui, notch_off
+            );
             let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
         }
         if !FULLSCREEN_HIDING.load(std::sync::atomic::Ordering::SeqCst) {
@@ -3154,6 +3188,11 @@ fn collapsed_x(sx: f64, sw: f64, win_w: f64, position: &str, notch_offset: f64) 
 // at the bottom/right edges of the OS-level mascot window.
 const COLLAPSED_MASCOT_BASE_W: f64 = 96.0;
 const COLLAPSED_MASCOT_BASE_H: f64 = 96.0;
+// Vertical inset applied to the default mascot position so the sprite is
+// always rendered below the macOS menu bar / notch (or the equivalent top
+// chrome on Windows). Covers both notched (~38pt) and non-notched (~24pt)
+// menu bars with extra breathing room.
+const MASCOT_TOP_INSET: f64 = 120.0;
 const MASCOT_SCALE_MIN: f64 = 1.0;
 const MASCOT_SCALE_MAX: f64 = 3.0;
 const LARGE_MASCOT_SIZE_MULTIPLIER: f64 = 3.0;
@@ -3430,6 +3469,7 @@ async fn get_mini_monitor_rect(app: tauri::AppHandle) -> Result<(f64, f64, f64, 
 /// macOS: bottom-left origin. Windows: top-left origin.
 #[tauri::command]
 async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
+    log::info!("[mini-pos] set_mini_origin request x={:.1} y={:.1}", x, y);
     let win = app.get_webview_window("mini").ok_or("mini not found")?;
     #[cfg(target_os = "macos")]
     {
@@ -3461,9 +3501,16 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
                 let min_x = screen_frame.origin.x;
                 let max_x = (screen_frame.origin.x + screen_frame.size.width - frame.size.width).max(min_x);
                 let min_y = screen_frame.origin.y;
-                let max_y = (screen_frame.origin.y + screen_frame.size.height - frame.size.height).max(min_y);
+                // Keep collapsed mascot windows below top chrome. This also
+                // prevents stale persisted positions from parking the window
+                // under the notch/menu bar after startup.
+                let max_y = (screen_frame.origin.y + screen_frame.size.height - frame.size.height - MASCOT_TOP_INSET).max(min_y);
                 let clamped_x = x.max(min_x).min(max_x);
                 let clamped_y = y.max(min_y).min(max_y);
+                log::info!(
+                    "[mini-pos] set_mini_origin(mac) clamped x={:.1}->{:.1} y={:.1}->{:.1} bounds x[{:.1},{:.1}] y[{:.1},{:.1}]",
+                    x, clamped_x, y, clamped_y, min_x, max_x, min_y, max_y
+                );
                 let new_frame = NSRect::new(
                     NSPoint::new(clamped_x, clamped_y),
                     NSSize::new(frame.size.width, frame.size.height),
@@ -3479,7 +3526,36 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let scale = monitor.scale_factor();
+            let mp = monitor.position();
+            let mx = mp.x as f64 / scale;
+            let my = mp.y as f64 / scale;
+            let sw = monitor.size().width as f64 / scale;
+            let sh = monitor.size().height as f64 / scale;
+            let ui = win_ui_scale(&monitor);
+            let (ww, wh) = win
+                .outer_size()
+                .map(|s| (s.width as f64 / scale, s.height as f64 / scale))
+                .unwrap_or((0.0, 0.0));
+            let min_x = mx;
+            let max_x = (mx + sw - ww).max(min_x);
+            let min_y = my + (MASCOT_TOP_INSET * ui).round();
+            let max_y = (my + sh - wh).max(min_y);
+            let clamped_x = x.max(min_x).min(max_x);
+            let clamped_y = y.max(min_y).min(max_y);
+            log::info!(
+                "[mini-pos] set_mini_origin(win) clamped x={:.1}->{:.1} y={:.1}->{:.1} bounds x[{:.1},{:.1}] y[{:.1},{:.1}]",
+                x, clamped_x, y, clamped_y, min_x, max_x, min_y, max_y
+            );
+            let _ = win.set_position(tauri::LogicalPosition::new(clamped_x, clamped_y));
+        } else {
+            log::info!(
+                "[mini-pos] set_mini_origin(win,fallback) apply x={:.1} y={:.1} (with inset)",
+                x, y + MASCOT_TOP_INSET
+            );
+            let _ = win.set_position(tauri::LogicalPosition::new(x, y + MASCOT_TOP_INSET));
+        }
     }
     Ok(())
 }
@@ -3499,6 +3575,10 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
     let pos = position.unwrap_or_else(|| "right".to_string());
     let mascot_scale = sanitized_mascot_scale(mascot_scale);
     let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
+    log::info!(
+        "[mini-pos] set_mini_expanded request expanded={} pos={} efficiency={:?} keep_position={:?} large_mascot={:?} mascot_scale={:.2} large_scale={:.2}",
+        expanded, pos, efficiency, keep_position, large_mascot, mascot_scale, large_mascot_scale
+    );
 
     #[cfg(target_os = "macos")]
     {
@@ -3544,7 +3624,15 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         let win_w = if efficiency.unwrap_or(false) { 600.0 } else { 500.0 };
                         let win_h = max_height.unwrap_or(350.0).max(200.0).min(500.0);
                         let x = sx + (sw - win_w) / 2.0;
+                        // Expanded panel hugs the top of the screen (its window
+                        // level is high enough to draw over the menu bar). The
+                        // MASCOT_TOP_INSET only applies to the collapsed mascot
+                        // so it stays clear of the notch.
                         let y = sy + sh - win_h;
+                        log::info!(
+                            "[mini-pos] set_mini_expanded(mac,expanded) frame x={:.1} y={:.1} w={:.1} h={:.1}",
+                            x, y, win_w, win_h
+                        );
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
@@ -3561,7 +3649,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         } else {
                             collapsed_mascot_window_size(mascot_scale)
                         };
-                        let (x, y) = if keep_position.unwrap_or(false) {
+                        let (mut x, mut y) = if keep_position.unwrap_or(false) {
                             let cur: NSRect = unsafe { msg_send![obj, frame] };
                             (cur.origin.x, cur.origin.y + cur.size.height - win_h)
                         } else if large_mascot.unwrap_or(false) {
@@ -3569,8 +3657,19 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                             let margin_y = 300.0;
                             (sx + sw - win_w - margin_x, sy + margin_y)
                         } else {
-                            (collapsed_x(sx, sw, win_w, &pos, notch_off), sy + sh - win_h)
+                            (
+                                collapsed_x(sx, sw, win_w, &pos, notch_off),
+                                sy + sh - win_h - MASCOT_TOP_INSET,
+                            )
                         };
+                        if !large_mascot.unwrap_or(false) {
+                            let max_y = sy + sh - win_h - MASCOT_TOP_INSET;
+                            if y > max_y { y = max_y; }
+                        }
+                        log::info!(
+                            "[mini-pos] set_mini_expanded(mac,collapsed) frame x={:.1} y={:.1} w={:.1} h={:.1} keep_position={}",
+                            x, y, win_w, win_h, keep_position.unwrap_or(false)
+                        );
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
@@ -3602,8 +3701,15 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 let win_w = (base_w * ui).round();
                 let win_h = (400.0 * ui).round();
                 let x = mx + (sw - win_w) / 2.0;
+                // Expanded panel hugs the top of the monitor (no inset) so it
+                // does not get pushed below the IDE chrome.
+                let y = my;
+                log::info!(
+                    "[mini-pos] set_mini_expanded(win,expanded) frame x={:.1} y={:.1} w={:.1} h={:.1} ui={:.2}",
+                    x, y, win_w, win_h, ui
+                );
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+                let _ = win.set_position(tauri::LogicalPosition::new(x, y));
             } else {
                 let (base_w, base_h) = if large_mascot.unwrap_or(false) {
                     large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale)
@@ -3624,7 +3730,12 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                     } else {
                         let notch_off = (80.0 * ui).round();
                         let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
-                        let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+                        let y = my + (MASCOT_TOP_INSET * ui).round();
+                        log::info!(
+                            "[mini-pos] set_mini_expanded(win,collapsed) frame x={:.1} y={:.1} w={:.1} h={:.1} keep_position={}",
+                            x, y, win_w, win_h, keep_position.unwrap_or(false)
+                        );
+                        let _ = win.set_position(tauri::LogicalPosition::new(x, y));
                     }
                 }
             }
@@ -3666,15 +3777,33 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
     use std::time::{Duration, Instant};
     EFFICIENCY_HOVER_THREAD_ALIVE.store(true, Ordering::SeqCst);
     let mut was_inside = false;
+    let mut was_over_mascot = false;
     let mut last_enter_emit = Instant::now();
+    // Drag state machine, driven entirely by NSEvent.pressedMouseButtons +
+    // NSEvent.mouseLocation. The webview cannot observe mouseDown on a
+    // non-key floating window, so the JS-side drag would otherwise need a
+    // priming click. We mirror codex's approach: poll cursor + button,
+    // translate the mini NSWindow ourselves, and emit walk-dir events to
+    // the frontend so the codex sprite shows run-left/run-right.
+    let mut drag_active = false;
+    let mut last_cursor: (f64, f64) = (0.0, 0.0);
+    let mut last_walk_dir: i32 = 0;
+    let mut was_pressed = false;
+    // Used only for run-left/right detection — measured between successive
+    // poll iterations. Window translation itself is anchor-based and lives
+    // in request_drag_apply (which reads the live cursor on main thread).
+
     while EFFICIENCY_HOVER_ACTIVE.load(Ordering::SeqCst) {
         let info = NOTCH_SCREEN_INFO.lock().ok().and_then(|g| *g);
         let sleep_ms = if let Some((sx, sy, sw, sh, notch_off)) = info {
             let cursor = macos_cursor_position();
+            let buttons = macos_pressed_mouse_buttons();
+            let left_pressed = (buttons & 1) != 0;
             let is_expanded = EFFICIENCY_EXPANDED.load(Ordering::SeqCst);
+            let frame = MINI_WINDOW_FRAME.lock().ok().and_then(|g| *g);
 
             let inside = if is_expanded {
-                if let Some((fx, fy, fw, fh)) = MINI_WINDOW_FRAME.lock().ok().and_then(|g| *g) {
+                if let Some((fx, fy, fw, fh)) = frame {
                     cursor.0 >= fx && cursor.0 <= fx + fw
                         && cursor.1 >= fy && cursor.1 <= fy + fh
                 } else {
@@ -3682,10 +3811,7 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
                 }
             } else {
                 let rw = (notch_off * 2.0 + 10.0).max(80.0);
-                let rh = MINI_WINDOW_FRAME
-                    .lock()
-                    .ok()
-                    .and_then(|g| *g)
+                let rh = frame
                     .map(|(_, _, _, fh)| fh.clamp(20.0, 28.0))
                     .unwrap_or(35.0);
                 let rx = sx + (sw - rw) / 2.0;
@@ -3705,14 +3831,115 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
             }
             was_inside = inside;
 
-            // Adaptive polling: fast when cursor is near/inside the target,
-            // slow when far away to save CPU/battery.
-            if is_expanded || inside {
+            // ── Mascot body hit-test ──
+            // Use a tighter rect than the full 96x96 window: the codex
+            // 192x208 cell paints the character roughly in its centre with
+            // transparent margins (and the status badge lives in the
+            // bottom-right corner). Hover/drag should only fire on the
+            // visible body, so we inset to ~35% wide x 65% tall around the
+            // upper-centre where the head/torso sit.
+            let over_mascot = if is_expanded {
+                false
+            } else if let Some((fx, fy, fw, fh)) = frame {
+                let l = fx + fw * 0.32;
+                let r = fx + fw * 0.68;
+                let b = fy + fh * 0.25; // NSEvent y axis grows upward
+                let t = fy + fh * 0.90;
+                cursor.0 >= l && cursor.0 <= r && cursor.1 >= b && cursor.1 <= t
+            } else {
+                false
+            };
+
+            // ── Drag state machine ──
+            // Only engage in collapsed (mascot) state, never in expanded
+            // panel mode (clicks inside the panel must keep their normal
+            // webview behavior).
+            if !is_expanded {
+                if drag_active {
+                    if left_pressed {
+                        // Always request a fresh window-snap; the main-thread
+                        // task reads cursor position itself, so even if many
+                        // requests collapse into one, the window still ends
+                        // up under the live cursor.
+                        request_drag_apply(&app);
+                        let dx = cursor.0 - last_cursor.0;
+                        last_cursor = cursor;
+                        let walk_dir = if dx > 0.5 { 1 } else if dx < -0.5 { -1 } else { last_walk_dir };
+                        if walk_dir != last_walk_dir {
+                            let _ = app.emit("mini-mascot-walk", walk_dir);
+                            last_walk_dir = walk_dir;
+                        }
+                    } else {
+                        // Drag finished. Clear anchor + walk dir and notify
+                        // the frontend so it can persist the new origin.
+                        drag_active = false;
+                        if let Ok(mut a) = drag_anchor().lock() {
+                            *a = None;
+                        }
+                        if last_walk_dir != 0 {
+                            let _ = app.emit("mini-mascot-walk", 0i32);
+                            last_walk_dir = 0;
+                        }
+                        let _ = app.emit("mini-mascot-drag-end", ());
+                    }
+                } else if over_mascot && left_pressed && !was_pressed {
+                    drag_active = true;
+                    last_cursor = cursor;
+                    // Capture the cursor-to-origin offset at drag start so
+                    // the main-thread task can place the window absolutely
+                    // each frame instead of summing deltas.
+                    if let Some((fx, fy, _, _)) = frame {
+                        if let Ok(mut a) = drag_anchor().lock() {
+                            *a = Some((cursor.0 - fx, cursor.1 - fy));
+                        }
+                    }
+                    // Cancel any active hover so the sprite immediately
+                    // switches from `jumping` to its base/run state when
+                    // the drag begins.
+                    if was_over_mascot {
+                        let _ = app.emit("mini-mascot-hover", false);
+                        was_over_mascot = false;
+                    }
+                }
+            } else if drag_active {
+                drag_active = false;
+                if let Ok(mut a) = drag_anchor().lock() {
+                    *a = None;
+                }
+                if last_walk_dir != 0 {
+                    let _ = app.emit("mini-mascot-walk", 0i32);
+                    last_walk_dir = 0;
+                }
+            }
+            was_pressed = left_pressed;
+
+            // Hover signal is suppressed while dragging so the sprite
+            // shows run-left/run-right instead of jumping.
+            let hover_signal = over_mascot && !drag_active;
+            if hover_signal != was_over_mascot {
+                let _ = app.emit("mini-mascot-hover", hover_signal);
+                was_over_mascot = hover_signal;
+            }
+
+            // Adaptive polling: fastest while dragging (60fps) so the
+            // window keeps up with the cursor; slower when just hovering;
+            // very slow when far from the mascot to save battery.
+            if drag_active {
+                16
+            } else if is_expanded || inside || over_mascot {
                 30
             } else {
                 let screen_top = sy + sh;
                 let dist_from_top = screen_top - cursor.1;
-                if dist_from_top < 200.0 {
+                let near_mascot = frame
+                    .map(|(fx, fy, fw, fh)| {
+                        cursor.0 >= fx - 80.0
+                            && cursor.0 <= fx + fw + 80.0
+                            && cursor.1 >= fy - 80.0
+                            && cursor.1 <= fy + fh + 80.0
+                    })
+                    .unwrap_or(false);
+                if near_mascot || dist_from_top < 200.0 {
                     50
                 } else {
                     500
@@ -3724,6 +3951,51 @@ fn efficiency_hover_poll(app: tauri::AppHandle) {
         std::thread::sleep(Duration::from_millis(sleep_ms));
     }
     EFFICIENCY_HOVER_THREAD_ALIVE.store(false, Ordering::SeqCst);
+}
+
+/// Schedule a main-thread task that snaps the mini window origin to
+/// `(cursor_now - DRAG_ANCHOR)` — i.e. wherever the cursor currently is,
+/// minus the offset captured at drag-start. Calls coalesce: while a task
+/// is in flight, repeated invocations are no-ops; the running task always
+/// reads the freshest cursor position. This keeps drag tracking tight
+/// even when the poll thread runs much faster than the main thread can
+/// repaint, and avoids the cumulative lag of relative-delta translation.
+#[cfg(target_os = "macos")]
+fn request_drag_apply(app: &tauri::AppHandle) {
+    if DRAG_TASK_PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        use objc2_foundation::NSPoint;
+
+        DRAG_TASK_PENDING.store(false, Ordering::SeqCst);
+        let anchor = drag_anchor().lock().ok().and_then(|g| *g);
+        let Some((ax, ay)) = anchor else { return };
+
+        let cursor = macos_cursor_position();
+        let new_origin = NSPoint::new(cursor.0 - ax, cursor.1 - ay);
+
+        if let Some(win) = app_clone.get_webview_window("mini") {
+            if let Ok(ns_win) = win.ns_window() {
+                let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                // setFrameOrigin: only moves the window — it does not
+                // redraw the contents — so it is far cheaper than
+                // setFrame:display:animate:NO and keeps up with fast
+                // cursor motion.
+                unsafe {
+                    let _: () = msg_send![obj, setFrameOrigin: new_origin];
+                }
+                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                    if let Some((_, _, w, h)) = *f {
+                        *f = Some((new_origin.x, new_origin.y, w, h));
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// Read the current mouse cursor position via `[NSEvent mouseLocation]`.
@@ -3742,13 +4014,30 @@ fn macos_cursor_position() -> (f64, f64) {
     }
 }
 
+/// Returns the bitmask of currently pressed mouse buttons via
+/// `[NSEvent pressedMouseButtons]`. Bit 0 = left button. This works
+/// regardless of whether the receiving window is the key window, which is
+/// what we need to detect drags on the floating mini mascot.
+#[cfg(target_os = "macos")]
+fn macos_pressed_mouse_buttons() -> usize {
+    unsafe {
+        use objc2::msg_send;
+        if let Some(cls) = objc2::runtime::AnyClass::get(c"NSEvent") {
+            let mask: usize = msg_send![cls, pressedMouseButtons];
+            mask
+        } else {
+            0
+        }
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn macos_cursor_position() -> (f64, f64) {
     (0.0, 0.0)
 }
 
 /// Resize the expanded mini window height while keeping it top-aligned.
-/// macOS: bottom-left origin, so adjust y to keep bottom aligned.
+/// macOS: bottom-left origin, so adjust y to keep the same top anchor.
 /// Windows: top-left origin, so just resize height.
 #[tauri::command]
 async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Option<f64>, animate: Option<bool>) -> Result<(), String> {
@@ -3783,10 +4072,17 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Opti
                 let sf: NSRect = unsafe { msg_send![&*screen_ptr, frame] };
                 let cur: NSRect = unsafe { msg_send![obj, frame] };
                 let capped_h = h.min((sf.size.height * 0.75).max(200.0));
+                // Top-aligned to the screen, matching the expanded panel's
+                // initial placement in `set_mini_expanded`. No MASCOT_TOP_INSET
+                // here — that inset only applies to the collapsed mascot.
                 let new_y = sf.origin.y + sf.size.height - capped_h;
                 let new_frame = NSRect::new(
                     NSPoint::new(cur.origin.x, new_y),
                     NSSize::new(cur.size.width, capped_h),
+                );
+                log::info!(
+                    "[mini-pos] resize_mini_height(mac) frame x={:.1} y={:.1} w={:.1} h={:.1}",
+                    cur.origin.x, new_y, cur.size.width, capped_h
                 );
                 unsafe {
                     let do_animate: bool = animate.unwrap_or(false);
@@ -5350,7 +5646,10 @@ async fn set_mini_size(
                             let margin = 10.0;
                             (sx + sw - win_w - margin, sy + margin)
                         } else {
-                            (collapsed_x(sx, sw, win_w, &pos, notch_off), sy + sh - win_h)
+                            (
+                                collapsed_x(sx, sw, win_w, &pos, notch_off),
+                                sy + sh - win_h - MASCOT_TOP_INSET,
+                            )
                         };
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
@@ -5421,7 +5720,10 @@ async fn set_mini_size(
                 } else {
                     let notch_off = (80.0 * ui).round();
                     let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
-                    let _ = win.set_position(tauri::LogicalPosition::new(x, my));
+                    let _ = win.set_position(tauri::LogicalPosition::new(
+                        x,
+                        my + (MASCOT_TOP_INSET * ui).round(),
+                    ));
                 }
             } else {
                 let win_w = (sw * 0.85).round();
@@ -10415,6 +10717,19 @@ fn install_wry_webview_ime_fix() {
         }
     }
 
+    // Always accept the first mouse event. By default NSView returns NO,
+    // which means the first click on an inactive floating window only
+    // activates the app — pointerdown is never delivered to the webview,
+    // breaking direct drag on the mini mascot. Returning YES delivers
+    // every click to the view immediately.
+    unsafe extern "C-unwind" fn accepts_first_mouse(
+        _this: &AnyObject,
+        _cmd: Sel,
+        _event: *mut AnyObject,
+    ) -> bool {
+        true
+    }
+
     fn patch_class(class_name: &'static std::ffi::CStr, text_input_protocol: Option<&'static AnyProtocol>) {
         let Some(cls) = AnyClass::get(class_name) else {
             log::warn!("[ime] class not found: {}", class_name.to_string_lossy());
@@ -10422,7 +10737,8 @@ fn install_wry_webview_ime_fix() {
         };
 
         let cls_ptr = cls as *const AnyClass as *mut AnyClass;
-        let type_encoding = CString::new("q@:").unwrap();
+        let level_encoding = CString::new("q@:").unwrap();
+        let bool_arg_encoding = CString::new("c@:@").unwrap();
         unsafe {
             if let Some(protocol) = text_input_protocol {
                 let _ = ffi::class_addProtocol(cls_ptr, protocol);
@@ -10431,7 +10747,23 @@ fn install_wry_webview_ime_fix() {
                 cls_ptr,
                 sel!(windowLevel),
                 std::mem::transmute::<unsafe extern "C-unwind" fn(&AnyObject, Sel) -> isize, Imp>(window_level),
-                type_encoding.as_ptr(),
+                level_encoding.as_ptr(),
+            );
+            // Use class_replaceMethod so we win even when the class (or one
+            // of its superclasses, via class_addMethod's behavior) already
+            // implements acceptsFirstMouse:.
+            let _ = ffi::class_replaceMethod(
+                cls_ptr,
+                sel!(acceptsFirstMouse:),
+                std::mem::transmute::<
+                    unsafe extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject) -> bool,
+                    Imp,
+                >(accepts_first_mouse),
+                bool_arg_encoding.as_ptr(),
+            );
+            log::info!(
+                "[first-mouse] patched {} with acceptsFirstMouse:=YES",
+                class_name.to_string_lossy()
             );
         }
     }
@@ -10440,8 +10772,15 @@ fn install_wry_webview_ime_fix() {
         let text_input_protocol = AnyProtocol::get(c"NSTextInputClient");
         patch_class(c"WryWebView", text_input_protocol);
         patch_class(c"WKWebView", text_input_protocol);
+        // Patch NSView itself so EVERY subclass (including private/leaf
+        // WebKit views whose names we cannot rely on across macOS versions)
+        // returns YES from acceptsFirstMouse:. acceptsFirstMouse: is only
+        // queried when the click target's window is not the key window, so
+        // patching the base class is safe for normal activating windows.
+        patch_class(c"NSView", None);
     });
 }
+
 
 fn asset_mime_for_path(path: &str) -> &'static str {
     let lower = path.to_ascii_lowercase();
@@ -10581,8 +10920,6 @@ pub fn run() {
         .setup(|app| {
             // Fix PATH so openclaw (Node.js script) and node are both reachable
             fix_path();
-            #[cfg(target_os = "macos")]
-            install_wry_webview_ime_fix();
 
             // Install Claude + Codex hooks on every startup (idempotent)
             if let Err(e) = tauri::async_runtime::block_on(install_claude_hooks()) {
@@ -10598,6 +10935,13 @@ pub fn run() {
                     .level(log::LevelFilter::Info)
                     .build(),
             )?;
+
+            // Run the WKWebView swizzle AFTER the log plugin is initialized so
+            // its [first-mouse] / IME log lines are actually visible in the
+            // tauri-plugin-log stream. Order vs window creation is fine —
+            // setup() runs after the mini webview already exists.
+            #[cfg(target_os = "macos")]
+            install_wry_webview_ime_fix();
 
             // Accessibility permission is no longer requested automatically on
             // startup. Cursor window raising is handled by the extension running
@@ -10634,6 +10978,13 @@ pub fn run() {
                             let _: () = msg_send![obj, setLevel: 27isize];
                             let behavior: usize = (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6);
                             let _: () = msg_send![obj, setCollectionBehavior: behavior];
+                            // Deliver mouse-moved / mouse-entered events to
+                            // the mini window even when it is not the key
+                            // window. Without this, hovering the unfocused
+                            // mascot does not fire mouseenter on the webview
+                            // and the codex sprite never starts its jump
+                            // until the user clicks once to activate.
+                            let _: () = msg_send![obj, setAcceptsMouseMovedEvents: true];
                         }
 
                         let screen_info: Option<(f64, f64, f64, f64, f64)> = unsafe {
@@ -10655,7 +11006,7 @@ pub fn run() {
                         if let Some((sx, sy, sw, sh, notch_off)) = screen_info {
                             let (win_w, win_h) = collapsed_mascot_window_size(1.0);
                             let x = sx + sw / 2.0 + notch_off;
-                            let y = sy + sh - win_h;
+                            let y = sy + sh - win_h - MASCOT_TOP_INSET;
                             let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                             unsafe {
                                 let _: () = msg_send![obj, setFrame: frame, display: true];
@@ -10676,7 +11027,7 @@ pub fn run() {
                     let scale = monitor.scale_factor();
                     let sw = screen.width as f64 / scale;
                     let x = sw / 2.0 + 40.0;
-                    let _ = win.set_position(tauri::LogicalPosition::new(x, 0.0));
+                    let _ = win.set_position(tauri::LogicalPosition::new(x, MASCOT_TOP_INSET));
                 }
                 let _ = win.show();
             }

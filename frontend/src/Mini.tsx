@@ -560,6 +560,12 @@ function connToOcParams(conn: OcConnection): OcParams | null {
 export default function Mini() {
   const [expanded, setExpanded] = useState(false)
   const [showPanel, setShowPanel] = useState(false)
+  // External hover signal for the codex sprite, driven by a Rust cursor
+  // poll. macOS does not deliver mouseenter to non-key floating windows,
+  // so the webview-level hover would otherwise stay false until the user
+  // first clicks. The Rust side emits `mini-mascot-hover` whenever the
+  // cursor enters/leaves the collapsed mascot's window rect.
+  const [mascotHover, setMascotHover] = useState(false)
   const [agents, setAgents] = useState<AgentInfo[]>([])
   const [hasConfiguredOpenClaw, setHasConfiguredOpenClaw] = useState(false)
   const [healthMap, setHealthMap] = useState<Record<string, boolean>>({})
@@ -2680,6 +2686,15 @@ export default function Mini() {
       // sprite via updateWalkDir so the pet visibly runs while moving.
       if (!moveModeRef.current && appModeRef.current !== 'pet') {
         if (e.button !== 0 || e.ctrlKey || collapsingRef.current) return
+        // On macOS the cursor poll in lib.rs (efficiency_hover_poll) drives
+        // the drag itself via translate_mini_frame + mini-mascot-walk events.
+        // Letting the webview path also call move_mini_by would double the
+        // motion, so swallow the pointerdown here and rely on the Rust
+        // poll for translation + walk-dir + persistence.
+        if (!isWindowsPlatform) {
+          e.preventDefault()
+          return
+        }
         e.preventDefault()
         mascotDragActiveRef.current = true
         const startX = e.screenX
@@ -2726,9 +2741,14 @@ export default function Mini() {
           if (ev.pointerId !== pid) return
           cleanup()
           if (!dragging) {
-            hoverExpandedRef.current = false
-            setCompletionSessionId(null)
-            expand()
+            // macOS opens the panel via notch hover (efficiency_hover_poll),
+            // so a tap on the mascot stays a no-op there. Windows has no
+            // notch detection, so a tap is the only way to open the panel.
+            if (isWindowsPlatform) {
+              hoverExpandedRef.current = false
+              setCompletionSessionId(null)
+              expand()
+            }
           } else {
             invoke('get_mini_origin').then(async (pos) => {
               const [x, y] = pos as [number, number]
@@ -2868,8 +2888,9 @@ export default function Mini() {
                   playPetAudio('headpat')
                 }
               }
-            } else {
-              // Coding mode should open panel on click, regardless of large mascot size.
+            } else if (isWindowsPlatform) {
+              // Coding mode: tap-to-open is Windows-only. macOS uses the
+              // notch-hover poll instead so the click stays a no-op.
               hoverExpandedRef.current = false
               setCompletionSessionId(null)
               expand()
@@ -3115,6 +3136,58 @@ export default function Mini() {
     }
   }, [viewMode, moveMode, updateModalOpen, settingsMode, settingsTransitioning, appMode])
 
+  // Bridge the Rust cursor poll's `mini-mascot-hover` event to local state
+  // so the codex sprite can play its jump animation on hover even before
+  // the user has focused the mini window. macOS does not deliver
+  // mouseEntered to non-key floating windows, which is why webview-only
+  // hover handling alone leaves the mascot frozen until first click.
+  useEffect(() => {
+    if (appMode === 'pet') return
+    const unlisten = listen<boolean>('mini-mascot-hover', (event) => {
+      setMascotHover(!!event.payload)
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [appMode])
+
+  // Mirror the run-left/run-right sprite state during a Rust-driven drag.
+  // The poll thread emits walk-dir = -1 / 1 / 0 as the user drags the
+  // mascot horizontally so the sprite matches the drag direction.
+  useEffect(() => {
+    if (appMode === 'pet') return
+    const unlisten = listen<number>('mini-mascot-walk', (event) => {
+      const dir = event.payload
+      if (dir === 1 || dir === -1 || dir === 0) {
+        updateWalkDir(dir)
+      }
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [appMode, updateWalkDir])
+
+  // Persist the mascot's new origin after a Rust-driven drag finishes so
+  // the position survives across collapsed/expanded mode switches.
+  useEffect(() => {
+    if (appMode === 'pet') return
+    const unlisten = listen('mini-mascot-drag-end', async () => {
+      try {
+        const pos = (await invoke('get_mini_origin')) as [number, number]
+        const [x, y] = pos
+        customPosRef.current = { x, y }
+        const store = await load('settings.json', { defaults: {}, autoSave: true })
+        await store.set('mini_custom_pos', { x, y })
+        await store.save()
+      } catch {
+        /* ignore */
+      }
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [appMode])
+
   useEffect(() => {
     if (viewMode !== 'efficiency' || appMode === 'pet') return
     const unlisten = listen<boolean>('efficiency-hover', (event) => {
@@ -3319,6 +3392,11 @@ export default function Mini() {
 
   useEffect(() => {
     if (expanded || moveMode || updateModalOpen) return
+    // Auto-expand on window focus is Windows-only. macOS opens the panel
+    // through the notch-hover poll, and clicking the mascot will focus the
+    // mini window — auto-expanding here would re-introduce the popup that
+    // we explicitly suppressed in the pointerdown handler.
+    if (!isWindowsPlatform) return
     const onFocus = () => {
       if (appModeRef.current === 'pet') return // no auto-expand in pet mode
       if (collapsingRef.current || moveModeRef.current || mascotDragActiveRef.current) return
@@ -3859,7 +3937,6 @@ export default function Mini() {
                   position: 'relative',
                   width: collapsedMascotSize * MINI_SPRITE_DISPLAY_MULTIPLIER,
                   height: Math.round(collapsedMascotSize * MINI_SPRITE_DISPLAY_MULTIPLIER * (208 / 192)),
-                  pointerEvents: 'none',
                 }}
               >
                 <MiniPetMascot
@@ -3867,6 +3944,8 @@ export default function Mini() {
                   baseState={mainSpriteState}
                   size={collapsedMascotSize * MINI_SPRITE_DISPLAY_MULTIPLIER}
                   enableHoverJump
+                  externalHover={mascotHover}
+                  useExternalHover={!isWindowsPlatform}
                 />
               </div>
             ) : (
@@ -4124,7 +4203,10 @@ export default function Mini() {
               )}
             </div>
             <div className="flex items-center gap-4">
-              {appMode !== 'pet' && (
+              {/* Move-mode toggle is Windows-only. macOS supports direct
+                  drag from the collapsed mascot, so the explicit toggle is
+                  redundant there. Pet mode never shows this button. */}
+              {isWindowsPlatform && appMode !== 'pet' && (
                 <button
                   data-no-drag
                   onClick={(e) => {

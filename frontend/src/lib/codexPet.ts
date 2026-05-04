@@ -51,9 +51,12 @@ export const ANIMATION_ROWS: Record<CodexPetState, AnimationRow> = {
 export const SPRITE_FPS = 12
 
 // Per-state fps overrides. States not listed fall back to SPRITE_FPS.
-// Idle is intentionally slow (subtle breathing-style loop).
+// Idle is intentionally slow (subtle breathing-style loop). Jumping plays
+// slower than the default 12fps so the 5-frame animation reads clearly
+// during the brief one-shot.
 export const STATE_FPS: Partial<Record<CodexPetState, number>> = {
   idle: 2,
+  jumping: 6,
 }
 
 export function fpsFor(state: CodexPetState): number {

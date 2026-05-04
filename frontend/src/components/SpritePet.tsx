@@ -15,6 +15,10 @@ interface SpritePetProps {
   // Fired once jumping reaches its last frame so the parent can flip back
   // to its previous resting state. No-op for looping states.
   onOneShotEnd?: () => void
+  // When true, treat one-shot states (jumping) as looping. Used by hover
+  // interactions where the parent wants the animation to keep playing as
+  // long as the cursor is over the mascot.
+  loop?: boolean
   className?: string
   style?: React.CSSProperties
 }
@@ -25,9 +29,10 @@ interface SpritePetProps {
 // and notify the parent via onOneShotEnd.
 const ONE_SHOT_STATES: ReadonlySet<CodexPetState> = new Set(['jumping'])
 
-export function SpritePet({ pet, state, size, onOneShotEnd, className, style }: SpritePetProps) {
+export function SpritePet({ pet, state, size, onOneShotEnd, loop, className, style }: SpritePetProps) {
   const [frameIndex, setFrameIndex] = useState(0)
   const stateRef = useRef(state)
+  const loopRef = useRef(loop ?? false)
   const onOneShotEndRef = useRef(onOneShotEnd)
   const oneShotFiredRef = useRef(false)
 
@@ -36,6 +41,10 @@ export function SpritePet({ pet, state, size, onOneShotEnd, className, style }: 
     oneShotFiredRef.current = false
     setFrameIndex(0)
   }, [state])
+
+  useEffect(() => {
+    loopRef.current = loop ?? false
+  }, [loop])
 
   useEffect(() => {
     onOneShotEndRef.current = onOneShotEnd
@@ -63,7 +72,7 @@ export function SpritePet({ pet, state, size, onOneShotEnd, className, style }: 
         if (!row) continue
         setFrameIndex((prev) => {
           const next = prev + 1
-          if (ONE_SHOT_STATES.has(cur)) {
+          if (ONE_SHOT_STATES.has(cur) && !loopRef.current) {
             if (next >= row.frames) {
               if (!oneShotFiredRef.current) {
                 oneShotFiredRef.current = true
