@@ -10008,6 +10008,19 @@ fn codex_requires_escalation(event: &serde_json::Value) -> bool {
         None
     }
 
+    // Hard guard: this helper exists only for Codex events. CC's
+    // PreToolUse payload may carry overlapping field names (e.g. a future
+    // CC release adding a `justification` field), and previous iterations
+    // of the looser checks below already mis-classified CC's Bash calls
+    // as needing approval. Bail out immediately for anything that isn't
+    // unambiguously a Codex event so the function name and behaviour
+    // stay aligned, no matter what gets added inside it later.
+    let is_codex_event = event.get("turn_id").is_some()
+        || read_string(event, &["source"]).unwrap_or("").eq_ignore_ascii_case("codex");
+    if !is_codex_event {
+        return false;
+    }
+
     // Preferred path: explicit approval/escalation fields.
     if has_explicit_escalation_markers(event) {
         return true;
@@ -10024,10 +10037,7 @@ fn codex_requires_escalation(event: &serde_json::Value) -> bool {
     // out-of-workspace write command almost always means approval UI.
     let tool_name = read_string(event, &["tool", "tool_name"]).unwrap_or("");
     let permission_mode = read_string(event, &["permission_mode", "permissionMode"]).unwrap_or("");
-    let is_codex_like = event.get("turn_id").is_some()
-        || event.get("hook_event_name").is_some()
-        || read_string(event, &["source"]).unwrap_or("").eq_ignore_ascii_case("codex");
-    if !(is_codex_like && tool_name == "Bash" && permission_mode == "default") {
+    if !(tool_name == "Bash" && permission_mode == "default") {
         return false;
     }
 
