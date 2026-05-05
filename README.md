@@ -13,18 +13,18 @@
 </p>
 
 <p align="center">
-  <b>Pet Mode</b>
-</p>
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/2a143250-174a-406e-8a43-fd30db7ce071" width="600" />
-</p>
-<p align="center">
   <b>Code Mode</b><br/>
   <sub>macOS: OpenClaw, Claude Code, Cursor, Codex</sub><br/>
   <sub>Windows: OpenClaw, Claude Code</sub>
 </p>
 <p align="center">
   <img src="https://github.com/user-attachments/assets/74b8bbf8-ddcf-4149-a91e-d18d5c24fec6" width="600" />
+</p>
+<p align="center">
+  <b>Pet Mode</b>
+</p>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/2a143250-174a-406e-8a43-fd30db7ce071" width="600" />
 </p>
 
 ## What it does

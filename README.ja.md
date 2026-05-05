@@ -13,22 +13,18 @@
 </p>
 
 <p align="center">
-  <b>macOS — コンパニオンモード</b>
-</p>
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/bcecb428-2724-4d80-a9c4-9c19e62dffca" width="600" />
-</p>
-<p align="center">
-  <b>macOS — エフィシェンシーモード</b>
+  <b>コーディングモード</b><br/>
+  <sub>macOS: OpenClaw, Claude Code, Cursor, Codex</sub><br/>
+  <sub>Windows: OpenClaw, Claude Code</sub>
 </p>
 <p align="center">
   <img src="https://github.com/user-attachments/assets/74b8bbf8-ddcf-4149-a91e-d18d5c24fec6" width="600" />
 </p>
 <p align="center">
-  <b>Windows — アイランドモード</b>
+  <b>ペットモード</b>
 </p>
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/71b1518d-d611-4b86-ba06-d78c719995db" width="600" />
+  <img src="https://github.com/user-attachments/assets/2a143250-174a-406e-8a43-fd30db7ce071" width="600" />
 </p>
 
 ## 機能
