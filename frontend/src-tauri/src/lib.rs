@@ -3467,9 +3467,23 @@ async fn get_mini_monitor_rect(app: tauri::AppHandle) -> Result<(f64, f64, f64, 
 
 /// Set the mini window's origin in logical coordinates.
 /// macOS: bottom-left origin. Windows: top-left origin.
+///
+/// `confine` (default true) clamps the target into the current monitor's
+/// rect. Set `Some(false)` for live drag flows so the user can pull the
+/// mascot across to a neighbouring monitor — the per-monitor clamp here
+/// is what previously made cross-monitor drag impossible.
 #[tauri::command]
-async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
-    log::info!("[mini-pos] set_mini_origin request x={:.1} y={:.1}", x, y);
+async fn set_mini_origin(
+    app: tauri::AppHandle,
+    x: f64,
+    y: f64,
+    confine: Option<bool>,
+) -> Result<(), String> {
+    let confine = confine.unwrap_or(true);
+    log::info!(
+        "[mini-pos] set_mini_origin request x={:.1} y={:.1} confine={}",
+        x, y, confine
+    );
     let win = app.get_webview_window("mini").ok_or("mini not found")?;
     #[cfg(target_os = "macos")]
     {
@@ -3481,36 +3495,44 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
             if let Ok(ns_win) = win_clone.ns_window() {
                 let obj = unsafe { &*(ns_win as *mut AnyObject) };
                 let frame: NSRect = unsafe { msg_send![obj, frame] };
-                let screen_frame: NSRect = unsafe {
-                    let screen: *mut AnyObject = msg_send![obj, screen];
-                    if screen.is_null() {
-                        let cls = match AnyClass::get(c"NSScreen") {
-                            Some(c) => c,
-                            None => return,
-                        };
-                        let main_screen: *mut AnyObject = msg_send![cls, mainScreen];
-                        if main_screen.is_null() {
-                            return;
+                let (clamped_x, clamped_y) = if confine {
+                    let screen_frame: NSRect = unsafe {
+                        let screen: *mut AnyObject = msg_send![obj, screen];
+                        if screen.is_null() {
+                            let cls = match AnyClass::get(c"NSScreen") {
+                                Some(c) => c,
+                                None => return,
+                            };
+                            let main_screen: *mut AnyObject = msg_send![cls, mainScreen];
+                            if main_screen.is_null() {
+                                return;
+                            }
+                            msg_send![&*main_screen, frame]
+                        } else {
+                            msg_send![&*screen, frame]
                         }
-                        msg_send![&*main_screen, frame]
-                    } else {
-                        msg_send![&*screen, frame]
-                    }
+                    };
+                    let min_x = screen_frame.origin.x;
+                    let max_x = (screen_frame.origin.x + screen_frame.size.width - frame.size.width).max(min_x);
+                    let min_y = screen_frame.origin.y;
+                    // Keep collapsed mascot windows below top chrome. This also
+                    // prevents stale persisted positions from parking the window
+                    // under the notch/menu bar after startup.
+                    let max_y = (screen_frame.origin.y + screen_frame.size.height - frame.size.height - MASCOT_TOP_INSET).max(min_y);
+                    let cx = x.max(min_x).min(max_x);
+                    let cy = y.max(min_y).min(max_y);
+                    log::info!(
+                        "[mini-pos] set_mini_origin(mac) clamped x={:.1}->{:.1} y={:.1}->{:.1} bounds x[{:.1},{:.1}] y[{:.1},{:.1}]",
+                        x, cx, y, cy, min_x, max_x, min_y, max_y
+                    );
+                    (cx, cy)
+                } else {
+                    log::info!(
+                        "[mini-pos] set_mini_origin(mac) unconfined x={:.1} y={:.1}",
+                        x, y
+                    );
+                    (x, y)
                 };
-
-                let min_x = screen_frame.origin.x;
-                let max_x = (screen_frame.origin.x + screen_frame.size.width - frame.size.width).max(min_x);
-                let min_y = screen_frame.origin.y;
-                // Keep collapsed mascot windows below top chrome. This also
-                // prevents stale persisted positions from parking the window
-                // under the notch/menu bar after startup.
-                let max_y = (screen_frame.origin.y + screen_frame.size.height - frame.size.height - MASCOT_TOP_INSET).max(min_y);
-                let clamped_x = x.max(min_x).min(max_x);
-                let clamped_y = y.max(min_y).min(max_y);
-                log::info!(
-                    "[mini-pos] set_mini_origin(mac) clamped x={:.1}->{:.1} y={:.1}->{:.1} bounds x[{:.1},{:.1}] y[{:.1},{:.1}]",
-                    x, clamped_x, y, clamped_y, min_x, max_x, min_y, max_y
-                );
                 let new_frame = NSRect::new(
                     NSPoint::new(clamped_x, clamped_y),
                     NSSize::new(frame.size.width, frame.size.height),
@@ -3526,6 +3548,14 @@ async fn set_mini_origin(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), St
     }
     #[cfg(target_os = "windows")]
     {
+        if !confine {
+            log::info!(
+                "[mini-pos] set_mini_origin(win) unconfined x={:.1} y={:.1}",
+                x, y
+            );
+            let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+            return Ok(());
+        }
         if let Ok(Some(monitor)) = win.current_monitor() {
             let scale = monitor.scale_factor();
             let mp = monitor.position();
