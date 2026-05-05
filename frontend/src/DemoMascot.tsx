@@ -34,26 +34,28 @@ export function DemoMascot() {
     }
   }, [petIdFromUrl])
 
-  // Mirror running/waiting state from the same task-complete pulse the
-  // main mini window listens to. State naturally syncs across all demo
-  // windows because each subscribes to the same Tauri event source.
+  // Mirror the main mini window's resolved mascot state. The main
+  // window owns the claude/codex/cursor session polling and emits
+  // `mini-pet-state` on every change (and every 2s as a heartbeat),
+  // so listening here keeps every demo window perfectly in sync with
+  // the real mascot's working / waiting / idle without duplicating
+  // any poll loops on our side.
   useEffect(() => {
-    let busyTimer: ReturnType<typeof setTimeout> | null = null
-    const unlisten = listen('claude-task-complete', (ev: any) => {
-      const isWaiting = !!ev.payload?.waiting
-      if (isWaiting) {
+    const unlisten = listen<{ state?: string }>('mini-pet-state', (ev) => {
+      const s = ev.payload?.state
+      if (s === 'waiting') {
         setWaiting(true)
         setWorking(false)
-      } else {
+      } else if (s === 'working' || s === 'compacting') {
         setWaiting(false)
         setWorking(true)
-        if (busyTimer) clearTimeout(busyTimer)
-        busyTimer = setTimeout(() => setWorking(false), 4000)
+      } else {
+        setWaiting(false)
+        setWorking(false)
       }
     })
     return () => {
       unlisten.then((fn) => fn())
-      if (busyTimer) clearTimeout(busyTimer)
     }
   }, [])
 
