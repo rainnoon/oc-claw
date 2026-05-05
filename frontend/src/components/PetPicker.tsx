@@ -47,9 +47,16 @@ interface PetPickerProps {
   // focus. Optional — picker still works without these.
   onNativeDialogStart?: () => void
   onNativeDialogEnd?: () => void
+  // Codex pet hub URL, sourced from `ui.petdex.url` of latest.json by
+  // the parent. Three states:
+  //   - string  : URL fetched successfully, render the open button
+  //   - null + petdexFailed=false : still loading, render placeholder
+  //   - null + petdexFailed=true  : fetch failed, render network-error
+  // We deliberately never use a hardcoded URL so the user knows when
+  // the link they're about to follow is stale or unavailable.
+  petdexUrl?: string | null
+  petdexFailed?: boolean
 }
-
-const PETDEX_URL = 'https://codex-pets.net/'
 const CODEX_PETS_PATH_HINT = '~/.codex/pets'
 
 // Detect Windows once at module load. We surface an extra hint on the
@@ -73,7 +80,16 @@ export function PetPicker({
   onChangeQueue,
   onNativeDialogStart,
   onNativeDialogEnd,
+  petdexUrl,
+  petdexFailed,
 }: PetPickerProps) {
+  // Validate one more time before trusting the URL — the parent
+  // already validates but a defensive check keeps a malformed string
+  // from sneaking into open_url.
+  const validPetdexUrl =
+    typeof petdexUrl === 'string' && /^https?:\/\//i.test(petdexUrl)
+      ? petdexUrl
+      : null
   const [builtins, setBuiltins] = useState<CodexPet[]>([])
   const [customs, setCustoms] = useState<CodexPet[]>([])
   const [petsOpen, setPetsOpen] = useState(true)
@@ -386,18 +402,37 @@ export function PetPicker({
         </button>
         {createOpen && (
           <div className="px-5 pb-5 space-y-3">
-            <button
-              data-no-drag
-              onClick={() => invoke('open_url', { url: PETDEX_URL }).catch(() => {})}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.07] transition-colors"
-            >
-              <CreateStepBadge n={1} />
-              <div className="flex flex-col items-start gap-0.5 flex-1 min-w-0">
-                <span className="text-sm text-white/85 font-medium">前往 Codex Pets 下载</span>
-                <span className="text-[11px] text-white/40 truncate">{PETDEX_URL}</span>
+            {validPetdexUrl ? (
+              <button
+                data-no-drag
+                onClick={() => invoke('open_url', { url: validPetdexUrl }).catch(() => {})}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.07] transition-colors"
+              >
+                <CreateStepBadge n={1} />
+                <div className="flex flex-col items-start gap-0.5 flex-1 min-w-0">
+                  <span className="text-sm text-white/85 font-medium">前往 Codex Pets 下载</span>
+                  <span className="text-[11px] text-white/40 truncate">{validPetdexUrl}</span>
+                </div>
+                <ExternalLink className="w-4 h-4 text-white/40 shrink-0" strokeWidth={2.5} />
+              </button>
+            ) : petdexFailed ? (
+              <div className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.04] border border-rose-500/20">
+                <CreateStepBadge n={1} />
+                <div className="flex flex-col items-start gap-0.5 flex-1 min-w-0">
+                  <span className="text-sm text-white/85 font-medium">前往 Codex Pets 下载</span>
+                  <span className="text-[11px] text-rose-400/80 truncate">网络问题，无法获取下载入口</span>
+                </div>
               </div>
-              <ExternalLink className="w-4 h-4 text-white/40 shrink-0" strokeWidth={2.5} />
-            </button>
+            ) : (
+              <div className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.04]">
+                <CreateStepBadge n={1} />
+                <div className="flex flex-col items-start gap-0.5 flex-1 min-w-0">
+                  <span className="text-sm text-white/85 font-medium">前往 Codex Pets 下载</span>
+                  <span className="text-[11px] text-white/40 truncate">正在加载…</span>
+                </div>
+                <Loader2 className="w-4 h-4 text-white/40 animate-spin shrink-0" strokeWidth={2.5} />
+              </div>
+            )}
             <button
               data-no-drag
               onClick={handlePickFolder}

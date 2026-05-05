@@ -24,5 +24,10 @@
         "fr": "- Grande mascotte débloquée en mode Code"
       }
     }
+  },
+  "ui": {
+    "petdex": {
+      "url": "https://codex-pets.net/"
+    }
   }
 }

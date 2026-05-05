@@ -706,6 +706,14 @@ export default function Mini() {
   const [updateModalInfo, setUpdateModalInfo] = useState<UpdateModalInfo | null>(null)
   const [updateModalProgress, setUpdateModalProgress] = useState<number | null>(null)
   const [updateModalProgressStage, setUpdateModalProgressStage] = useState('preparing')
+  // Server-driven UI config (latest.json `ui` block). The codex pet hub
+  // URL is sourced from `ui.petdex.url`. We deliberately do NOT fall
+  // back to a hardcoded value — when the fetch fails or the field is
+  // missing, PetPicker shows a "network error" message so users
+  // understand why the link is unavailable rather than us silently
+  // routing them to a possibly-stale URL.
+  const [petdexUrl, setPetdexUrl] = useState<string | null>(null)
+  const [petdexFailed, setPetdexFailed] = useState(false)
 
   // Load mini character from store
   const loadMiniChar = useCallback(async () => {
@@ -2485,20 +2493,39 @@ export default function Mini() {
     let cancelled = false
     const checkForUpdates = async () => {
       try {
+        // Always fetch — we want the `ui` block (e.g. petdex url) even
+        // when the modal cadence gate skips showing the update prompt.
+        const info = (await invoke('check_for_update', {
+          lang: i18n.language,
+        })) as UpdateModalInfo & { ui?: { petdex?: { url?: string } } | null }
+        if (cancelled) return
+        const remoteUrl = info?.ui?.petdex?.url
+        if (typeof remoteUrl === 'string' && /^https?:\/\//i.test(remoteUrl)) {
+          setPetdexUrl(remoteUrl)
+          setPetdexFailed(false)
+        } else {
+          // Server reachable but field missing/invalid: still treat as
+          // an error from the user's POV so the picker explains itself.
+          setPetdexFailed(true)
+        }
+        // Modal display is still rate-limited to once per day so we
+        // don't pester the user with the "new version" prompt on every
+        // app launch.
         const store = await load('settings.json', { defaults: {}, autoSave: true })
         const now = Date.now()
         const lastCheckedAt = Number((await store.get('update_last_check_at')) ?? 0)
         if (lastCheckedAt > 0 && now - lastCheckedAt < 86_400_000) return
         await store.set('update_last_check_at', now)
         await store.save()
-        const info = (await invoke('check_for_update', { lang: i18n.language })) as UpdateModalInfo
         if (!info?.hasUpdate) return
         const skippedVersion = ((await store.get('skipped_update_version')) as string) || ''
         if (skippedVersion && skippedVersion === info.latest) return
-        if (cancelled) return
         openAvailableUpdateModal(info)
       } catch {
-        /* ignore */
+        // Fetch failed entirely (offline, DNS, server down, etc.).
+        // Surface this to the petdex section via the "failed" flag so
+        // it can show a network error instead of silently breaking.
+        if (!cancelled) setPetdexFailed(true)
       }
     }
     void checkForUpdates()
@@ -5570,6 +5597,8 @@ export default function Mini() {
                             debugToTerminal('dialog', 'settingsPickerOpen=false')
                             setNativeDialogActive(false)
                           }}
+                          petdexUrl={petdexUrl}
+                          petdexFailed={petdexFailed}
                         />
                       </div>
                     </div>

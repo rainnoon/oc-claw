@@ -8983,12 +8983,19 @@ async fn check_for_update(app: tauri::AppHandle, lang: Option<String>) -> Result
     let has_update = version_cmp(latest, &current);
     log::info!("[update] platform={} latest={} current={} hasUpdate={}", platform_key, latest, current, has_update);
 
+    // Pass through any `ui` block as-is. This lets us push UI-level
+    // config (e.g. the codex-pets.net URL inside the Create section)
+    // without shipping a new app build, while keeping the namespace
+    // separated from the platform-specific update metadata above.
+    let ui = json.get("ui").cloned().unwrap_or(serde_json::Value::Null);
+
     Ok(serde_json::json!({
         "current": current,
         "latest": latest,
         "hasUpdate": has_update,
         "url": url,
         "notes": notes,
+        "ui": ui,
     }))
 }
 
