@@ -4,24 +4,24 @@
       "version": "1.8.3",
       "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.3/oc-claw_1.8.3_aarch64.dmg",
       "notes_i18n": {
-        "zh": "- 小看板娘改为 Codex 精灵图，内置 Phoebe / Doro / Mambo 等宠物\n- 配对页改版：宠物选择、自定义文件夹导入、Agent 队列轮换\n- 修复设置页 / 文件选择器 / 关闭弹窗时角色瞬移等问题",
-        "en": "- Mini mascot now renders codex sprite atlas; ships with Phoebe, Doro, Mambo, Taffy and more\n- New pet picker with custom folder import and rotating agent queue\n- Fixes: settings panel and native dialog stability, no more mascot teleport when closing the panel",
-        "ja": "- ミニマスコットが Codex スプライトに刷新、Phoebe / Doro / Mambo など内蔵\n- ペアリング画面を刷新：ペット選択 / フォルダ取り込み / エージェント順番ローテーション\n- 設定パネル・ファイル選択ダイアログ・閉じる際のテレポートなどの不具合を修正",
-        "ko": "- 미니 마스코트가 Codex 스프라이트로 교체되고 Phoebe / Doro / Mambo 등 내장 펫 추가\n- 페어링 페이지 개편: 펫 선택, 폴더 가져오기, 에이전트 큐 순환\n- 설정 패널 / 파일 선택기 / 패널 닫힘 시 마스코트 텔레포트 관련 다수 버그 수정",
-        "es": "- Mini mascota ahora usa el atlas de sprites de Codex; incluye Phoebe, Doro, Mambo, Taffy y más\n- Nuevo selector de mascotas con importación de carpetas y cola rotatoria de agentes\n- Correcciones de estabilidad: panel de ajustes, diálogos nativos y teletransporte al cerrar",
-        "fr": "- La mini-mascotte utilise désormais l'atlas de sprites Codex ; livré avec Phoebe, Doro, Mambo, Taffy et d'autres\n- Nouveau sélecteur de mascotte avec import de dossier et file d'attente d'agents rotative\n- Corrections : stabilité du panneau de réglages et des boîtes de dialogue natives, plus de téléportation à la fermeture"
+        "zh": "史诗级更新，支持 codex 格式桌宠，更加多样化，画质更高清",
+        "en": "Epic update — codex-format pets are now supported, more variety and crisper sprites",
+        "ja": "大型アップデート — codex フォーマットの桌寵に対応、バリエーション拡充、画質向上",
+        "ko": "대규모 업데이트 — codex 포맷 펫 지원, 다양성 강화, 화질 향상",
+        "es": "Actualización épica — ahora soporta mascotas en formato codex, mayor variedad y mejor calidad",
+        "fr": "Mise à jour majeure — prise en charge des mascottes au format codex, plus de variété et meilleure qualité"
       }
     },
     "windows": {
       "version": "1.8.3",
       "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.3/oc-claw_1.8.3_x64-setup.exe",
       "notes_i18n": {
-        "zh": "- 小看板娘改为 Codex 精灵图，内置 Phoebe / Doro / Mambo 等宠物\n- 配对页改版：宠物选择、自定义文件夹导入、Agent 队列轮换\n- 修复拖动、设置页和原生文件选择器多项稳定性问题",
-        "en": "- Mini mascot now renders codex sprite atlas; ships with Phoebe, Doro, Mambo, Taffy and more\n- New pet picker with custom folder import and rotating agent queue\n- Stability fixes for drag, settings panel and native dialogs",
-        "ja": "- ミニマスコットが Codex スプライトに刷新、Phoebe / Doro / Mambo など内蔵\n- ペアリング画面を刷新：ペット選択 / フォルダ取り込み / エージェント順番ローテーション\n- ドラッグ・設定パネル・ファイル選択ダイアログ周りの不具合を修正",
-        "ko": "- 미니 마스코트가 Codex 스프라이트로 교체되고 Phoebe / Doro / Mambo 등 내장 펫 추가\n- 페어링 페이지 개편: 펫 선택, 폴더 가져오기, 에이전트 큐 순환\n- 드래그 / 설정 패널 / 파일 선택기 안정성 개선",
-        "es": "- Mini mascota ahora usa el atlas de sprites de Codex; incluye Phoebe, Doro, Mambo, Taffy y más\n- Nuevo selector de mascotas con importación de carpetas y cola rotatoria de agentes\n- Correcciones de estabilidad para arrastre, panel de ajustes y diálogos nativos",
-        "fr": "- La mini-mascotte utilise désormais l'atlas de sprites Codex ; livré avec Phoebe, Doro, Mambo, Taffy et d'autres\n- Nouveau sélecteur de mascotte avec import de dossier et file d'attente d'agents rotative\n- Correctifs de stabilité pour le glisser, le panneau de réglages et les dialogues natifs"
+        "zh": "史诗级更新，支持 codex 格式桌宠，更加多样化，画质更高清",
+        "en": "Epic update — codex-format pets are now supported, more variety and crisper sprites",
+        "ja": "大型アップデート — codex フォーマットの桌寵に対応、バリエーション拡充、画質向上",
+        "ko": "대규모 업데이트 — codex 포맷 펫 지원, 다양성 강화, 화질 향상",
+        "es": "Actualización épica — ahora soporta mascotas en formato codex, mayor variedad y mejor calidad",
+        "fr": "Mise à jour majeure — prise en charge des mascottes au format codex, plus de variété et meilleure qualité"
       }
     }
   },
