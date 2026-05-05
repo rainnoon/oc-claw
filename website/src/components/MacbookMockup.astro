@@ -966,26 +966,29 @@ function setupMockup() {
     // titled accordingly.
     const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
     const detailsHeadingText = isWindows && T.detailsHeadingWin ? T.detailsHeadingWin : T.detailsHeading;
+    // Detail-list rows mirror the monitor view's per-agent codex pet
+    // assignment so the four sessions read as four distinct identities
+    // instead of four copies of mambo.
     const sessionRows = isWindows
       ? `
         <div class="oc-item">
-          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-mambo"></span><div class="oc-dot" style="background:#94a3b8;"></div></div>
+          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-doro"></span><div class="oc-dot" style="background:#94a3b8;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">api-retry</span><span class="oc-subtitle">${T.subtitleInspect}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#334155;color:#e2e8f0;">Feishu</span><span class="oc-time">18h</span></div>
         </div>
         <div class="oc-item oc-detail-entry-target">
-          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-mambo"></span><div class="oc-dot" style="background:#f59e0b;"></div></div>
+          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-taffy"></span><div class="oc-dot" style="background:#f59e0b;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">${T.subtitleWaitingApproval}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
         </div>`
       : `
         <div class="oc-item oc-detail-entry-target">
-          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-mambo"></span><div class="oc-dot" style="background:#2ecc71;"></div></div>
+          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-phoebe"></span><div class="oc-dot" style="background:#2ecc71;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">code2026</span><span class="oc-subtitle">${T.subtitleTune}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#1a2f3f;color:#5eb5f7;">Cursor</span><span class="oc-time"><1m</span></div>
         </div>
         <div class="oc-item">
-          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-mambo"></span><div class="oc-dot" style="background:#94a3b8;"></div></div>
+          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-doro"></span><div class="oc-dot" style="background:#94a3b8;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">api-retry</span><span class="oc-subtitle">${T.subtitleInspect}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#334155;color:#e2e8f0;">Feishu</span><span class="oc-time">18h</span></div>
         </div>
@@ -995,7 +998,7 @@ function setupMockup() {
           <div class="oc-item-right"><span class="oc-badge" style="background:#2a1f45;color:#c4b5fd;">Codex</span><span class="oc-time"><1m</span></div>
         </div>
         <div class="oc-item">
-          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-mambo"></span><div class="oc-dot" style="background:#f59e0b;"></div></div>
+          <div class="oc-avatar"><span class="oc-pet-img oc-codex-sprite oc-codex-taffy"></span><div class="oc-dot" style="background:#f59e0b;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">${T.subtitleWaitingApproval}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
         </div>`;
