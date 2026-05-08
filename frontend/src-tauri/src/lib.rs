@@ -12218,9 +12218,13 @@ pub fn run() {
 
             // One log file per app run, named with a startup timestamp so we
             // never lose the previous session's logs to rotation. Goes to the
-            // OS-standard logs dir alongside the rolling `oc-claw.log` (which
-            // tauri-plugin-log keeps as its default LogDir target).
+            // OS-standard logs dir alongside the rolling `oc-claw.log`.
             // On Windows: %LOCALAPPDATA%\com.openclaw.ooclaw\logs\run-*.log
+            //
+            // Drop the default Stdout target — `pnpm tauri dev` would
+            // otherwise mirror every log line into the terminal, drowning
+            // out the actual rust/vite output. The file targets keep the
+            // diagnostic trail intact for offline inspection.
             let run_log_name = format!(
                 "run-{}.log",
                 chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
@@ -12229,10 +12233,17 @@ pub fn run() {
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
                     .max_file_size(64 * 1024 * 1024)
+                    .clear_targets()
+                    .target(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::LogDir { file_name: None },
+                    ))
                     .target(tauri_plugin_log::Target::new(
                         tauri_plugin_log::TargetKind::LogDir {
                             file_name: Some(run_log_name),
                         },
+                    ))
+                    .target(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::Webview,
                     ))
                     .build(),
             )?;
