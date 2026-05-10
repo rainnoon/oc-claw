@@ -7242,57 +7242,71 @@ async fn resolve_claude_permission(
     decision: String,
     state: tauri::State<'_, ClaudeState>,
 ) -> Result<(), String> {
-    let tool_name = {
+    let (tool_name, source) = {
         let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.get(&session_id).and_then(|s| s.tool.clone())
+        let s = sessions.get(&session_id);
+        (
+            s.and_then(|s| s.tool.clone()),
+            s.map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string()),
+        )
     };
 
+    // Codex permissions are intentionally approved in Codex's native UI.
+    // The oc-claw popup only serves as a reminder + jump action and must not
+    // make the final allow/deny decision for Codex sessions.
+    if source == "codex" {
+        log::info!(
+            "[resolve_permission] ignore local decision='{}' for codex session={}",
+            decision,
+            &session_id[..session_id.len().min(8)],
+        );
+        return Ok(());
+    }
+
     let response_json = match decision.as_str() {
-        "deny" => {
-            serde_json::json!({
+            "deny" => serde_json::json!({
                 "continue": true,
                 "suppressOutput": true,
                 "hookSpecificOutput": {
                     "hookEventName": "PermissionRequest",
                     "decision": { "behavior": "deny" }
                 }
-            }).to_string()
-        }
-        "allow_once" => {
-            serde_json::json!({
+            })
+            .to_string(),
+            "allow_once" => serde_json::json!({
                 "continue": true,
                 "suppressOutput": true,
                 "hookSpecificOutput": {
                     "hookEventName": "PermissionRequest",
                     "decision": { "behavior": "allow" }
                 }
-            }).to_string()
-        }
-        "allow_all" => {
-            let rules = if let Some(name) = &tool_name {
-                serde_json::json!([{ "toolName": name }])
-            } else {
-                serde_json::json!([])
-            };
-            serde_json::json!({
-                "continue": true,
-                "suppressOutput": true,
-                "hookSpecificOutput": {
-                    "hookEventName": "PermissionRequest",
-                    "decision": {
-                        "behavior": "allow",
-                        "updatedPermissions": [{
-                            "type": "addRules",
-                            "destination": "session",
-                            "rules": rules,
-                            "behavior": "allow"
-                        }]
+            })
+            .to_string(),
+            "allow_all" => {
+                let rules = if let Some(name) = &tool_name {
+                    serde_json::json!([{ "toolName": name }])
+                } else {
+                    serde_json::json!([])
+                };
+                serde_json::json!({
+                    "continue": true,
+                    "suppressOutput": true,
+                    "hookSpecificOutput": {
+                        "hookEventName": "PermissionRequest",
+                        "decision": {
+                            "behavior": "allow",
+                            "updatedPermissions": [{
+                                "type": "addRules",
+                                "destination": "session",
+                                "rules": rules,
+                                "behavior": "allow"
+                            }]
+                        }
                     }
-                }
-            }).to_string()
-        }
-        "auto_approve" => {
-            serde_json::json!({
+                })
+                .to_string()
+            }
+            "auto_approve" => serde_json::json!({
                 "continue": true,
                 "suppressOutput": true,
                 "hookSpecificOutput": {
@@ -7306,9 +7320,9 @@ async fn resolve_claude_permission(
                         }]
                     }
                 }
-            }).to_string()
-        }
-        _ => return Err(format!("Unknown decision: {}", decision)),
+            })
+            .to_string(),
+            _ => return Err(format!("Unknown decision: {}", decision)),
     };
 
     let tx = {
@@ -11894,6 +11908,21 @@ fn start_claude_socket_server(
                             let _ = s.read_to_string(&mut buf);
                             if let Some((session_id, hook_event)) = process_claude_event(&buf, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
+                                    let source = {
+                                        let sessions = state.lock().unwrap();
+                                        sessions
+                                            .get(&session_id)
+                                            .map(|session| session.source.clone())
+                                            .unwrap_or_else(|| "cc".to_string())
+                                    };
+                                    if source == "codex" {
+                                        // Codex decisions are made in Codex native UI.
+                                        // Return an empty hook payload immediately so
+                                        // Codex can continue with its own approval flow.
+                                        let _ = s.write_all(b"{}");
+                                        let _ = s.flush();
+                                        return;
+                                    }
                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
                                     {
                                         let mut map = pending.lock().unwrap();
@@ -11984,6 +12013,20 @@ fn start_claude_socket_server(
                             }
                             if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
+                                    let source = {
+                                        let sessions = state.lock().unwrap();
+                                        sessions
+                                            .get(&session_id)
+                                            .map(|session| session.source.clone())
+                                            .unwrap_or_else(|| "cc".to_string())
+                                    };
+                                    if source == "codex" {
+                                        // Keep behavior aligned with Unix implementation:
+                                        // Codex approvals should remain in Codex UI.
+                                        let _ = s.write_all(b"{}");
+                                        let _ = s.flush();
+                                        return;
+                                    }
                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
                                     {
                                         let mut map = pending.lock().unwrap();

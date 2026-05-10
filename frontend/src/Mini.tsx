@@ -4924,6 +4924,9 @@ export default function Mini() {
                                               hoverExpandedRef.current = false
                                               collapse()
                                             }
+                                            // Codex approval should be made in Codex's own UI.
+                                            // oc-claw only surfaces a reminder and a jump action
+                                            // so the user can approve there.
                                             if (cs.source === 'codex') {
                                               return (
                                                 <>
@@ -4953,6 +4956,7 @@ export default function Mini() {
                                                 </>
                                               )
                                             }
+
                                             return (
                                               <>
                                                 <button
