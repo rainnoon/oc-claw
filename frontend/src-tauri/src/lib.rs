@@ -1634,9 +1634,9 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
         "localasset://localhost"
     };
     if let Ok(builtin_dir) = builtin_assets_dir(&app) {
-        log::info!("[scan_characters] scanning builtin: {} (exists={})", builtin_dir.display(), builtin_dir.exists());
+        log::debug!("[scan_characters] scanning builtin: {} (exists={})", builtin_dir.display(), builtin_dir.exists());
         scan_dir(&builtin_dir, builtin_prefix, true, &ip_map, &mut results);
-        log::info!("[scan_characters] found {} characters after builtin scan", results.len());
+        log::debug!("[scan_characters] found {} characters after builtin scan", results.len());
     }
 
     // Scan custom assets
@@ -1648,7 +1648,7 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
         "customasset://localhost"
     };
     if let Ok(custom_dir) = custom_assets_dir(&app) {
-        log::info!("[scan_characters] scanning custom: {} (exists={})", custom_dir.display(), custom_dir.exists());
+        log::debug!("[scan_characters] scanning custom: {} (exists={})", custom_dir.display(), custom_dir.exists());
         scan_dir(&custom_dir, custom_prefix, false, &ip_map, &mut results);
     }
 
@@ -2974,7 +2974,7 @@ async fn get_agent_extra_info(agent_id: String, mode: Option<String>, ssh_host: 
 
 #[tauri::command]
 async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
-    log::info!("[mini-pos] open_mini called");
+    log::debug!("[mini-pos] open_mini called");
     if let Some(win) = app.get_webview_window("mini") {
         // Reposition to collapsed position before showing
         #[cfg(target_os = "macos")]
@@ -3018,7 +3018,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                         // Pull the window down by MASCOT_TOP_INSET so it
                         // does not sit under the menu bar / notch on launch.
                         let y = sy + sh - win_h - MASCOT_TOP_INSET;
-                        log::info!(
+                        log::debug!(
                             "[mini-pos] open_mini(existing,mac) target frame x={:.1} y={:.1} w={:.1} h={:.1} inset={:.1} screen=({:.1},{:.1},{:.1},{:.1}) notch_off={:.1}",
                             x, y, win_w, win_h, MASCOT_TOP_INSET, sx, sy, sw, sh, notch_off
                         );
@@ -3049,7 +3049,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 let notch_off = (80.0 * ui).round();
                 let x = sw / 2.0 + notch_off;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                log::info!(
+                log::debug!(
                     "[mini-pos] open_mini(existing,win) target pos x={:.1} y={:.1} w={:.1} h={:.1} ui={:.2} notch_off={:.1}",
                     x, 0.0, win_w, win_h, ui, notch_off
                 );
@@ -3118,7 +3118,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                     // Pull the window down by MASCOT_TOP_INSET so the sprite
                     // is fully visible below the menu bar / notch on launch.
                     let y = sy + sh - win_h - MASCOT_TOP_INSET;
-                    log::info!(
+                    log::debug!(
                         "[mini-pos] open_mini(new,mac) target frame x={:.1} y={:.1} w={:.1} h={:.1} inset={:.1} screen=({:.1},{:.1},{:.1},{:.1}) notch_off={:.1}",
                         x, y, win_w, win_h, MASCOT_TOP_INSET, sx, sy, sw, sh, notch_off
                     );
@@ -3151,7 +3151,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
             let notch_off = (80.0 * ui).round();
             let x = sw / 2.0 + notch_off;
             let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-            log::info!(
+            log::debug!(
                 "[mini-pos] open_mini(new,win) target pos x={:.1} y={:.1} w={:.1} h={:.1} ui={:.2} notch_off={:.1}",
                 x, 0.0, win_w, win_h, ui, notch_off
             );
@@ -3480,7 +3480,7 @@ async fn set_mini_origin(
     confine: Option<bool>,
 ) -> Result<(), String> {
     let confine = confine.unwrap_or(true);
-    log::info!(
+    log::debug!(
         "[mini-pos] set_mini_origin request x={:.1} y={:.1} confine={}",
         x, y, confine
     );
@@ -3521,13 +3521,13 @@ async fn set_mini_origin(
                     let max_y = (screen_frame.origin.y + screen_frame.size.height - frame.size.height - MASCOT_TOP_INSET).max(min_y);
                     let cx = x.max(min_x).min(max_x);
                     let cy = y.max(min_y).min(max_y);
-                    log::info!(
+                    log::debug!(
                         "[mini-pos] set_mini_origin(mac) clamped x={:.1}->{:.1} y={:.1}->{:.1} bounds x[{:.1},{:.1}] y[{:.1},{:.1}]",
                         x, cx, y, cy, min_x, max_x, min_y, max_y
                     );
                     (cx, cy)
                 } else {
-                    log::info!(
+                    log::debug!(
                         "[mini-pos] set_mini_origin(mac) unconfined x={:.1} y={:.1}",
                         x, y
                     );
@@ -3549,7 +3549,7 @@ async fn set_mini_origin(
     #[cfg(target_os = "windows")]
     {
         if !confine {
-            log::info!(
+            log::debug!(
                 "[mini-pos] set_mini_origin(win) unconfined x={:.1} y={:.1}",
                 x, y
             );
@@ -3574,13 +3574,13 @@ async fn set_mini_origin(
             let max_y = (my + sh - wh).max(min_y);
             let clamped_x = x.max(min_x).min(max_x);
             let clamped_y = y.max(min_y).min(max_y);
-            log::info!(
+            log::debug!(
                 "[mini-pos] set_mini_origin(win) clamped x={:.1}->{:.1} y={:.1}->{:.1} bounds x[{:.1},{:.1}] y[{:.1},{:.1}]",
                 x, clamped_x, y, clamped_y, min_x, max_x, min_y, max_y
             );
             let _ = win.set_position(tauri::LogicalPosition::new(clamped_x, clamped_y));
         } else {
-            log::info!(
+            log::debug!(
                 "[mini-pos] set_mini_origin(win,fallback) apply x={:.1} y={:.1} (with inset)",
                 x, y + MASCOT_TOP_INSET
             );
@@ -3605,7 +3605,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
     let pos = position.unwrap_or_else(|| "right".to_string());
     let mascot_scale = sanitized_mascot_scale(mascot_scale);
     let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
-    log::info!(
+    log::debug!(
         "[mini-pos] set_mini_expanded request expanded={} pos={} efficiency={:?} keep_position={:?} large_mascot={:?} mascot_scale={:.2} large_scale={:.2}",
         expanded, pos, efficiency, keep_position, large_mascot, mascot_scale, large_mascot_scale
     );
@@ -3659,7 +3659,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         // MASCOT_TOP_INSET only applies to the collapsed mascot
                         // so it stays clear of the notch.
                         let y = sy + sh - win_h;
-                        log::info!(
+                        log::debug!(
                             "[mini-pos] set_mini_expanded(mac,expanded) frame x={:.1} y={:.1} w={:.1} h={:.1}",
                             x, y, win_w, win_h
                         );
@@ -3696,7 +3696,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                             let max_y = sy + sh - win_h - MASCOT_TOP_INSET;
                             if y > max_y { y = max_y; }
                         }
-                        log::info!(
+                        log::debug!(
                             "[mini-pos] set_mini_expanded(mac,collapsed) frame x={:.1} y={:.1} w={:.1} h={:.1} keep_position={}",
                             x, y, win_w, win_h, keep_position.unwrap_or(false)
                         );
@@ -3734,7 +3734,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 // Expanded panel hugs the top of the monitor (no inset) so it
                 // does not get pushed below the IDE chrome.
                 let y = my;
-                log::info!(
+                log::debug!(
                     "[mini-pos] set_mini_expanded(win,expanded) frame x={:.1} y={:.1} w={:.1} h={:.1} ui={:.2}",
                     x, y, win_w, win_h, ui
                 );
@@ -3761,7 +3761,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         let notch_off = (80.0 * ui).round();
                         let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
                         let y = my + (MASCOT_TOP_INSET * ui).round();
-                        log::info!(
+                        log::debug!(
                             "[mini-pos] set_mini_expanded(win,collapsed) frame x={:.1} y={:.1} w={:.1} h={:.1} keep_position={}",
                             x, y, win_w, win_h, keep_position.unwrap_or(false)
                         );
@@ -4123,7 +4123,7 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Opti
                     NSPoint::new(cur.origin.x, new_y),
                     NSSize::new(cur.size.width, capped_h),
                 );
-                log::info!(
+                log::debug!(
                     "[mini-pos] resize_mini_height(mac) frame x={:.1} y={:.1} w={:.1} h={:.1}",
                     cur.origin.x, new_y, cur.size.width, capped_h
                 );
@@ -6653,9 +6653,11 @@ pub struct ClaudeSession {
     /// of relying on CWD/title matching which is ambiguous.
     #[serde(skip)]
     pub terminal_id: Option<String>,
-    /// Host terminal app name (e.g. "Ghostty", "Cursor", "iTerm2").
-    /// Captured once at session creation via process chain walk.
-    #[serde(skip)]
+    /// Host terminal app name (e.g. "Ghostty", "Cursor", "iTerm2", "Claude Desktop").
+    /// Captured once at session creation via process chain walk or from the
+    /// hook script's `host` tag. Exposed to the frontend so it can distinguish
+    /// CC CLI sessions from CC Desktop sessions and gate them independently.
+    #[serde(rename = "hostTerminal", skip_serializing_if = "Option::is_none")]
     pub host_terminal: Option<String>,
     /// Bound Cursor extension port for this session.
     /// Unlike `pid`, this is stable for the lifetime of a Cursor window.
@@ -6741,6 +6743,33 @@ fn collect_jsonl_files_recursive(root: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// Build an empty 14-day `ClaudeStats` skeleton with zeroed daily entries.
+/// Used for sources where token usage is intentionally not surfaced — at the
+/// moment that means `cursor`, since Cursor doesn't expose reliable per-turn
+/// token counts to oc-claw (it stopped writing them to its local SQLite in
+/// April 2026, and the hook payload would only cover sessions completed after
+/// the user enables tracking, which is misleading).
+fn empty_claude_stats() -> ClaudeStats {
+    let now = chrono::Local::now();
+    let mut daily_stats: Vec<ClaudeDailyStats> = Vec::with_capacity(14);
+    for i in (0..14).rev() {
+        let day = (now - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        daily_stats.push(ClaudeDailyStats {
+            date: day,
+            input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0,
+            messages: 0, sessions: 0,
+        });
+    }
+    ClaudeStats {
+        total_input_tokens: 0, total_output_tokens: 0,
+        total_cache_read_tokens: 0, total_cache_write_tokens: 0,
+        total_messages: 0, total_sessions: 0,
+        daily_stats,
+        model: "unsupported".to_string(),
+    }
 }
 
 fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
@@ -7088,6 +7117,11 @@ fn frontmost_matches_host_terminal(frontmost: &str, host_terminal: &str) -> bool
     if host_terminal == "Apple_Terminal" && frontmost == "Terminal" {
         return true;
     }
+    // Claude Code Desktop's macOS bundle short name is "Claude" while the
+    // host_terminal we tag is "Claude Desktop" (matches the Windows label).
+    if host_terminal == "Claude Desktop" && frontmost.eq_ignore_ascii_case("Claude") {
+        return true;
+    }
     false
 }
 
@@ -7113,9 +7147,10 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
                 "waiting" | "processing" | "tool_running" | "compacting");
             if !dominated { continue; }
 
-            if session.source == "cursor" || session.source == "codex" {
-                // Cursor/Codex: timeout-based staleness (120s without any event update).
-                // Hook PPIDs are not always stable enough for PID-alive checks.
+            let is_desktop_hosted = session.host_terminal.as_deref() == Some("Claude Desktop");
+            if session.source == "cursor" || session.source == "codex" || is_desktop_hosted {
+                // Cursor/Codex/CC Desktop: timeout-based staleness (120s without any event update).
+                // Hook PIDs are not stable enough for PID-alive checks in these environments.
                 let age_ms = now_ms.saturating_sub(session.updated_at);
                 if age_ms > 120_000 {
                     log::info!(
@@ -7207,57 +7242,71 @@ async fn resolve_claude_permission(
     decision: String,
     state: tauri::State<'_, ClaudeState>,
 ) -> Result<(), String> {
-    let tool_name = {
+    let (tool_name, source) = {
         let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.get(&session_id).and_then(|s| s.tool.clone())
+        let s = sessions.get(&session_id);
+        (
+            s.and_then(|s| s.tool.clone()),
+            s.map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string()),
+        )
     };
 
+    // Codex permissions are intentionally approved in Codex's native UI.
+    // The oc-claw popup only serves as a reminder + jump action and must not
+    // make the final allow/deny decision for Codex sessions.
+    if source == "codex" {
+        log::info!(
+            "[resolve_permission] ignore local decision='{}' for codex session={}",
+            decision,
+            &session_id[..session_id.len().min(8)],
+        );
+        return Ok(());
+    }
+
     let response_json = match decision.as_str() {
-        "deny" => {
-            serde_json::json!({
+            "deny" => serde_json::json!({
                 "continue": true,
                 "suppressOutput": true,
                 "hookSpecificOutput": {
                     "hookEventName": "PermissionRequest",
                     "decision": { "behavior": "deny" }
                 }
-            }).to_string()
-        }
-        "allow_once" => {
-            serde_json::json!({
+            })
+            .to_string(),
+            "allow_once" => serde_json::json!({
                 "continue": true,
                 "suppressOutput": true,
                 "hookSpecificOutput": {
                     "hookEventName": "PermissionRequest",
                     "decision": { "behavior": "allow" }
                 }
-            }).to_string()
-        }
-        "allow_all" => {
-            let rules = if let Some(name) = &tool_name {
-                serde_json::json!([{ "toolName": name }])
-            } else {
-                serde_json::json!([])
-            };
-            serde_json::json!({
-                "continue": true,
-                "suppressOutput": true,
-                "hookSpecificOutput": {
-                    "hookEventName": "PermissionRequest",
-                    "decision": {
-                        "behavior": "allow",
-                        "updatedPermissions": [{
-                            "type": "addRules",
-                            "destination": "session",
-                            "rules": rules,
-                            "behavior": "allow"
-                        }]
+            })
+            .to_string(),
+            "allow_all" => {
+                let rules = if let Some(name) = &tool_name {
+                    serde_json::json!([{ "toolName": name }])
+                } else {
+                    serde_json::json!([])
+                };
+                serde_json::json!({
+                    "continue": true,
+                    "suppressOutput": true,
+                    "hookSpecificOutput": {
+                        "hookEventName": "PermissionRequest",
+                        "decision": {
+                            "behavior": "allow",
+                            "updatedPermissions": [{
+                                "type": "addRules",
+                                "destination": "session",
+                                "rules": rules,
+                                "behavior": "allow"
+                            }]
+                        }
                     }
-                }
-            }).to_string()
-        }
-        "auto_approve" => {
-            serde_json::json!({
+                })
+                .to_string()
+            }
+            "auto_approve" => serde_json::json!({
                 "continue": true,
                 "suppressOutput": true,
                 "hookSpecificOutput": {
@@ -7271,9 +7320,9 @@ async fn resolve_claude_permission(
                         }]
                     }
                 }
-            }).to_string()
-        }
-        _ => return Err(format!("Unknown decision: {}", decision)),
+            })
+            .to_string(),
+            _ => return Err(format!("Unknown decision: {}", decision)),
     };
 
     let tx = {
@@ -7282,8 +7331,23 @@ async fn resolve_claude_permission(
     };
 
     if let Some(tx) = tx {
+        if cfg!(debug_assertions) {
+            log::info!(
+                "[resolve_permission] sending decision='{}' tool={:?} session={} response_json={}",
+                decision,
+                tool_name,
+                &session_id[..session_id.len().min(8)],
+                response_json,
+            );
+        } else {
+            log::info!(
+                "[resolve_permission] sent '{}' tool={:?} for session={}",
+                decision,
+                tool_name,
+                &session_id[..session_id.len().min(8)],
+            );
+        }
         tx.send(response_json).map_err(|_| "Failed to send permission response".to_string())?;
-        log::info!("[resolve_permission] sent '{}' for session={}", decision, &session_id[..session_id.len().min(8)]);
     } else {
         log::warn!("[resolve_permission] no pending permission for session={}", &session_id[..session_id.len().min(8)]);
     }
@@ -7324,12 +7388,22 @@ struct ClaudeStats {
 #[tauri::command]
 async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String> {
     let source = source.unwrap_or_default().to_ascii_lowercase();
+
+    // Cursor doesn't expose reliable token usage:
+    //   - Its transcript JSONL has no usage fields at all.
+    //   - Its `bubbleId:*` SQLite entries used to carry tokenCount but Cursor
+    //     stopped writing it to the local DB around 2026-04 (recent bubbles
+    //     are all 0/0). The hook stop event only sees usage for sessions that
+    //     run after the user enables tracking, so it would underreport.
+    // Returning empty stats lets the frontend render a "not supported" hint
+    // instead of mixing in Claude Code's totals as if they were Cursor's.
+    if source == "cursor" {
+        return Ok(empty_claude_stats());
+    }
+
     let jsonl_files = match source.as_str() {
         "codex" => collect_codex_session_jsonl_files(),
-        // Cursor hook transcripts are currently parsed through Claude-style JSONL.
-        // Keep Cursor aligned with the Claude parser until a dedicated Cursor
-        // transcript index is introduced.
-        "cursor" | "cc" | "claude" => collect_claude_project_jsonl_files(),
+        "cc" | "claude" => collect_claude_project_jsonl_files(),
         _ => {
             let mut files = collect_claude_project_jsonl_files();
             files.extend(collect_codex_session_jsonl_files());
@@ -7705,7 +7779,12 @@ async fn list_custom_codex_pets() -> Result<Vec<CodexPetMeta>, String> {
 /// modal/blur/exit paths doesn't require opening webview DevTools.
 #[tauri::command]
 async fn debug_log(scope: String, msg: String) -> Result<(), String> {
-    log::info!("[fe:{}] {}", scope, msg);
+    // Diagnostic-only: keep frontend state/poll/mascot trace lines in debug
+    // builds where they help pinpoint UI bugs, drop them in release builds
+    // so the log file stays focused on real events.
+    if cfg!(debug_assertions) {
+        log::info!("[fe:{}] {}", scope, msg);
+    }
     Ok(())
 }
 
@@ -8075,12 +8154,34 @@ fn cwd_matches_workspace_root(cwd: &str, workspace_root: &str) -> bool {
     if cwd.is_empty() || workspace_root.is_empty() {
         return false;
     }
-    if cwd == workspace_root {
-        return true;
+
+    // Windows paths are case-insensitive (NTFS preserves but does not honour
+    // case). Cursor's hook may report `c:\foo` while the extension reports
+    // `C:\foo`, so do a case-insensitive comparison there. Drive letters and
+    // most workspace dir names are ASCII; for the rare non-ASCII path we still
+    // win on the ASCII drive-letter portion which is the usual culprit.
+    #[cfg(target_os = "windows")]
+    {
+        let cwd_l = cwd.to_lowercase();
+        let root_l = workspace_root.to_lowercase();
+        if cwd_l == root_l {
+            return true;
+        }
+        return cwd_l
+            .strip_prefix(&root_l)
+            .map(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+            .unwrap_or(false);
     }
-    cwd.strip_prefix(workspace_root)
-        .map(|rest| rest.starts_with('/') || rest.starts_with('\\'))
-        .unwrap_or(false)
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if cwd == workspace_root {
+            return true;
+        }
+        cwd.strip_prefix(workspace_root)
+            .map(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+            .unwrap_or(false)
+    }
 }
 
 fn cursor_workspace_name_from_path(path_str: &str) -> String {
@@ -8089,6 +8190,73 @@ fn cursor_workspace_name_from_path(path_str: &str) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("")
         .to_string()
+}
+
+/// Recover Chinese characters mangled by Cursor's hook stdin pipeline on
+/// CJK Windows. The pipeline writes UTF-8 bytes that have already been
+/// passed through a GBK round-trip somewhere upstream, so what arrives at
+/// our hook is the UTF-8 of the GBK-mis-interpreted version of the original
+/// text (e.g. user types "你好" but we see "浣犲ソ").
+///
+/// To reverse it: encode the received UTF-8 text as GBK (which gives back the
+/// original UTF-8 byte sequence), then decode those bytes as UTF-8.
+///
+/// Returns `Some(recovered)` only when both directions succeed cleanly. ASCII
+/// passes through unchanged in both directions; correctly-encoded CJK falls
+/// through unchanged because GBK→UTF-8 would produce invalid UTF-8 (the
+/// detection self-gates).
+#[cfg(target_os = "windows")]
+fn try_recover_cursor_mojibake(buf: &str) -> Option<String> {
+    use encoding_rs::{GBK, UTF_8};
+
+    if buf.is_ascii() {
+        return None;
+    }
+    let (gbk_bytes, _, encode_errors) = GBK.encode(buf);
+    if encode_errors {
+        return None;
+    }
+    let (decoded, _, decode_errors) = UTF_8.decode(&gbk_bytes);
+    if decode_errors {
+        return None;
+    }
+    Some(decoded.into_owned())
+}
+
+/// Normalize a path string reported by Cursor's hook payload.
+///
+/// Cursor's `workspace_roots` field uses URI-style forward-slash paths even on
+/// Windows, e.g. `/g:/Desktop/code`. To match against the extension's
+/// `vscode.workspace.workspaceFolders[].uri.fsPath` (which returns native
+/// `g:\Desktop\code`) we strip a leading slash that precedes a drive letter
+/// and convert separators to the platform's preferred form on Windows. On
+/// Unix we leave the path untouched.
+fn normalize_cursor_path(raw: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // /x:/foo  → x:/foo
+        let bytes = raw.as_bytes();
+        let stripped = if bytes.len() >= 4
+            && bytes[0] == b'/'
+            && (bytes[1] as char).is_ascii_alphabetic()
+            && bytes[2] == b':'
+            && (bytes[3] == b'/' || bytes[3] == b'\\')
+        {
+            &raw[1..]
+        } else {
+            raw
+        };
+        return stripped.replace('/', "\\");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        raw.to_string()
+    }
 }
 
 fn read_local_http_response(port: u16, request: String) -> Option<(u16, String)> {
@@ -8340,6 +8508,359 @@ async fn request_ax_permission() -> Result<(), String> {
     Ok(())
 }
 
+/// Walk parent process chain on Windows to find CC Desktop (claude.exe in WindowsApps).
+/// Returns the PID of the CC Desktop main process if the given PID is a descendant of it.
+#[cfg(target_os = "windows")]
+fn find_claude_desktop_parent_pid(pid: u32) -> Option<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
+
+    // Take a snapshot of all processes to walk the parent chain
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entries: Vec<(u32, u32)> = Vec::new(); // (pid, parent_pid)
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            while Process32NextW(snapshot, &mut entry).is_ok() {
+                entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+
+    // Walk up the parent chain from the given PID (max 10 hops).
+    // Only match claude.exe in WindowsApps (the GUI Electron app with a window).
+    // claude-3p\claude-code\...\claude.exe is the headless CLI — skip it.
+    let mut current = pid;
+    for _ in 0..10 {
+        let parent = entries.iter().find(|(p, _)| *p == current).map(|(_, pp)| *pp)?;
+        if parent == 0 || parent == current {
+            return None;
+        }
+        if let Some(exe_path) = get_process_exe_path(parent) {
+            let exe_lower = exe_path.to_lowercase();
+            if (exe_lower.ends_with("\\claude.exe") || exe_lower.ends_with("/claude.exe"))
+                && exe_lower.contains("windowsapps")
+            {
+                return Some(parent);
+            }
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Get the full exe path for a process on Windows.
+#[cfg(target_os = "windows")]
+fn get_process_exe_path(pid: u32) -> Option<String> {
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; MAX_PATH as usize];
+        let mut size: u32 = buf.len() as u32;
+        let result = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut size,
+        );
+        let _ = CloseHandle(handle);
+        if result.is_ok() {
+            Some(String::from_utf16_lossy(&buf[..size as usize]))
+        } else {
+            None
+        }
+    }
+}
+
+/// Activate a window by its owning process PID on Windows.
+/// Finds visible top-level windows owned by the given PID and brings the best one to front.
+#[cfg(target_os = "windows")]
+fn activate_window_by_pid(target_pid: u32) {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowThreadProcessId,
+        IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindowAsync, SW_RESTORE,
+    };
+
+    struct EnumCtx {
+        target_pid: u32,
+        best_hwnd: Option<isize>,
+        best_title_len: i32,
+    }
+
+    extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            let ctx = &mut *(lparam.0 as *mut EnumCtx);
+            if !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid != ctx.target_pid {
+                return BOOL(1);
+            }
+            let title_len = GetWindowTextLengthW(hwnd);
+            if title_len > ctx.best_title_len {
+                ctx.best_title_len = title_len;
+                ctx.best_hwnd = Some(hwnd.0 as isize);
+            }
+            BOOL(1)
+        }
+    }
+
+    let mut ctx = EnumCtx {
+        target_pid,
+        best_hwnd: None,
+        best_title_len: -1,
+    };
+    unsafe {
+        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut EnumCtx as isize));
+    }
+    if let Some(hwnd_val) = ctx.best_hwnd {
+        unsafe {
+            let hwnd = HWND(hwnd_val as *mut std::ffi::c_void);
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+            }
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+/// Find any running CC Desktop main process (WindowsApps\...\Claude.exe).
+/// Used as fallback when hook didn't capture a PID.
+#[cfg(target_os = "windows")]
+fn find_running_claude_desktop_pid() -> Option<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut result = None;
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let exe_name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                ).to_lowercase();
+                if exe_name == "claude.exe" {
+                    // Verify it's the WindowsApps GUI process, not the CLI
+                    if let Some(path) = get_process_exe_path(entry.th32ProcessID) {
+                        if path.to_lowercase().contains("windowsapps") {
+                            result = Some(entry.th32ProcessID);
+                            break;
+                        }
+                    }
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    result
+}
+
+/// Detect the host application for a CC process on Windows.
+/// Returns a name like "Claude Desktop", "Windows Terminal", etc.
+#[cfg(target_os = "windows")]
+fn find_host_app_for_pid_win(pid: u32) -> Option<String> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entries: Vec<(u32, u32)> = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            while Process32NextW(snapshot, &mut entry).is_ok() {
+                entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+
+    let mut current = pid;
+    for _ in 0..10 {
+        let parent = entries.iter().find(|(p, _)| *p == current).map(|(_, pp)| *pp)?;
+        if parent == 0 || parent == current {
+            return None;
+        }
+        if let Some(exe_path) = get_process_exe_path(parent) {
+            let exe_lower = exe_path.to_lowercase();
+            if (exe_lower.ends_with("\\claude.exe") || exe_lower.ends_with("/claude.exe"))
+                && exe_lower.contains("windowsapps")
+            {
+                return Some("Claude Desktop".to_string());
+            }
+            if exe_lower.ends_with("\\windowsterminal.exe") {
+                return Some("Windows Terminal".to_string());
+            }
+            if exe_lower.ends_with("\\ghostty.exe") {
+                return Some("Ghostty".to_string());
+            }
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Bring a Cursor window to front on Windows by enumerating top-level windows,
+/// finding ones owned by `Cursor.exe`, and selecting the one whose title
+/// contains the workspace name. Cursor window titles look like
+/// `<file> - <workspace> - Cursor`. If no title matches we fall back to any
+/// Cursor window so that at least the app is raised.
+///
+/// `SetForegroundWindow` is restricted by Windows: it only fully succeeds when
+/// the caller is itself the foreground process. oc-claw normally is foreground
+/// at click time (the user just clicked the mini panel), so this works in
+/// practice. We additionally restore the window if it is minimized.
+#[cfg(target_os = "windows")]
+fn activate_cursor_workspace_window(workspace_name: &str) {
+    use windows::Win32::Foundation::{BOOL, CloseHandle, HWND, LPARAM, MAX_PATH};
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindowAsync, SW_RESTORE,
+    };
+
+    #[derive(Clone)]
+    struct Hit {
+        hwnd: isize,
+        score: u32,
+    }
+
+    // EnumProcCtx is what the EnumWindows callback receives via LPARAM.
+    // We pass a stable pointer to it from the outer call.
+    struct EnumProcCtx<'a> {
+        workspace_lower: &'a str,
+        hits: Vec<Hit>,
+    }
+
+    extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            let ctx = &mut *(lparam.0 as *mut EnumProcCtx);
+
+            if !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+            let title_len = GetWindowTextLengthW(hwnd);
+            if title_len <= 0 {
+                return BOOL(1);
+            }
+
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 {
+                return BOOL(1);
+            }
+
+            let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(h) => h,
+                Err(_) => return BOOL(1),
+            };
+            let mut buf = [0u16; MAX_PATH as usize];
+            let mut size: u32 = buf.len() as u32;
+            let exe_name = if QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_FORMAT(0),
+                windows::core::PWSTR(buf.as_mut_ptr()),
+                &mut size,
+            )
+            .is_ok()
+            {
+                String::from_utf16_lossy(&buf[..size as usize])
+            } else {
+                String::new()
+            };
+            let _ = CloseHandle(handle);
+
+            let exe_lower = exe_name.to_lowercase();
+            if !exe_lower.ends_with("\\cursor.exe") && !exe_lower.ends_with("/cursor.exe") {
+                return BOOL(1);
+            }
+
+            let mut title_buf = vec![0u16; (title_len as usize) + 1];
+            let n = GetWindowTextW(hwnd, &mut title_buf) as usize;
+            let title_lower = String::from_utf16_lossy(&title_buf[..n]).to_lowercase();
+
+            // Workspace-name substring match scores higher than a generic
+            // Cursor window. Empty workspace falls back to any Cursor window.
+            let score: u32 = if ctx.workspace_lower.is_empty() {
+                1
+            } else if title_lower.contains(ctx.workspace_lower) {
+                100
+            } else {
+                1
+            };
+
+            ctx.hits.push(Hit {
+                hwnd: hwnd.0 as isize,
+                score,
+            });
+            BOOL(1)
+        }
+    }
+
+    let workspace_lower = workspace_name.to_lowercase();
+    let mut ctx = EnumProcCtx {
+        workspace_lower: workspace_lower.as_str(),
+        hits: Vec::new(),
+    };
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_proc),
+            LPARAM(&mut ctx as *mut EnumProcCtx as isize),
+        );
+    }
+
+    ctx.hits.sort_by(|a, b| b.score.cmp(&a.score));
+
+    if let Some(best) = ctx.hits.first() {
+        unsafe {
+            let hwnd = HWND(best.hwnd as *mut std::ffi::c_void);
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+            }
+            let _ = SetForegroundWindow(hwnd);
+        }
+        log::info!(
+            "[cursor_focus_win] raised hwnd={} score={} (workspace='{}')",
+            best.hwnd, best.score, workspace_name,
+        );
+    } else {
+        log::info!(
+            "[cursor_focus_win] no Cursor.exe window found for workspace='{}'",
+            workspace_name,
+        );
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn activate_cursor_workspace_window(workspace_name: &str) {
     let ax_ok = check_accessibility_permission();
@@ -8455,7 +8976,7 @@ async fn focus_cursor_terminal(session_id: String, state: tauri::State<'_, Claud
     log::info!("[focus_cursor] session={} cwd={} port={:?} workspace_name={}",
         &session_id[..session_id.len().min(8)], cwd, port, workspace_name);
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     activate_cursor_workspace_window(&workspace_name);
 
     if let Some(port) = port {
@@ -8467,7 +8988,7 @@ async fn focus_cursor_terminal(session_id: String, state: tauri::State<'_, Claud
         return Ok(format!("Activated Cursor window but /focus-window failed on port {}", port));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     activate_cursor_workspace_window(&workspace_name);
 
     Ok("Activated Cursor without a bound window".to_string())
@@ -8484,6 +9005,7 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
     let terminal_id = session.terminal_id.clone();
     let pid = session.pid;
     let source = session.source.clone();
+    let host_terminal = session.host_terminal.clone();
     drop(sessions);
 
     #[cfg(target_os = "macos")]
@@ -8516,6 +9038,29 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
             }
             // If Codex app activation fails (e.g. not installed as app bundle),
             // continue with terminal-based fallback paths below.
+        }
+
+        // CC Desktop sessions must short-circuit before the Ghostty fast path.
+        // The unix hook script unconditionally captures Ghostty's current
+        // front-tab id whenever Ghostty is running (it predates CC Desktop
+        // support and assumed CC always lives inside a terminal). For sessions
+        // launched by Claude.app, that tid points to an unrelated Ghostty tab,
+        // and without this shortcut the fast path would activate Ghostty and
+        // return early instead of surfacing Claude.app. Match Codex's pattern:
+        // try the GUI app first, fall back to bundle-id AppleScript so a
+        // relocated/renamed bundle still gets focused.
+        if host_terminal.as_deref() == Some("Claude Desktop") {
+            let opened = std::process::Command::new("open")
+                .args(["-a", "Claude"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !opened {
+                let _ = std::process::Command::new("osascript")
+                    .args(["-e", r#"tell application id "com.anthropic.claudefordesktop" to activate"#])
+                    .output();
+            }
+            return Ok("Jumped to Claude Desktop".to_string());
         }
 
         // Fast path: if we have a Ghostty terminal ID from hooks, jump directly
@@ -8805,6 +9350,25 @@ end tell"#,
                     .output();
                 Ok("Jumped to Cursor".to_string())
             }
+            Some("Claude Desktop") => {
+                // The macOS app bundle is `/Applications/Claude.app` and its
+                // AppleScript-resolvable name is `Claude` (CFBundleName), not
+                // `Claude Desktop`. Activating via `open -a Claude` works for
+                // both running and not-yet-launched cases; fall back to a
+                // bundle-id AppleScript so a renamed/relocated bundle still
+                // gets focused.
+                let opened = std::process::Command::new("open")
+                    .args(["-a", "Claude"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if !opened {
+                    let _ = std::process::Command::new("osascript")
+                        .args(["-e", r#"tell application id "com.anthropic.claudefordesktop" to activate"#])
+                        .output();
+                }
+                Ok("Jumped to Claude Desktop".to_string())
+            }
             Some(app_name) => {
                 let script = format!(
                     r#"tell application "{}" to activate"#,
@@ -8831,11 +9395,28 @@ end tell"#,
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        // On Windows/Linux, try to open the working directory
+        let is_desktop = host_terminal.as_deref() == Some("Claude Desktop");
+        if is_desktop {
+            if let Some(cc_pid) = pid {
+                if let Some(desktop_pid) = find_claude_desktop_parent_pid(cc_pid) {
+                    activate_window_by_pid(desktop_pid);
+                    return Ok("Activated Claude Desktop window".to_string());
+                }
+            }
+            if let Some(desktop_pid) = find_running_claude_desktop_pid() {
+                activate_window_by_pid(desktop_pid);
+                return Ok("Activated Claude Desktop window".to_string());
+            }
+        }
+        Ok("No action".to_string())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
         if !cwd.is_empty() {
-            let _ = std::process::Command::new("open").arg(&cwd).spawn();
+            let _ = std::process::Command::new("xdg-open").arg(&cwd).spawn();
         }
         Ok("Opened working directory".to_string())
     }
@@ -8874,6 +9455,19 @@ fn find_terminal_app_for_pid(pid: u32) -> Option<String> {
         let comm = parts[1].trim();
         // Extract basename from full path
         let name = comm.rsplit('/').next().unwrap_or(comm);
+
+        // Claude Code Desktop on macOS launches the CLI from
+        // `~/Library/Application Support/Claude-3p/.../claude` and its
+        // ancestors live under `/Applications/Claude.app/`. Neither path
+        // matches a known terminal name, so detect the desktop app via path
+        // markers and tag the host accordingly. Keep this label in sync with
+        // the Windows side (`find_host_app_for_pid_win`) so the frontend can
+        // gate sessions through the same `enable_claude_desktop` toggle and
+        // the active-tab check (`frontmost_matches_host_terminal`) can
+        // suppress the completion popup when Claude.app is frontmost.
+        if comm.contains("Claude-3p") || comm.contains("/Applications/Claude.app/") {
+            return Some("Claude Desktop".to_string());
+        }
 
         if known_terminals.iter().any(|t| name.eq_ignore_ascii_case(t)) {
             return Some(name.to_string());
@@ -9502,16 +10096,30 @@ export OOCLAW_INTERACTIVE=$IS_INTERACTIVE
 export CC_PID=$PPID
 
 # Capture Ghostty terminal ID once per CC session (cached per CC PID).
-# The hook runs inside the CC terminal, so the focused tab is the right one.
-_TID_CACHE="/tmp/ooclaw-tid-$PPID"
-if [ -f "$_TID_CACHE" ]; then
-    export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
-else
-    export GHOSTTY_TID=$(osascript -e 'try
+# The hook runs inside the CC terminal, so the focused tab is the right one
+# — but only when CC was actually launched from a terminal. Skip when CC is
+# spawned by Claude Desktop (its CLI lives under `Claude-3p` in Application
+# Support and its parent chain runs through `/Applications/Claude.app/`); in
+# that case the AppleScript would happily return whatever Ghostty tab is
+# currently focused, and the resulting terminal_id pollutes the session so
+# `jump_to_claude_terminal` would surface Ghostty instead of Claude.app.
+_PARENT_EXE=$(ps -p $PPID -o comm= 2>/dev/null)
+case "$_PARENT_EXE" in
+    *Claude-3p*|*/Applications/Claude.app/*)
+        GHOSTTY_TID=""
+        ;;
+    *)
+        _TID_CACHE="/tmp/ooclaw-tid-$PPID"
+        if [ -f "$_TID_CACHE" ]; then
+            export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
+        else
+            export GHOSTTY_TID=$(osascript -e 'try
 tell application "Ghostty" to return id of first terminal of selected tab of front window as text
 end try' 2>/dev/null || echo "")
-    [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
-fi
+            [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
+        fi
+        ;;
+esac
 
 /usr/bin/python3 -c "
 import json, os, socket, sys
@@ -9637,9 +10245,39 @@ except:
 try {
     $raw = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
-    $ccPid = (Get-Process -Id $PID).Parent.Parent.Id
-    if ($ccPid -and $raw.StartsWith('{')) {
-        $raw = '{"pid":' + $ccPid + ',' + $raw.Substring(1)
+    # Walk the parent chain to detect CC Desktop and capture the CC CLI PID.
+    # The hook is invoked as: powershell <- bash <- claude.exe (CLI) <- [optional] claude.exe (Electron desktop in WindowsApps).
+    # CC Desktop bundles its CLI under a `claude-3p\claude-code` directory,
+    # and the desktop Electron app lives in `WindowsApps\...\claude.exe`.
+    # We treat either marker as 'desktop'. The first claude.exe encountered
+    # going upward is the CC CLI process; its PID lets oc-claw run PID-alive
+    # checks (and a deeper parent walk via Win32) to clear stale sessions.
+    $ccDesktop = $false
+    $ccPid = 0
+    try {
+        $current = $PID
+        for ($i = 0; $i -lt 10; $i++) {
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$current"
+            if (-not $proc) { break }
+            $parentId = $proc.ParentProcessId
+            if (-not $parentId -or $parentId -eq 0 -or $parentId -eq $current) { break }
+            $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId"
+            if (-not $parent) { break }
+            $exe = ''
+            if ($parent.ExecutablePath) { $exe = $parent.ExecutablePath.ToLower() }
+            if ($exe) {
+                if ($exe.Contains('claude-3p')) { $ccDesktop = $true }
+                if ($exe.Contains('windowsapps') -and $exe.EndsWith('\claude.exe')) { $ccDesktop = $true }
+                if ($ccPid -eq 0 -and $exe.EndsWith('\claude.exe')) { $ccPid = [int]$parent.ProcessId }
+            }
+            $current = $parentId
+        }
+    } catch {}
+    if ($raw.StartsWith('{')) {
+        $prefix = '{'
+        if ($ccPid -ne 0) { $prefix += '"pid":' + $ccPid + ',' }
+        if ($ccDesktop) { $prefix += '"host":"claude_desktop",' }
+        if ($prefix.Length -gt 1) { $raw = $prefix + $raw.Substring(1) }
     }
     $isPermission = $raw -match '"hook_event_name"\s*:\s*"PermissionRequest"'
     $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
@@ -9916,7 +10554,7 @@ try {
     $obj = $null
     try { $obj = $raw | ConvertFrom-Json } catch {}
     if ($obj -ne $null) {
-        $ccPid = (Get-Process -Id $PID).Parent.Parent.Id
+        $ccPid = $null; try { $cur = $PID; for ($i = 0; $i -lt 8; $i++) { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$cur"; if (-not $p) { break }; $cur = $p.ParentProcessId; if ($cur -le 0) { break }; $pp = Get-CimInstance Win32_Process -Filter "ProcessId=$cur"; if ($pp -and $pp.Name -eq 'claude.exe' -and $pp.ExecutablePath -and $pp.ExecutablePath.ToLower().Contains('windowsapps')) { $ccPid = $cur; break } } } catch {}
         if (-not $obj.source) { $obj.source = 'codex' }
         if ($ccPid -and -not $obj.pid) { $obj | Add-Member -NotePropertyName pid -NotePropertyValue $ccPid -Force }
         if (-not $obj.hook_event_name -and $obj.codex_event_type) { $obj.hook_event_name = $obj.codex_event_type }
@@ -10067,40 +10705,31 @@ fn codex_requires_escalation(event: &serde_json::Value) -> bool {
         return false;
     }
 
-    // Preferred path: explicit approval/escalation fields.
+    // Only trust explicit approval/escalation fields that Codex itself sets
+    // on the event or inside tool_input. Anything beyond that is a guess.
+    //
+    // The previous fallback inspected the bash command string and flagged
+    // anything containing `/Users/`, `$HOME/`, `Desktop/` or a redirect
+    // operator as needing approval. That heuristic was meant to catch
+    // out-of-workspace writes in `default` permission mode, but on macOS
+    // virtually every read command (`sed -n '/Users/...'`, `ls /Users/...`,
+    // `cat /Users/...`) tripped it. Skills like hatch-pet that live under
+    // `~/.codex/skills/` would fire `is_wait_event` on every Bash tool call
+    // and play the waiting sound dozens of times per task.
+    //
+    // Codex already owns the real permission flow: when approval is
+    // actually required it fires a separate `PermissionRequest` hook event,
+    // which `is_wait_event` picks up via its `hook_event == "PermissionRequest"`
+    // branch. We don't need to second-guess based on command shape.
     if has_explicit_escalation_markers(event) {
         return true;
     }
-    let parsed_tool_input = parse_tool_input(event);
-    if let Some(tool_input) = parsed_tool_input.as_ref() {
-        if has_explicit_escalation_markers(tool_input) {
+    if let Some(tool_input) = parse_tool_input(event) {
+        if has_explicit_escalation_markers(&tool_input) {
             return true;
         }
     }
-
-    // Fallback for Codex payloads that omit explicit flags:
-    // PreToolUse(Bash) in default permission mode with an obvious
-    // out-of-workspace write command almost always means approval UI.
-    let tool_name = read_string(event, &["tool", "tool_name"]).unwrap_or("");
-    let permission_mode = read_string(event, &["permission_mode", "permissionMode"]).unwrap_or("");
-    if !(tool_name == "Bash" && permission_mode == "default") {
-        return false;
-    }
-
-    let command = parsed_tool_input
-        .as_ref()
-        .and_then(|ti| read_string(ti, &["command"]))
-        .unwrap_or("");
-    if command.is_empty() {
-        return false;
-    }
-    command.contains("$HOME/")
-        || command.contains("/Users/")
-        || command.contains("Desktop/")
-        || command.contains(" cat > ")
-        || command.contains(" > ")
-        || command.contains("<<'EOF'")
-        || command.contains("<<EOF")
+    false
 }
 
 fn is_codex_internal_utility_event(event: &serde_json::Value) -> bool {
@@ -10162,8 +10791,41 @@ fn process_claude_event(
     app: &tauri::AppHandle,
     source_override: Option<&str>,
 ) -> Option<(String, String)> {
-    log::info!("[claude_event] raw buf len={} content={}", buf.len(), &buf[..buf.len().min(500)]);
-    if let Ok(event) = serde_json::from_str::<serde_json::Value>(buf) {
+    // Char-boundary-safe truncation for the diagnostic log. Plain byte slicing
+    // (`&buf[..500]`) panics if byte 500 lands inside a multi-byte UTF-8 char,
+    // which is guaranteed for any CC Desktop Stop event whose `last_assistant_message`
+    // contains CJK characters (e.g. AI reply "我为你创建了 xxx.html"). The panic
+    // killed the per-connection handler thread before status could transition
+    // to "stopped", leaving the session stuck in `processing` for 120s until
+    // the stale-detection fallback fired.
+    let preview_end = buf
+        .char_indices()
+        .map(|(i, c)| i + c.len_utf8())
+        .take_while(|&end| end <= 500)
+        .last()
+        .unwrap_or(0);
+    log::info!("[claude_event] raw buf len={} content={}", buf.len(), &buf[..preview_end]);
+    // Defensive: strip a leading UTF-8 BOM (U+FEFF) plus any whitespace.
+    // Cursor on Windows emits hook stdin with a BOM and the hook script may
+    // forward it raw; serde_json refuses BOM with "expected value at column 1".
+    let buf_trimmed = buf.trim_start_matches('\u{feff}').trim_start();
+
+    // Cursor on CJK Windows emits hook payloads where CJK characters have been
+    // mojibake'd through a GBK→UTF-8 round-trip upstream. Reverse it before
+    // parsing so the prompt/text fields contain the original Chinese text.
+    // Only applies to cursor source on Windows; CC/codex paths are untouched.
+    #[cfg(target_os = "windows")]
+    let buf_owned: String = if source_override == Some("cursor") {
+        try_recover_cursor_mojibake(buf_trimmed).unwrap_or_else(|| buf_trimmed.to_string())
+    } else {
+        buf_trimmed.to_string()
+    };
+    #[cfg(target_os = "windows")]
+    let buf_for_parse: &str = &buf_owned;
+    #[cfg(not(target_os = "windows"))]
+    let buf_for_parse: &str = buf_trimmed;
+
+    if let Ok(event) = serde_json::from_str::<serde_json::Value>(buf_for_parse) {
         // Accept both processed field names (sessionId, event, claudeStatus) from the old
         // hook format AND raw CC field names (session_id, hook_event_name, status).
         // On Windows the hook now forwards raw CC JSON directly to avoid truncation issues
@@ -10257,9 +10919,7 @@ fn process_claude_event(
             "SubagentStop" => "processing".to_string(),
             "SessionEnd" => "ended".to_string(),
             "PermissionRequest" => "waiting".to_string(),
-            "SessionStart" => {
-                if is_processing { "processing".to_string() } else { "stopped".to_string() }
-            }
+            "SessionStart" => "stopped".to_string(),
             _ => {
                 if !is_processing { "stopped".to_string() } else { claude_status.clone() }
             }
@@ -10284,6 +10944,7 @@ fn process_claude_event(
         let was_compacting;
         let pending_agents;
         let session_source: String;
+        let session_host_terminal: Option<String>;
         let stop_was_interrupted;
 
         {
@@ -10293,7 +10954,9 @@ fn process_claude_event(
             was_compacting = prev_status == "compacting";
 
             if hook_event == "SessionEnd" {
-                session_source = sessions.get(&session_id).map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string());
+                let prev = sessions.get(&session_id);
+                session_source = prev.map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string());
+                session_host_terminal = prev.and_then(|s| s.host_terminal.clone());
                 sessions.remove(&session_id);
                 pending_agents = 0;
                 stop_was_interrupted = false;
@@ -10365,12 +11028,25 @@ fn process_claude_event(
 
                 session.status = status.clone();
                 session.is_processing = is_processing;
-                let incoming_cwd = event.get("cwd")
+                let mut incoming_cwd = event
+                    .get("cwd")
                     .or_else(|| event.get("workdir"))
                     .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                    .unwrap_or("")
+                    .to_string();
+                // Cursor's hook payload omits `cwd` entirely on Windows; it
+                // exposes the workspace as URI-style `/g:/Desktop/code` under
+                // `workspace_roots`. Derive cwd from there so the session list
+                // (which filters out empty cwd) and workspace binding both work.
+                if incoming_cwd.is_empty() && session.source == "cursor" {
+                    if let Some(roots) = event.get("workspace_roots").and_then(|v| v.as_array()) {
+                        if let Some(first) = roots.first().and_then(|v| v.as_str()) {
+                            incoming_cwd = normalize_cursor_path(first);
+                        }
+                    }
+                }
                 if !incoming_cwd.is_empty() || session.cwd.is_empty() {
-                    session.cwd = incoming_cwd.to_string();
+                    session.cwd = incoming_cwd;
                 }
                 session.interactive = event.get("interactive").and_then(|v| v.as_bool()).unwrap_or(true);
                 session.updated_at = std::time::SystemTime::now()
@@ -10455,6 +11131,25 @@ fn process_claude_event(
                         {
                             session.source = "codex".to_string();
                         }
+                    }
+                    #[cfg(target_os = "windows")]
+                    if session.host_terminal.is_none() && session.source != "cursor" {
+                        session.host_terminal = find_host_app_for_pid_win(pid_u32);
+                        log::info!("[claude_event] session={} host_terminal={:?}",
+                            &session_id[..session_id.len().min(8)], session.host_terminal);
+                    }
+                }
+
+                // Read "host" field injected by the hook script (e.g. "claude_desktop")
+                if session.host_terminal.is_none() {
+                    if let Some(host) = event.get("host").and_then(|v| v.as_str()) {
+                        let ht = match host {
+                            "claude_desktop" => "Claude Desktop",
+                            _ => host,
+                        };
+                        session.host_terminal = Some(ht.to_string());
+                        log::info!("[claude_event] session={} host_terminal={:?} (from hook host field)",
+                            &session_id[..session_id.len().min(8)], session.host_terminal);
                     }
                 }
 
@@ -10560,6 +11255,7 @@ fn process_claude_event(
 
                 pending_agents = session.pending_agents;
                 session_source = session.source.clone();
+                session_host_terminal = session.host_terminal.clone();
             }
         }
 
@@ -10577,7 +11273,21 @@ fn process_claude_event(
         if was_processing && !was_compacting
             && (is_completion_stop || is_wait_event) {
             let is_waiting = is_wait_event;
-            let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting, "source": session_source}));
+            if cfg!(debug_assertions) {
+                log::info!(
+                    "[claude_event] emit claude-task-complete session={} waiting={} source={} host={:?}",
+                    &session_id[..session_id.len().min(8)],
+                    is_waiting,
+                    session_source,
+                    session_host_terminal,
+                );
+            }
+            let _ = app.emit("claude-task-complete", serde_json::json!({
+                "sessionId": session_id,
+                "waiting": is_waiting,
+                "source": session_source,
+                "hostTerminal": session_host_terminal,
+            }));
         }
 
         let cwd_str = event.get("cwd")
@@ -10607,9 +11317,9 @@ fn process_claude_event(
         }
 
         return Some((session_id, hook_event));
-    } else if let Err(e) = serde_json::from_str::<serde_json::Value>(buf) {
-        let tail: String = buf.chars().rev().take(300).collect::<String>().chars().rev().collect();
-        log::warn!("[claude_event] JSON parse failed: err={}, len={}, tail=...{}", e, buf.len(), tail);
+    } else if let Err(e) = serde_json::from_str::<serde_json::Value>(buf_for_parse) {
+        let tail: String = buf_for_parse.chars().rev().take(300).collect::<String>().chars().rev().collect();
+        log::warn!("[claude_event] JSON parse failed: err={}, len={}, tail=...{}", e, buf_for_parse.len(), tail);
     }
     None
 }
@@ -10625,49 +11335,6 @@ async fn install_cursor_hooks() -> Result<(), String> {
     let cursor_dir = home.join(".cursor");
     let hooks_dir = cursor_dir.join("hooks");
 
-    // Cursor support is dropped on Windows. Instead of installing hooks we
-    // actively clean up anything a previous oc-claw build might have left
-    // behind so the user can really stop hearing the completion sound.
-    #[cfg(windows)]
-    {
-        let _ = std::fs::remove_file(hooks_dir.join("occlaw-cursor-hook.ps1"));
-        let hooks_json_path = cursor_dir.join("hooks.json");
-        if hooks_json_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&hooks_json_path) {
-                if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(hooks) = config.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-                        let marker = "occlaw-cursor-hook";
-                        // Strip any oc-claw entry from every event bucket and
-                        // drop now-empty buckets so the file stays tidy.
-                        let event_names: Vec<String> = hooks.keys().cloned().collect();
-                        for name in event_names {
-                            if let Some(arr) = hooks.get_mut(&name).and_then(|v| v.as_array_mut()) {
-                                arr.retain(|entry| {
-                                    !entry.get("command").and_then(|c| c.as_str())
-                                        .map(|c| c.contains(marker))
-                                        .unwrap_or(false)
-                                });
-                                if arr.is_empty() {
-                                    hooks.remove(&name);
-                                }
-                            }
-                        }
-                    }
-                    if let Ok(json_str) = serde_json::to_string_pretty(&config) {
-                        let _ = std::fs::write(&hooks_json_path, json_str);
-                    }
-                }
-            }
-        }
-        let ext_dir = home.join(".cursor").join("extensions").join("oc-claw.terminal-focus-1.0.0");
-        if ext_dir.exists() {
-            let _ = std::fs::remove_dir_all(&ext_dir);
-        }
-        log::info!("[cursor_hooks] cursor support disabled on windows; cleaned previously installed hooks");
-        return Ok(());
-    }
-
-    #[cfg(not(windows))]
     std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
 
     // ── Write hook script (Unix) ──
@@ -10816,23 +11483,55 @@ else:
     // ── Write hook script (Windows) ──
     #[cfg(windows)]
     {
+        // Read stdin as raw bytes via OpenStandardInput() and decode as UTF-8
+        // explicitly. PowerShell's `[Console]::In.ReadToEnd()` snapshots its
+        // encoding at first access — setting `[Console]::InputEncoding` later
+        // (or even immediately before) is unreliable on CJK Windows where the
+        // default is GBK/Shift-JIS. UTF-8 mojibake here would corrupt
+        // `last_assistant_message` / `text` fields and crash JSON parsing on
+        // the Rust side ("expected ',' or '}' at column N").
+        //
+        // Forward the raw JSON unchanged. The cursor socket server passes
+        // source_override="cursor" to process_claude_event, so we don't need
+        // to inject `source` here — and trying to inject via PowerShell string
+        // concatenation has bitten us with off-by-one errors in the past.
         let hook_script = r#"$ErrorActionPreference = 'SilentlyContinue'
-[Console]::InputEncoding = [System.Text.Encoding]::UTF8
-$raw = [Console]::In.ReadToEnd()
-if (-not $raw) { Write-Output '{}'; exit 0 }
-$ccPid = (Get-Process -Id $PID).Parent.Parent.Id
-if ($ccPid -and $raw.StartsWith('{')) {
-    $raw = '{"pid":' + $ccPid + ',"source":"cursor",' + $raw.Substring(1)
-} else {
-    $raw = '{"source":"cursor",' + $raw.Substring(1)
-}
 try {
-    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19284)
-    $stream = $client.GetStream()
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
-    $stream.Write($bytes, 0, $bytes.Length)
-    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
-    $hookName = ($raw | ConvertFrom-Json).hook_event_name
+    $stdin = [System.Console]::OpenStandardInput()
+    $ms = New-Object System.IO.MemoryStream
+    $buffer = New-Object byte[] 8192
+    while (($n = $stdin.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        $ms.Write($buffer, 0, $n)
+    }
+    $bytes = $ms.ToArray()
+    if ($bytes.Length -eq 0) { Write-Output '{}'; exit 0 }
+
+    # Strip UTF-8 BOM (EF BB BF). Cursor writes hook stdin as UTF-8 + BOM on
+    # Windows; the previous text-mode reader stripped this implicitly, but
+    # OpenStandardInput() returns the raw bytes including the BOM. Forwarding
+    # the BOM trips serde_json with "expected value at line 1 column 1".
+    $offset = 0
+    $count = $bytes.Length
+    if ($count -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $offset = 3
+        $count = $count - 3
+    }
+
+    # Decode for hook-event sniffing only; the wire payload stays raw bytes.
+    $raw = [System.Text.Encoding]::UTF8.GetString($bytes, $offset, $count)
+    $hookName = ''
+    try { $hookName = ($raw | ConvertFrom-Json).hook_event_name } catch {}
+
+    try {
+        $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19284)
+        $stream = $client.GetStream()
+        $stream.Write($bytes, $offset, $count)
+        $stream.Flush()
+        $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+        $client.Close()
+    } catch {}
+
+    # Cursor's required stdout response per hook event type.
     if ($hookName -eq 'beforeSubmitPrompt') {
         Write-Output '{"continue":true}'
     } elseif ($hookName -eq 'beforeShellExecution' -or $hookName -eq 'beforeMCPExecution' -or $hookName -eq 'beforeReadFile') {
@@ -10840,7 +11539,6 @@ try {
     } else {
         Write-Output '{}'
     }
-    $client.Close()
 } catch {
     Write-Output '{}'
 }
@@ -11210,6 +11908,21 @@ fn start_claude_socket_server(
                             let _ = s.read_to_string(&mut buf);
                             if let Some((session_id, hook_event)) = process_claude_event(&buf, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
+                                    let source = {
+                                        let sessions = state.lock().unwrap();
+                                        sessions
+                                            .get(&session_id)
+                                            .map(|session| session.source.clone())
+                                            .unwrap_or_else(|| "cc".to_string())
+                                    };
+                                    if source == "codex" {
+                                        // Codex decisions are made in Codex native UI.
+                                        // Return an empty hook payload immediately so
+                                        // Codex can continue with its own approval flow.
+                                        let _ = s.write_all(b"{}");
+                                        let _ = s.flush();
+                                        return;
+                                    }
                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
                                     {
                                         let mut map = pending.lock().unwrap();
@@ -11274,24 +11987,46 @@ fn start_claude_socket_server(
                                 }
                             }
                             let text = String::from_utf8_lossy(&buf);
-                            // Cursor + Codex support are dropped on Windows.
-                            // Their hook scripts (or, in cursor's case, the
-                            // bundled Claude Code extension) still occasionally
-                            // reach this socket. Cursor payloads always carry
-                            // `cursor_version`; Codex hooks always set
-                            // `"source":"codex"`. Drop both outright so they
-                            // cannot drive the completion sound or pollute the
-                            // session list.
-                            if text.contains("\"cursor_version\"") {
-                                log::info!("[claude_tcp] dropping cursor-originated event on windows (len={})", text.len());
+                            // Cursor events should arrive via the dedicated
+                            // cursor TCP socket (port 19284). Anything that
+                            // reaches the CC socket while still tagged as
+                            // cursor (e.g. legacy hook config left behind by
+                            // a previous install) is dropped here so we don't
+                            // double-process and play two completion sounds.
+                            if text.contains("\"cursor_version\"")
+                                || text.contains("\"source\":\"cursor\"")
+                                || text.contains("\"source\": \"cursor\"")
+                            {
+                                log::info!(
+                                    "[claude_tcp] dropping cursor-originated event on cc socket (len={})",
+                                    text.len()
+                                );
                                 return;
                             }
-                            if text.contains("\"source\":\"codex\"") || text.contains("\"source\": \"codex\"") {
+                            // Codex on Windows is still unsupported; keep the
+                            // drop guard until that integration is ported.
+                            if text.contains("\"source\":\"codex\"")
+                                || text.contains("\"source\": \"codex\"")
+                            {
                                 log::info!("[claude_tcp] dropping codex-originated event on windows (len={})", text.len());
                                 return;
                             }
                             if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
+                                    let source = {
+                                        let sessions = state.lock().unwrap();
+                                        sessions
+                                            .get(&session_id)
+                                            .map(|session| session.source.clone())
+                                            .unwrap_or_else(|| "cc".to_string())
+                                    };
+                                    if source == "codex" {
+                                        // Keep behavior aligned with Unix implementation:
+                                        // Codex approvals should remain in Codex UI.
+                                        let _ = s.write_all(b"{}");
+                                        let _ = s.flush();
+                                        return;
+                                    }
                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
                                     {
                                         let mut map = pending.lock().unwrap();
@@ -11300,8 +12035,26 @@ fn start_claude_socket_server(
                                     s.set_read_timeout(None).ok();
                                     match rx.recv_timeout(std::time::Duration::from_secs(600)) {
                                         Ok(response_json) => {
-                                            let _ = s.write_all(response_json.as_bytes());
-                                            let _ = s.flush();
+                                            let bytes = response_json.as_bytes();
+                                            let write_result = s.write_all(bytes);
+                                            let flush_result = s.flush();
+                                            // Only emit a log line if anything looked off — successful
+                                            // permission round-trips are silent in release to avoid noise.
+                                            if write_result.is_err() || flush_result.is_err() {
+                                                log::warn!(
+                                                    "[claude_tcp] permission response write failed session={} bytes={} write_ok={} flush_ok={}",
+                                                    &session_id[..session_id.len().min(8)],
+                                                    bytes.len(),
+                                                    write_result.is_ok(),
+                                                    flush_result.is_ok(),
+                                                );
+                                            } else if cfg!(debug_assertions) {
+                                                log::info!(
+                                                    "[claude_tcp] permission response written session={} bytes={}",
+                                                    &session_id[..session_id.len().min(8)],
+                                                    bytes.len(),
+                                                );
+                                            }
                                         }
                                         Err(_) => {
                                             log::warn!("[claude_tcp] permission timeout for session={}", &session_id[..session_id.len().min(8)]);
@@ -11525,6 +12278,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
+        // Autostart: enabled via the settings toggle. We pass
+        // `--launched-at-login` so future code can detect login-launches and
+        // skip noisy first-run UI if needed.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--launched-at-login"]),
+        ))
         .register_uri_scheme_protocol("localasset", |ctx, req| {
             let raw_path = req.uri().path();
             let path = percent_decode_str(raw_path).decode_utf8_lossy();
@@ -11564,9 +12324,35 @@ pub fn run() {
                 log::warn!("Failed to install Cursor hooks on startup: {}", e);
             }
 
+            // One log file per app run, named with a startup timestamp so we
+            // never lose the previous session's logs to rotation. Goes to the
+            // OS-standard logs dir alongside the rolling `oc-claw.log`.
+            // On Windows: %LOCALAPPDATA%\com.openclaw.ooclaw\logs\run-*.log
+            //
+            // Drop the default Stdout target — `pnpm tauri dev` would
+            // otherwise mirror every log line into the terminal, drowning
+            // out the actual rust/vite output. The file targets keep the
+            // diagnostic trail intact for offline inspection.
+            let run_log_name = format!(
+                "run-{}.log",
+                chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+            );
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
+                    .max_file_size(64 * 1024 * 1024)
+                    .clear_targets()
+                    .target(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::LogDir { file_name: None },
+                    ))
+                    .target(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::LogDir {
+                            file_name: Some(run_log_name),
+                        },
+                    ))
+                    .target(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::Webview,
+                    ))
                     .build(),
             )?;
 
@@ -11759,9 +12545,8 @@ pub fn run() {
                 start_claude_socket_server(sessions_arc, pending_arc, app.handle().clone());
             }
 
-            // Start Cursor socket server (shares ClaudeState for unified session tracking)
-            // Cursor integration is disabled on Windows, so skip the server there.
-            #[cfg(not(target_os = "windows"))]
+            // Start Cursor socket server (shares ClaudeState for unified session tracking).
+            // Unix uses /tmp/occlaw-cursor.sock, Windows uses TCP 127.0.0.1:19284.
             {
                 let claude_state = app.state::<ClaudeState>();
                 let sessions_arc = Arc::clone(&claude_state.sessions);

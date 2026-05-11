@@ -100,6 +100,10 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "Claude Code 활성화",
     "enableClaudeCodeDesc": "Hook으로 로컬 Claude Code 세션 모니터링",
+    "enableClaudeCli": "Claude Code CLI 활성화",
+    "enableClaudeCliDesc": "Hook으로 로컬 Claude Code CLI 세션 모니터링",
+    "enableClaudeDesktop": "Claude Code Desktop 활성화",
+    "enableClaudeDesktopDesc": "Hook으로 로컬 Claude Code Desktop 세션 모니터링",
     "hookInstalled": "Hook 설치됨",
     "hookFailed": "설치 실패:",
 
@@ -144,6 +148,11 @@
     "autoCloseCompletionDesc": "완료 팝업이 5초 후 자동으로 닫힙니다",
     "autoExpandOnTask": "자동 팝업",
     "autoExpandOnTaskDesc": "작업 완료 또는 입력 대기 시 패널을 자동으로 확장합니다",
+
+    "system": "시스템",
+    "autostart": "로그인 시 실행",
+    "autostartDesc": "로그인할 때 oc-claw를 자동으로 시작합니다",
+    "autostartFailed": "자동 시작 설정 실패:",
 
     "about": "정보",
     "currentVersion": "현재 버전",

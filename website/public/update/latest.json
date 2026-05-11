@@ -1,27 +1,27 @@
 {
   "platforms": {
     "macos": {
-      "version": "1.8.3",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.3/oc-claw_1.8.3_aarch64.dmg",
+      "version": "1.8.4",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.4/oc-claw_1.8.4_aarch64.dmg",
       "notes_i18n": {
-        "zh": "史诗级更新，支持 codex 格式桌宠，更加多样化，画质更高清",
-        "en": "Epic update — codex-format pets are now supported, more variety and crisper sprites",
-        "ja": "大型アップデート — codex フォーマットの桌寵に対応、バリエーション拡充、画質向上",
-        "ko": "대규모 업데이트 — codex 포맷 펫 지원, 다양성 강화, 화질 향상",
-        "es": "Actualización épica — ahora soporta mascotas en formato codex, mayor variedad y mejor calidad",
-        "fr": "Mise à jour majeure — prise en charge des mascottes au format codex, plus de variété et meilleure qualité"
+        "zh": "支持 Windows 上的 Cursor，双端 Claude Code Desktop，新增开机自启动",
+        "en": "Cursor on Windows, Claude Code Desktop on macOS and Windows, launch-on-login",
+        "ja": "Windows での Cursor、macOS / Windows 両対応の Claude Code Desktop、ログイン時に自動起動",
+        "ko": "Windows 에서 Cursor 지원, macOS / Windows 양쪽 Claude Code Desktop 지원, 로그인 시 자동 실행",
+        "es": "Cursor en Windows, Claude Code Desktop en macOS y Windows, inicio al iniciar sesión",
+        "fr": "Cursor sous Windows, Claude Code Desktop sur macOS et Windows, démarrage à la connexion"
       }
     },
     "windows": {
-      "version": "1.8.3",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.3/oc-claw_1.8.3_x64-setup.exe",
+      "version": "1.8.4",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.4/oc-claw_1.8.4_x64-setup.exe",
       "notes_i18n": {
-        "zh": "史诗级更新，支持 codex 格式桌宠，更加多样化，画质更高清",
-        "en": "Epic update — codex-format pets are now supported, more variety and crisper sprites",
-        "ja": "大型アップデート — codex フォーマットの桌寵に対応、バリエーション拡充、画質向上",
-        "ko": "대규모 업데이트 — codex 포맷 펫 지원, 다양성 강화, 화질 향상",
-        "es": "Actualización épica — ahora soporta mascotas en formato codex, mayor variedad y mejor calidad",
-        "fr": "Mise à jour majeure — prise en charge des mascottes au format codex, plus de variété et meilleure qualité"
+        "zh": "支持 Windows 上的 Cursor，双端 Claude Code Desktop，新增开机自启动",
+        "en": "Cursor on Windows, Claude Code Desktop on macOS and Windows, launch-on-login",
+        "ja": "Windows での Cursor、macOS / Windows 両対応の Claude Code Desktop、ログイン時に自動起動",
+        "ko": "Windows 에서 Cursor 지원, macOS / Windows 양쪽 Claude Code Desktop 지원, 로그인 시 자동 실행",
+        "es": "Cursor en Windows, Claude Code Desktop en macOS y Windows, inicio al iniciar sesión",
+        "fr": "Cursor sous Windows, Claude Code Desktop sur macOS et Windows, démarrage à la connexion"
       }
     }
   },

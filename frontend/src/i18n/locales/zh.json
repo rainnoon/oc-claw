@@ -114,6 +114,10 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "启用 Claude Code",
     "enableClaudeCodeDesc": "通过 Hook 监听本地 Claude Code 会话",
+    "enableClaudeCli": "启用 Claude Code CLI",
+    "enableClaudeCliDesc": "通过 Hook 监听本地 Claude Code 命令行会话",
+    "enableClaudeDesktop": "启用 Claude Code Desktop",
+    "enableClaudeDesktopDesc": "通过 Hook 监听本地 Claude Code 桌面端会话",
     "codex": "Codex",
     "enableCodex": "启用 Codex",
     "enableCodexDesc": "通过 Hook 监听本地 Codex 会话",
@@ -163,6 +167,11 @@
     "autoCloseCompletionDesc": "完成弹窗出现后 5 秒自动关闭",
     "autoExpandOnTask": "主动弹窗",
     "autoExpandOnTaskDesc": "任务完成或需要输入时自动弹出面板",
+
+    "system": "系统",
+    "autostart": "开机启动",
+    "autostartDesc": "登录系统后自动启动 oc-claw",
+    "autostartFailed": "设置失败：",
 
     "about": "关于",
     "currentVersion": "当前版本",

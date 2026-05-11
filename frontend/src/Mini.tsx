@@ -482,8 +482,12 @@ export default function Mini() {
 
   // Feature toggles
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
+  // Separate listener switch for Claude Code Desktop on Windows. macOS/Linux
+  // currently fold both flows into `enableClaudeCode`, so this defaults to
+  // mirror that flag everywhere except Windows.
+  const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
   const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
-  const [enableCursor, setEnableCursor] = useState(!isWindowsPlatform)
+  const [enableCursor, setEnableCursor] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
@@ -551,7 +555,10 @@ export default function Mini() {
     nativeDialogActiveRef.current = v
     _setNativeDialogActive(v)
   }, [])
+  // Diagnostic IPC: forwards UI state transitions to the backend log file.
+  // Skipped entirely in production builds — no IPC overhead, no log noise.
   const debugToTerminal = useCallback((scope: string, msg: string) => {
+    if (!import.meta.env.DEV) return
     invoke('debug_log', { scope, msg }).catch(() => {})
   }, [])
   const isSettingsPickerBlockingClose = useCallback(
@@ -2011,17 +2018,22 @@ export default function Mini() {
       const store = await load('settings.json', { defaults: {}, autoSave: true })
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
+      const ccDesktop = await store.get('enable_claude_desktop')
+      const ccDesktopEnabled = typeof ccDesktop === 'boolean' ? ccDesktop : true
+      setEnableClaudeDesktop(ccDesktopEnabled)
       const cod = await store.get('enable_codex')
       const codEnabled = isWindowsPlatform ? false : cod !== false
       setEnableCodex(codEnabled)
-      if (cc !== false || codEnabled) invoke('install_claude_hooks').catch(() => {})
+      // Hook script is shared between CC CLI and CC Desktop, so install when
+      // any of the Claude listeners are on.
+      if (cc !== false || codEnabled || ccDesktopEnabled) invoke('install_claude_hooks').catch(() => {})
       const cur = await store.get('enable_cursor')
-      const curEnabled = isWindowsPlatform ? false : cur !== false
+      const curEnabled = cur !== false
       setEnableCursor(curEnabled)
       if (curEnabled) invoke('install_cursor_hooks').catch(() => {})
       if (isWindowsPlatform) {
+        // Codex is not yet supported on Windows; keep it forced off.
         await store.set('enable_codex', false)
-        await store.set('enable_cursor', false)
         await store.save()
       }
       const snd = await store.get('sound_enabled')
@@ -2095,15 +2107,54 @@ export default function Mini() {
   // Poll Claude/Codex/Cursor sessions
   useEffect(() => {
     if (appMode !== 'coding') { setClaudeSessions([]); return }
-    if (!(enableClaudeCode || enableCodex || enableCursor)) {
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor)) {
       setClaudeSessions([])
       return
     }
     // Track which sessions already had lastResponse so we only auto-expand once.
     const seenCompletions = new Set<string>()
+    // Track previously logged session statuses so we only emit a backend log
+    // line when something actually changes — keeps oc-claw.log readable.
+    const lastLoggedStatus = new Map<string, string>()
     const poll = async () => {
       try {
         const sessions = (await invoke('get_claude_sessions')) as any[]
+        // Diagnostic (dev only): log the state of every claude session on
+        // each poll change so we can correlate stuck-mascot reports with
+        // backend session state. Only logs on transitions to keep log
+        // volume sane.
+        if (import.meta.env.DEV) {
+          try {
+            const summary = sessions.map((s) => ({
+              id: String(s.sessionId).slice(0, 8),
+              src: s.source,
+              host: s.hostTerminal,
+              st: s.status,
+              tool: s.tool,
+              updAt: s.updatedAt,
+            }))
+            const seenIds = new Set<string>()
+            let changed = false
+            for (const s of sessions) {
+              seenIds.add(s.sessionId)
+              const prev = lastLoggedStatus.get(s.sessionId)
+              const next = `${s.status}|${s.source}|${s.hostTerminal || ''}`
+              if (prev !== next) {
+                lastLoggedStatus.set(s.sessionId, next)
+                changed = true
+              }
+            }
+            for (const id of Array.from(lastLoggedStatus.keys())) {
+              if (!seenIds.has(id)) {
+                lastLoggedStatus.delete(id)
+                changed = true
+              }
+            }
+            if (changed) {
+              invoke('debug_log', { scope: 'poll', msg: `sessions=${sessions.length} ${JSON.stringify(summary)}` }).catch(() => {})
+            }
+          } catch {}
+        }
         // In efficiency mode, auto-expand panel when a session just completed
         // with an AI response (lastResponse appeared for the first time).
         // Mark all newly completed sessions as seen, but only auto-expand
@@ -2141,7 +2192,7 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode, enableCodex, enableCursor, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, appMode])
 
   // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
@@ -2159,19 +2210,31 @@ export default function Mini() {
   const autoExpandOnTaskRef = useRef(autoExpandOnTask)
   autoExpandOnTaskRef.current = autoExpandOnTask
   const autoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Refs to keep the listener stable while we still respect live toggle changes.
+  const enableClaudeCodeRef = useRef(enableClaudeCode)
+  enableClaudeCodeRef.current = enableClaudeCode
+  const enableClaudeDesktopRef = useRef(enableClaudeDesktop)
+  enableClaudeDesktopRef.current = enableClaudeDesktop
   useEffect(() => {
     if (appMode !== 'coding') return
-    if (!(enableClaudeCode || enableCodex || enableCursor)) return
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor)) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
+      const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
+      const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
+      const isCodex = ev.payload?.source === 'codex' || currentSession?.source === 'codex'
+      const hostTerminal = ev.payload?.hostTerminal || currentSession?.hostTerminal
+      const isClaudeDesktop = !isCursor && !isCodex && hostTerminal === 'Claude Desktop'
+      const isClaudeCli = !isCursor && !isCodex && !isClaudeDesktop
+      // Drop the event entirely if the matching listener toggle is off, so
+      // muted streams never trigger auto-expand or completion popups either.
+      if (isClaudeDesktop && !enableClaudeDesktopRef.current) return
+      if (isClaudeCli && !enableClaudeCodeRef.current) return
       if (ev.payload?.waiting && viewModeRef.current === 'efficiency' && autoExpandOnTaskRef.current) {
         setEffListCollapsed(true)
         if (!expandedRef.current && expandFnRef.current) {
           expandFnRef.current()
         }
       }
-      const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
-      const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
-      const isCodex = ev.payload?.source === 'codex' || currentSession?.source === 'codex'
       const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : soundEnabledRef.current
       if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
@@ -2184,7 +2247,7 @@ export default function Mini() {
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [enableClaudeCode, enableCodex, enableCursor, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, appMode])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
@@ -2279,7 +2342,17 @@ export default function Mini() {
     const char = characters.find((c) => c.name === charName) || DEFAULT_CHAR
     return { agentId: s.agentId, sessionIdx: i, agent, char, isWorking: s.active }
   })
-  const claudeSlots: SessionSlot[] = claudeSessions.map((cs, i) => {
+  // Sessions belonging to a disabled stream (CC CLI / CC Desktop / Codex /
+  // Cursor) must not affect mascot state, slot visualization, or the
+  // task-list views — otherwise a stale "processing" session in a muted
+  // stream keeps the mascot in working state forever.
+  const visibleClaudeSessions = claudeSessions.filter((cs) => {
+    if (cs.source === 'cursor') return enableCursor
+    if (cs.source === 'codex') return enableCodex
+    const isDesktop = cs.hostTerminal === 'Claude Desktop'
+    return isDesktop ? enableClaudeDesktop : enableClaudeCode
+  })
+  const claudeSlots: SessionSlot[] = visibleClaudeSessions.map((cs, i) => {
     const isWaiting = cs.status === 'waiting'
     const isCompacting = cs.status === 'compacting'
     const isActive = cs.status === 'processing' || cs.status === 'tool_running'
@@ -3027,10 +3100,12 @@ export default function Mini() {
           const store = await load('settings.json', { defaults: {}, autoSave: true })
           const cc = await store.get('enable_claudecode')
           setEnableClaudeCode(cc !== false)
+          const ccDesktop = await store.get('enable_claude_desktop')
+          setEnableClaudeDesktop(ccDesktop !== false)
           const cod = await store.get('enable_codex')
           setEnableCodex(isWindowsPlatform ? false : cod !== false)
           const cur = await store.get('enable_cursor')
-          setEnableCursor(isWindowsPlatform ? false : cur !== false)
+          setEnableCursor(cur !== false)
         } catch {}
         // Trigger immediate refresh so config changes are reflected right away.
         fetchAgents()
@@ -3323,10 +3398,12 @@ export default function Mini() {
         const store = await load('settings.json', { defaults: {}, autoSave: true })
         const cc = await store.get('enable_claudecode')
         setEnableClaudeCode(cc !== false)
+        const ccDesktop = await store.get('enable_claude_desktop')
+        setEnableClaudeDesktop(ccDesktop !== false)
         const cod = await store.get('enable_codex')
         setEnableCodex(isWindowsPlatform ? false : cod !== false)
         const cur = await store.get('enable_cursor')
-        setEnableCursor(isWindowsPlatform ? false : cur !== false)
+        setEnableCursor(cur !== false)
         fetchAgents()
         try {
           await invoke('set_mini_size', {
@@ -3505,9 +3582,9 @@ export default function Mini() {
     }
   }, [moveMode])
 
-  const claudeWaiting = claudeSessions.some((cs) => cs.status === 'waiting')
-  const claudeCompacting = claudeSessions.some((cs) => cs.status === 'compacting')
-  const claudeWorking = claudeSessions.some((cs) => cs.status === 'processing' || cs.status === 'tool_running')
+  const claudeWaiting = visibleClaudeSessions.some((cs) => cs.status === 'waiting')
+  const claudeCompacting = visibleClaudeSessions.some((cs) => cs.status === 'compacting')
+  const claudeWorking = visibleClaudeSessions.some((cs) => cs.status === 'processing' || cs.status === 'tool_running')
   const hasWorking = anySessionActive || Object.values(healthMap).some(Boolean) || claudeWorking || claudeCompacting || claudeWaiting
   // Priority: waiting > compacting > working > idle
   const mainPetState: PetState = claudeWaiting ? 'waiting' : claudeCompacting ? 'compacting' : hasWorking ? 'working' : 'idle'
@@ -3528,6 +3605,22 @@ export default function Mini() {
   // the current state without waiting for the next change.
   const mainPetStateRef = useRef<PetState>(mainPetState)
   mainPetStateRef.current = mainPetState
+  // Diagnostic (dev only): emit a backend log line whenever the mascot state
+  // changes, including which claude sessions (and other inputs) are pinning
+  // it. Helps pinpoint stuck-mascot bugs without opening webview DevTools.
+  // We dedupe by message content because `visibleClaudeSessions` is a fresh
+  // array on every render — without dedupe this would log on every render.
+  const lastMascotLogRef = useRef<string>('')
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    const culprits = visibleClaudeSessions
+      .filter((cs) => ['waiting', 'compacting', 'processing', 'tool_running'].includes(cs.status))
+      .map((cs) => `${String(cs.sessionId).slice(0, 8)}:${cs.source}:${cs.hostTerminal || 'noHost'}:${cs.status}`)
+    const summary = `state=${mainPetState} hasWorking=${hasWorking} ocActive=${anySessionActive} healthOn=${Object.values(healthMap).some(Boolean)} claude(P=${claudeWorking},W=${claudeWaiting},C=${claudeCompacting}) culprits=${JSON.stringify(culprits)}`
+    if (summary === lastMascotLogRef.current) return
+    lastMascotLogRef.current = summary
+    invoke('debug_log', { scope: 'mascot', msg: summary }).catch(() => {})
+  }, [mainPetState, hasWorking, anySessionActive, healthMap, claudeWorking, claudeWaiting, claudeCompacting, visibleClaudeSessions])
   useEffect(() => {
     if (appMode !== 'coding') return
     emit('mini-pet-state', { state: mainPetState }).catch(() => {})
@@ -4327,13 +4420,7 @@ export default function Mini() {
                               active: s.active,
                               updatedAt: s.updatedAt,
                             }))
-                            const filteredClaude = claudeSessions.filter((cs) => {
-                              if (cs.source === 'cursor' && !enableCursor) return false
-                              if (cs.source === 'codex' && !enableCodex) return false
-                              if (cs.source !== 'cursor' && cs.source !== 'codex' && !enableClaudeCode) return false
-                              return true
-                            })
-                            const claudeUnified = filteredClaude.map((cs, ci) => ({
+                            const claudeUnified = visibleClaudeSessions.map((cs, ci) => ({
                               type: 'claude' as const,
                               data: cs,
                               claudeIdx: ci,
@@ -4358,7 +4445,8 @@ export default function Mini() {
                             if (allItems.length === 0) {
                               const trackingTargets = [
                                 ...(hasConfiguredOpenClaw ? ['OpenClaw'] : []),
-                                ...(enableClaudeCode ? ['Claude Code'] : []),
+                                ...(enableClaudeCode ? [isWindowsPlatform ? 'Claude Code CLI' : 'Claude Code'] : []),
+                                ...(isWindowsPlatform && enableClaudeDesktop ? ['Claude Code Desktop'] : []),
                                 ...(enableCodex ? ['Codex'] : []),
                                 ...(enableCursor ? ['Cursor'] : []),
                               ]
@@ -4755,13 +4843,14 @@ export default function Mini() {
                                        全部允许、自动批准。
                                        用途：让用户无需切换到终端即可快速处理权限请求。 */}
                                     {isWaiting && cs.source !== 'cursor' && (
-                                      <div className="mt-2">
+                                      <div className="mt-2 flex flex-col" style={{ maxHeight: panelMaxHeight - 140 }}>
                                         {cs.tool && (
                                           <div className="flex items-center gap-1.5 mb-2">
                                             <span className="text-amber-400 text-[12px]">⚠</span>
                                             <span className="text-amber-400 text-[12px] font-bold">{cs.tool}</span>
                                           </div>
                                         )}
+                                        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                                         {cs.toolInput &&
                                           (() => {
                                             try {
@@ -4780,7 +4869,7 @@ export default function Mini() {
                                                         {isNew && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400">{t('mini.newFile', '新文件')}</span>}
                                                       </div>
                                                     )}
-                                                    <div className="px-3 py-2 max-h-[120px] overflow-y-auto scrollbar-thin">
+                                                    <div className="px-3 py-2 overflow-y-auto scrollbar-thin" style={{ maxHeight: 120 }}>
                                                       {lines.map((line: string, i: number) => (
                                                         <div key={i} className="flex gap-3 leading-[1.6]">
                                                           <span className="text-[11px] text-slate-600 font-mono select-none w-5 text-right shrink-0">{i + 1}</span>
@@ -4793,7 +4882,7 @@ export default function Mini() {
                                               }
                                               if (typeof input.justification === 'string' && input.justification.trim()) {
                                                 return (
-                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
+                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-auto" style={{ maxHeight: 120 }}>
                                                     <pre className="text-[11px] text-amber-300 font-mono whitespace-pre-wrap break-all leading-tight">{input.justification}</pre>
                                                   </div>
                                                 )
@@ -4801,7 +4890,7 @@ export default function Mini() {
                                               // Bash: show command
                                               if (cs.tool === 'Bash' && input.command) {
                                                 return (
-                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
+                                                  <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-auto" style={{ maxHeight: 120 }}>
                                                     <pre className="text-[11px] text-slate-300 font-mono whitespace-pre-wrap break-all leading-tight">{input.command}</pre>
                                                   </div>
                                                 )
@@ -4809,19 +4898,20 @@ export default function Mini() {
                                               // Fallback: show parsed fields
                                               const preview = input.command || input.file_path || input.content?.slice(0, 150) || cs.toolInput.slice(0, 150)
                                               return (
-                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
+                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-auto" style={{ maxHeight: 120 }}>
                                                   <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{preview}</pre>
                                                 </div>
                                               )
                                             } catch {
                                               return (
-                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] max-h-[120px] overflow-auto">
+                                                <div className="mb-2 p-2.5 rounded-lg bg-[#1a1a1e] border border-[#2a2a2e] overflow-auto" style={{ maxHeight: 120 }}>
                                                   <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-tight">{cs.toolInput.slice(0, 150)}</pre>
                                                 </div>
                                               )
                                             }
                                           })()}
-                                        <div className="flex gap-2">
+                                        </div>
+                                        <div className="flex gap-2 shrink-0 mt-2">
                                           {(() => {
                                             // Immediately clear the waiting state locally so
                                             // the permission popup closes without waiting for
@@ -4834,6 +4924,9 @@ export default function Mini() {
                                               hoverExpandedRef.current = false
                                               collapse()
                                             }
+                                            // Codex approval should be made in Codex's own UI.
+                                            // oc-claw only surfaces a reminder and a jump action
+                                            // so the user can approve there.
                                             if (cs.source === 'codex') {
                                               return (
                                                 <>
@@ -4863,6 +4956,7 @@ export default function Mini() {
                                                 </>
                                               )
                                             }
+
                                             return (
                                               <>
                                                 <button
@@ -5189,12 +5283,13 @@ export default function Mini() {
 
                     {/* Task List */}
                     <div className="p-2 bg-[#0f0f13] flex flex-col gap-0.5" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-                      {allSessions.length === 0 && claudeSessions.length === 0 && !refreshingAgents && (
+                      {allSessions.length === 0 && visibleClaudeSessions.length === 0 && !refreshingAgents && (
                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
                           {(() => {
                             const targets = [
                               ...(hasConfiguredOpenClaw ? ['OpenClaw'] : []),
-                              ...(enableClaudeCode ? ['Claude Code'] : []),
+                              ...(enableClaudeCode ? [isWindowsPlatform ? 'Claude Code CLI' : 'Claude Code'] : []),
+                              ...(isWindowsPlatform && enableClaudeDesktop ? ['Claude Code Desktop'] : []),
                               ...(enableCodex ? ['Codex'] : []),
                               ...(enableCursor ? ['Cursor'] : []),
                             ]
@@ -5222,13 +5317,7 @@ export default function Mini() {
                               active: s.active,
                               updatedAt: s.updatedAt,
                             }))
-                            const filteredClaude = claudeSessions.filter((cs) => {
-                              if (cs.source === 'cursor' && !enableCursor) return false
-                              if (cs.source === 'codex' && !enableCodex) return false
-                              if (cs.source !== 'cursor' && cs.source !== 'codex' && !enableClaudeCode) return false
-                              return true
-                            })
-                            const claudeUnified = filteredClaude.map((cs, ci) => ({
+                            const claudeUnified = visibleClaudeSessions.map((cs, ci) => ({
                               type: 'claude' as const,
                               data: cs,
                               claudeIdx: ci,

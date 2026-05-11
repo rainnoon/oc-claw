@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import {
+  enable as enableAutostartCmd,
+  disable as disableAutostartCmd,
+  isEnabled as isAutostartEnabled,
+} from '@tauri-apps/plugin-autostart'
 import { Loader2, Check, ChevronDown, Copy, Plus, Trash2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useTranslation } from 'react-i18next'
@@ -232,10 +237,14 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
+  const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
+  const [claudeDesktopHookStatus, setClaudeDesktopHookStatus] = useState('')
   const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
   const [codexHookStatus, setCodexHookStatus] = useState('')
-  const [enableCursor, setEnableCursor] = useState(!isWindowsPlatform)
+  const [enableCursor, setEnableCursor] = useState(true)
   const [cursorHookStatus, setCursorHookStatus] = useState('')
+  const [enableAutostart, setEnableAutostart] = useState(false)
+  const [autostartStatus, setAutostartStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
   const [updateChecking, setUpdateChecking] = useState(false)
   const [updateCheckResult, setUpdateCheckResult] = useState<'success' | 'error' | null>(null)
@@ -290,6 +299,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       const store = await getStore()
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
+      const ccDesktop = await store.get('enable_claude_desktop')
+      if (typeof ccDesktop === 'boolean') setEnableClaudeDesktop(ccDesktop)
       const cod = await store.get('enable_codex')
       if (isWindowsPlatform) {
         setEnableCodex(false)
@@ -297,11 +308,19 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         await store.save()
       } else if (typeof cod === 'boolean') setEnableCodex(cod)
       const cur = await store.get('enable_cursor')
-      if (isWindowsPlatform) {
-        setEnableCursor(false)
-        await store.set('enable_cursor', false)
+      if (typeof cur === 'boolean') setEnableCursor(cur)
+      // Reconcile autostart toggle with the system: the OS-level registration
+      // (registry on Windows, LaunchAgent on macOS) is the source of truth in
+      // case the user disabled it externally; mirror that into our store so
+      // the UI never lies about the current state.
+      try {
+        const sysEnabled = await isAutostartEnabled()
+        setEnableAutostart(sysEnabled)
+        await store.set('enable_autostart', sysEnabled)
         await store.save()
-      } else if (typeof cur === 'boolean') setEnableCursor(cur)
+      } catch {
+        // ignore — toggle stays at default false if the plugin can't report
+      }
     })()
     void checkForUpdate()
     if (showIslandBackgroundSettings) {
@@ -426,6 +445,25 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     }
   }
 
+  // CC Desktop shares the same on-disk hook script as CC CLI — toggling the
+  // listener purely gates UI visibility and notifications. We still call
+  // install_claude_hooks on enable so a fresh install (CLI off, Desktop on)
+  // registers the hook script.
+  const toggleClaudeDesktop = async (val: boolean) => {
+    setEnableClaudeDesktop(val)
+    const store = await getStore()
+    await store.set('enable_claude_desktop', val)
+    await store.save()
+    if (val) {
+      try {
+        await invoke('install_claude_hooks')
+        setClaudeDesktopHookStatus(t('settings.hookInstalled'))
+      } catch (e: any) {
+        setClaudeDesktopHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
+      }
+    }
+  }
+
   const toggleCursor = async (val: boolean) => {
     setEnableCursor(val)
     const store = await getStore()
@@ -453,6 +491,21 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       } catch (e: any) {
         setCodexHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
       }
+    }
+  }
+
+  const toggleAutostart = async (val: boolean) => {
+    setEnableAutostart(val)
+    setAutostartStatus('')
+    try {
+      if (val) await enableAutostartCmd()
+      else await disableAutostartCmd()
+      const store = await getStore()
+      await store.set('enable_autostart', val)
+      await store.save()
+    } catch (e: any) {
+      setEnableAutostart(!val)
+      setAutostartStatus(`${t('settings.autostartFailed', 'Failed to update autostart')} ${String(e)}`)
     }
   }
 
@@ -598,20 +651,27 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">Claude Code</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4">
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeCode')}</span>
-              <span className="text-xs text-white/40">{t('settings.enableClaudeCodeDesc')}</span>
+              <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeCli', 'Enable Claude Code CLI')}</span>
+              <span className="text-xs text-white/40">{t('settings.enableClaudeCliDesc', 'Monitor local Claude Code CLI sessions via Hooks')}</span>
               {hookStatus && <span className="text-xs text-white/30 mt-1">{hookStatus}</span>}
             </div>
             <Toggle checked={enableClaudeCode} onChange={toggleClaudeCode} />
+          </div>
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeDesktop', 'Enable Claude Code Desktop')}</span>
+              <span className="text-xs text-white/40">{t('settings.enableClaudeDesktopDesc', 'Monitor local Claude Code Desktop sessions via Hooks')}</span>
+              {claudeDesktopHookStatus && <span className="text-xs text-white/30 mt-1">{claudeDesktopHookStatus}</span>}
+            </div>
+            <Toggle checked={enableClaudeDesktop} onChange={toggleClaudeDesktop} />
           </div>
         </div>
       </section>
 
       {!isWindowsPlatform && (
-      <>
-      {/* Codex */}
+      /* Codex (not yet supported on Windows) */
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.codex', 'Codex')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -625,6 +685,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           </div>
         </div>
       </section>
+      )}
 
       {/* Cursor */}
       <section className="flex flex-col gap-4">
@@ -640,8 +701,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           </div>
         </div>
       </section>
-      </>
-      )}
 
       {/* 显示设置 */}
       <section className="flex flex-col gap-4">
@@ -833,7 +892,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             <Toggle checked={codexSoundEnabled} onChange={onToggleCodexSoundEnabled} />
           </div>
           )}
-          {!isWindowsPlatform && (
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.cursorSound', 'Cursor Completion Sound')}</span>
@@ -841,7 +899,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={cursorSoundEnabled} onChange={onToggleCursorSoundEnabled} />
           </div>
-          )}
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.waitingSound')}</span>
@@ -860,6 +917,21 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       </section>
 
       </>}
+      {/* 系统 */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-white">{t('settings.system', 'System')}</h2>
+        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.autostart', 'Launch on Login')}</span>
+              <span className="text-xs text-white/40">{t('settings.autostartDesc', 'Start oc-claw automatically when you log in')}</span>
+              {autostartStatus && <span className="text-xs text-red-400 mt-1 break-all">{autostartStatus}</span>}
+            </div>
+            <Toggle checked={enableAutostart} onChange={toggleAutostart} />
+          </div>
+        </div>
+      </section>
+
       {/* 关于 */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.about')}</h2>

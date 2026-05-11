@@ -100,6 +100,10 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "Activar Claude Code",
     "enableClaudeCodeDesc": "Monitorear sesiones locales de Claude Code mediante Hooks",
+    "enableClaudeCli": "Activar Claude Code CLI",
+    "enableClaudeCliDesc": "Monitorear sesiones locales de Claude Code CLI mediante Hooks",
+    "enableClaudeDesktop": "Activar Claude Code Desktop",
+    "enableClaudeDesktopDesc": "Monitorear sesiones locales de Claude Code Desktop mediante Hooks",
     "hookInstalled": "Hook instalado",
     "hookFailed": "Error de instalación:",
 
@@ -144,6 +148,11 @@
     "autoCloseCompletionDesc": "Cerrar el popup de finalización automáticamente después de 5 segundos",
     "autoExpandOnTask": "Popup automático",
     "autoExpandOnTaskDesc": "Expandir el panel automáticamente cuando una tarea se completa o necesita entrada",
+
+    "system": "Sistema",
+    "autostart": "Iniciar al iniciar sesión",
+    "autostartDesc": "Iniciar oc-claw automáticamente al iniciar sesión",
+    "autostartFailed": "Error al actualizar el inicio automático:",
 
     "about": "Acerca de",
     "currentVersion": "Versión actual",

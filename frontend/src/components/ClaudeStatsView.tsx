@@ -139,6 +139,29 @@ export function ClaudeStatsView({ source = 'cc' }: { source?: ClaudeStatsSource 
       ? 'claudeStats.titleCodex'
       : 'claudeStats.title'
 
+  // Cursor does not expose reliable token usage to oc-claw, so its stats page
+  // is intentionally a placeholder rather than misleading numbers from CC.
+  if (source === 'cursor') {
+    return (
+      <div className="flex-1 min-h-0 px-5 py-5 flex flex-col gap-6">
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-white tracking-tight">{t(titleKey)}</h1>
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center px-6">
+          <span className="text-white/60 text-sm font-medium">
+            {t('claudeStats.cursorUnsupportedTitle', 'Cursor 暂不支持详细统计')}
+          </span>
+          <span className="text-white/40 text-xs leading-relaxed max-w-sm">
+            {t(
+              'claudeStats.cursorUnsupportedDesc',
+              'Cursor 不向第三方工具暴露每次请求的 token 用量，oc-claw 无法在本地准确还原。请在 Cursor 应用内查看用量。',
+            )}
+          </span>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex-1 min-h-0 px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin">
       {/* Header */}

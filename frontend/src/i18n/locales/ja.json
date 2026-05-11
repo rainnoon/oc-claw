@@ -100,6 +100,10 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "Claude Codeを有効化",
     "enableClaudeCodeDesc": "Hookでローカルの Claude Code セッションを監視",
+    "enableClaudeCli": "Claude Code CLI を有効化",
+    "enableClaudeCliDesc": "Hook でローカルの Claude Code CLI セッションを監視",
+    "enableClaudeDesktop": "Claude Code Desktop を有効化",
+    "enableClaudeDesktopDesc": "Hook でローカルの Claude Code Desktop セッションを監視",
     "hookInstalled": "Hook インストール済み",
     "hookFailed": "インストール失敗:",
 
@@ -144,6 +148,11 @@
     "autoCloseCompletionDesc": "完了ポップアップを5秒後に自動で閉じます",
     "autoExpandOnTask": "自動ポップアップ",
     "autoExpandOnTaskDesc": "タスク完了や入力待ちの際にパネルを自動で展開します",
+
+    "system": "システム",
+    "autostart": "ログイン時に起動",
+    "autostartDesc": "ログイン時に oc-claw を自動的に起動します",
+    "autostartFailed": "自動起動の設定に失敗しました:",
 
     "about": "バージョン情報",
     "currentVersion": "現在のバージョン",

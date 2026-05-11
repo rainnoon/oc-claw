@@ -114,6 +114,10 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "Enable Claude Code",
     "enableClaudeCodeDesc": "Monitor local Claude Code sessions via Hooks",
+    "enableClaudeCli": "Enable Claude Code CLI",
+    "enableClaudeCliDesc": "Monitor local Claude Code CLI sessions via Hooks",
+    "enableClaudeDesktop": "Enable Claude Code Desktop",
+    "enableClaudeDesktopDesc": "Monitor local Claude Code Desktop sessions via Hooks",
     "codex": "Codex",
     "enableCodex": "Enable Codex",
     "enableCodexDesc": "Monitor local Codex sessions via Hooks",
@@ -163,6 +167,11 @@
     "autoCloseCompletionDesc": "Automatically close the completion popup after 5 seconds",
     "autoExpandOnTask": "Auto Popup",
     "autoExpandOnTaskDesc": "Automatically expand panel when a task completes or needs input",
+
+    "system": "System",
+    "autostart": "Launch on Login",
+    "autostartDesc": "Start oc-claw automatically when you log in",
+    "autostartFailed": "Failed to update autostart:",
 
     "about": "About",
     "currentVersion": "Current Version",
