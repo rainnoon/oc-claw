@@ -12,7 +12,7 @@
 <p align="center">
   <b>코딩 모드</b><br/>
   <sub>macOS: OpenClaw, Claude Code, Cursor, Codex</sub><br/>
-  <sub>Windows: OpenClaw, Claude Code</sub>
+  <sub>Windows: OpenClaw, Claude Code, Cursor</sub>
 </p>
 <p align="center">
   <img src="https://github.com/user-attachments/assets/74b8bbf8-ddcf-4149-a91e-d18d5c24fec6" width="600" />
