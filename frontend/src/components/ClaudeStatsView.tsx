@@ -27,7 +27,7 @@ interface ClaudeStats {
 }
 
 type ChartMetric = 'tokens' | 'messages'
-type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
+type ClaudeStatsSource = 'cc' | 'codex' | 'cursor' | 'gemini'
 
 function DailyChart({ stats }: { stats: DailyStats[] }) {
   const { t } = useTranslation()

@@ -231,7 +231,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
+export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, geminiSoundEnabled, onToggleGeminiSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; geminiSoundEnabled: boolean; onToggleGeminiSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const isWindowsPlatform = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
   const [connections, setConnections] = useState<OcConnection[]>([])
@@ -243,6 +243,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
   const [codexHookStatus, setCodexHookStatus] = useState('')
   const [enableCursor, setEnableCursor] = useState(true)
   const [cursorHookStatus, setCursorHookStatus] = useState('')
+  const [enableGemini, setEnableGemini] = useState(true)
+  const [geminiHookStatus, setGeminiHookStatus] = useState('')
   const [enableAutostart, setEnableAutostart] = useState(false)
   const [autostartStatus, setAutostartStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
@@ -309,6 +311,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       } else if (typeof cod === 'boolean') setEnableCodex(cod)
       const cur = await store.get('enable_cursor')
       if (typeof cur === 'boolean') setEnableCursor(cur)
+      const gem = await store.get('enable_gemini')
+      if (typeof gem === 'boolean') setEnableGemini(gem)
       // Reconcile autostart toggle with the system: the OS-level registration
       // (registry on Windows, LaunchAgent on macOS) is the source of truth in
       // case the user disabled it externally; mirror that into our store so
@@ -490,6 +494,21 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         setCodexHookStatus(t('settings.hookInstalled'))
       } catch (e: any) {
         setCodexHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
+      }
+    }
+  }
+
+  const toggleGemini = async (val: boolean) => {
+    setEnableGemini(val)
+    const store = await getStore()
+    await store.set('enable_gemini', val)
+    await store.save()
+    if (val) {
+      try {
+        await invoke('install_gemini_hooks')
+        setGeminiHookStatus(t('settings.hookInstalled'))
+      } catch (e: any) {
+        setGeminiHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
       }
     }
   }
@@ -702,6 +721,21 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </div>
       </section>
 
+      {/* Gemini CLI */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-white">Gemini CLI</h2>
+        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.enableGemini', 'Enable Gemini CLI')}</span>
+              <span className="text-xs text-white/40">{t('settings.enableGeminiDesc', 'Monitor local Gemini CLI sessions via Hooks')}</span>
+              {geminiHookStatus && <span className="text-xs text-white/30 mt-1">{geminiHookStatus}</span>}
+            </div>
+            <Toggle checked={enableGemini} onChange={toggleGemini} />
+          </div>
+        </div>
+      </section>
+
       {/* 显示设置 */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
@@ -898,6 +932,13 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               <span className="text-xs text-white/40">{t('settings.cursorSoundDesc', 'Play sound when Cursor finishes a task')}</span>
             </div>
             <Toggle checked={cursorSoundEnabled} onChange={onToggleCursorSoundEnabled} />
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.geminiSound', 'Gemini Completion Sound')}</span>
+              <span className="text-xs text-white/40">{t('settings.geminiSoundDesc', 'Play sound when Gemini finishes a task')}</span>
+            </div>
+            <Toggle checked={geminiSoundEnabled} onChange={onToggleGeminiSoundEnabled} />
           </div>
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">

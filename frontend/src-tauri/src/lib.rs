@@ -6646,7 +6646,7 @@ pub struct ClaudeSession {
     /// Set dynamically in `get_claude_sessions` — not persisted.
     #[serde(rename = "isActiveTab")]
     pub is_active_tab: bool,
-    /// Source of this session: "cc" (Claude Code), "codex" (Codex), or "cursor" (Cursor IDE).
+    /// Source of this session: "cc" (Claude Code), "codex" (Codex), "cursor" (Cursor IDE), or "gemini" (Gemini CLI).
     pub source: String,
     /// Ghostty terminal `id` captured when the session is first seen.
     /// Used by `jump_to_claude_terminal` to select the exact tab instead
@@ -9173,6 +9173,13 @@ end tell"#,
                 }
             }
             return Err("No PID tracked for this Codex session".to_string());
+        } else if source == "gemini" {
+            for app_name in ["Ghostty", "Terminal", "iTerm2", "iTerm", "Warp"] {
+                if try_activate_app(app_name) {
+                    return Ok(format!("Activated {}", app_name));
+                }
+            }
+            return Err("No PID tracked for this Gemini session".to_string());
         } else {
             return Err("No PID tracked for this session".to_string());
         };
@@ -10840,12 +10847,9 @@ fn process_claude_event(
             .or_else(|| event.get("hook_event_name"))
             .or_else(|| event.get("codex_event_type"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
-        // Normalize Cursor's camelCase event names to CC's PascalCase.
-        // Cursor and CC have different hook event sets:
-        //   Cursor: beforeSubmitPrompt, stop, beforeShellExecution, afterShellExecution,
-        //           beforeMCPExecution, afterMCPExecution, afterFileEdit, beforeReadFile,
-        //           afterAgentThought, afterAgentResponse
-        //   CC:     UserPromptSubmit, Stop, PreToolUse, PostToolUse, SessionStart, etc.
+        // Normalize event names from various agents to CC's PascalCase.
+        // Cursor uses camelCase, Gemini CLI uses PascalCase (BeforeAgent/AfterAgent etc.),
+        // CC uses PascalCase (UserPromptSubmit, Stop, etc.).
         let hook_event = match raw_hook_event.as_str() {
             "beforeSubmitPrompt" => "UserPromptSubmit".to_string(),
             "hook-user-prompt-submit" => "UserPromptSubmit".to_string(),
@@ -10863,6 +10867,13 @@ fn process_claude_event(
             "afterShellExecution" | "afterMCPExecution" | "afterFileEdit" => "PostToolUse".to_string(),
             "afterAgentThought" | "afterAgentResponse" => "PostToolUse".to_string(),
             "stop" => "Stop".to_string(),
+            // Gemini CLI events → map to CC equivalents
+            "BeforeAgent" => "UserPromptSubmit".to_string(),
+            "AfterAgent" => "Stop".to_string(),
+            "BeforeTool" => "PreToolUse".to_string(),
+            "AfterTool" => "PostToolUse".to_string(),
+            "Notification" => "Stop".to_string(),
+            "PreCompress" => "PreCompact".to_string(),
             other => other.to_string(),
         };
 
@@ -10990,15 +11001,16 @@ fn process_claude_event(
                     cursor_native_handle: None,
                 });
                 // Only upgrade source, never downgrade:
-                // cc < codex < cursor.
-                // Once a session is identified as codex/cursor, later generic
-                // CC events (source=cc) for the same sessionId must not
+                // cc < codex < gemini < cursor.
+                // Once a session is identified as a higher-rank source, later
+                // generic CC events (source=cc) for the same sessionId must not
                 // overwrite it, otherwise active-tab/staleness logic regresses.
                 let source_rank = |s: &str| -> u8 {
                     match s {
                         "cc" => 1,
                         "codex" => 2,
-                        "cursor" => 3,
+                        "gemini" => 3,
+                        "cursor" => 4,
                         _ => 0,
                     }
                 };
@@ -11322,6 +11334,290 @@ fn process_claude_event(
         log::warn!("[claude_event] JSON parse failed: err={}, len={}, tail=...{}", e, buf_for_parse.len(), tail);
     }
     None
+}
+
+// ─── Gemini CLI Integration ────────────────────────────────────────────
+
+/// Install hooks for Gemini CLI.
+/// Creates ~/.gemini/hooks/ooclaw-gemini-hook.sh and registers it in
+/// ~/.gemini/settings.json for all Gemini hook events.
+/// Gemini CLI uses PascalCase event names (SessionStart, BeforeAgent, etc.)
+/// and expects JSON stdout for gating hooks (BeforeTool/AfterTool → {"decision":"allow"}).
+#[tauri::command]
+async fn install_gemini_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let gemini_dir = home.join(".gemini");
+
+    // Skip if ~/.gemini/ doesn't exist (Gemini CLI not installed)
+    if !gemini_dir.exists() {
+        log::info!("[gemini_hooks] ~/.gemini/ not found — skipping");
+        return Ok(());
+    }
+
+    let hooks_dir = gemini_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
+
+    #[cfg(unix)]
+    let hook_path = hooks_dir.join("ooclaw-gemini-hook.sh");
+    #[cfg(windows)]
+    let hook_path = hooks_dir.join("ooclaw-gemini-hook.ps1");
+
+    #[cfg(unix)]
+    {
+        // Gemini CLI hook script: reads stdin JSON, maps event to oc-claw state,
+        // forwards to Unix socket, returns appropriate stdout for gating hooks.
+        let hook_script = r#"#!/bin/bash
+# ooclaw Gemini CLI hook - forwards events to /tmp/ooclaw-gemini.sock
+SOCKET_PATH="/tmp/ooclaw-gemini.sock"
+[ -S "$SOCKET_PATH" ] || { echo '{}'; exit 0; }
+
+# Capture Gemini CLI PID for terminal jump support
+export GEMINI_PID=$PPID
+
+# Cache Ghostty terminal ID per Gemini PID (so jump-to-terminal works)
+_TID_CACHE="/tmp/ooclaw-gemini-tid-$PPID"
+if [ -f "$_TID_CACHE" ]; then
+    export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
+else
+    _TID=$(osascript -e 'tell application "Ghostty" to return id of current terminal of front window as text' 2>/dev/null || true)
+    if [ -n "$_TID" ]; then
+        echo "$_TID" > "$_TID_CACHE"
+        export GHOSTTY_TID="$_TID"
+    fi
+fi
+
+/usr/bin/python3 -c "
+import json, os, socket, sys
+
+raw = sys.stdin.read()
+if not raw.strip():
+    print('{}')
+    sys.exit(0)
+
+try:
+    data = json.loads(raw)
+except:
+    print('{}')
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    print('{}')
+    sys.exit(0)
+
+hook_event = data.get('hook_event_name', '')
+mapped_event = hook_event
+
+# Notification with notification_type=ToolPermission means Gemini is
+# showing an approval prompt (e.g. 'Apply this change?').  Map it to
+# PermissionRequest so oc-claw shows the 'waiting' pet state.
+# Non-permission notifications are informational only; skip them to
+# avoid state flicker.
+if hook_event == 'Notification':
+    if data.get('notification_type') == 'ToolPermission':
+        mapped_event = 'PermissionRequest'
+    else:
+        print('{}')
+        sys.exit(0)
+
+status_map = {
+    'SessionStart': 'waiting_for_input',
+    'SessionEnd': 'ended',
+    'BeforeAgent': 'processing',
+    'AfterAgent': 'waiting_for_input',
+    'BeforeTool': 'running_tool',
+    'AfterTool': 'processing',
+    'PermissionRequest': 'waiting',
+    'PreCompress': 'compacting',
+}
+
+details = data.get('details', {}) or {}
+tool_name = details.get('tool_name', '') or data.get('tool_name', '')
+
+gemini_pid = int(os.environ.get('GEMINI_PID', '0'))
+ghostty_tid = os.environ.get('GHOSTTY_TID', '')
+
+output = {
+    'sessionId': data.get('session_id', ''),
+    'cwd': data.get('cwd', ''),
+    'event': mapped_event,
+    'claudeStatus': status_map.get(mapped_event, 'unknown'),
+    'source': 'gemini',
+}
+if tool_name:
+    output['tool'] = tool_name
+if gemini_pid:
+    output['pid'] = gemini_pid
+if ghostty_tid:
+    output['terminalId'] = ghostty_tid
+
+payload = json.dumps(output)
+
+gating_response = '{}'
+if hook_event in ('BeforeTool', 'AfterTool'):
+    gating_response = json.dumps({'decision': 'allow'})
+
+try:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect('$SOCKET_PATH')
+    sock.sendall(payload.encode('utf-8'))
+    sock.shutdown(socket.SHUT_WR)
+    sock.close()
+except:
+    pass
+
+sys.stdout.write(gating_response)
+"
+"#;
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(windows)]
+    {
+        let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+try {
+    $raw = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        [Console]::Out.Write('{}')
+        exit 0
+    }
+
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json } catch {}
+
+    $hookEvent = ''
+    if ($obj -ne $null -and $obj.hook_event_name) { $hookEvent = [string]$obj.hook_event_name }
+
+    $mappedEvent = $hookEvent
+    if ($hookEvent -eq 'Notification') {
+        if ($obj.notification_type -eq 'ToolPermission') {
+            $mappedEvent = 'PermissionRequest'
+        } else {
+            [Console]::Out.Write('{}')
+            [Console]::Out.Flush()
+            exit 0
+        }
+    }
+
+    $statusMap = @{
+        'SessionStart' = 'waiting_for_input'
+        'SessionEnd' = 'ended'
+        'BeforeAgent' = 'processing'
+        'AfterAgent' = 'waiting_for_input'
+        'BeforeTool' = 'running_tool'
+        'AfterTool' = 'processing'
+        'PermissionRequest' = 'waiting'
+        'PreCompress' = 'compacting'
+    }
+
+    $toolName = ''
+    if ($obj.details -and $obj.details.tool_name) { $toolName = [string]$obj.details.tool_name }
+    if (-not $toolName -and $obj.tool_name) { $toolName = [string]$obj.tool_name }
+
+    $output = @{
+        sessionId = if ($obj.session_id) { $obj.session_id } else { '' }
+        cwd = if ($obj.cwd) { $obj.cwd } else { '' }
+        event = $mappedEvent
+        claudeStatus = if ($statusMap.ContainsKey($mappedEvent)) { $statusMap[$mappedEvent] } else { 'unknown' }
+        source = 'gemini'
+    }
+    if ($toolName) { $output['tool'] = $toolName }
+
+    $payload = $output | ConvertTo-Json -Compress -Depth 10
+
+    $gatingResponse = '{}'
+    if ($hookEvent -eq 'BeforeTool' -or $hookEvent -eq 'AfterTool') {
+        $gatingResponse = '{"decision":"allow"}'
+    }
+
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19285)
+    $stream = $client.GetStream()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush()
+    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+    $client.Close()
+
+    [Console]::Out.Write($gatingResponse)
+    [Console]::Out.Flush()
+} catch {
+    try { [Console]::Out.Write('{}'); [Console]::Out.Flush() } catch {}
+}
+"#;
+        std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
+    }
+
+    // Register hooks in ~/.gemini/settings.json
+    // Gemini CLI uses a different config format:
+    //   { "hooks": { "EventName": [{ "matcher": "*", "hooks": [{ "name": "ooclaw", "type": "command", "command": "..." }] }] } }
+    let settings_path = gemini_dir.join("settings.json");
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if settings.get("hooks").is_none() {
+        settings["hooks"] = serde_json::json!({});
+    }
+    let hooks = settings["hooks"].as_object_mut().ok_or("hooks is not an object")?;
+
+    #[cfg(windows)]
+    let hook_command = format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+        hook_path.to_string_lossy().replace('\\', "/"),
+    );
+    #[cfg(not(windows))]
+    let hook_command = hook_path.to_string_lossy().to_string();
+
+    let is_our_hook = |cmd: &str| -> bool {
+        cmd == hook_command || cmd.contains("ooclaw-gemini-hook")
+    };
+
+    let has_our_entry = |entry: &serde_json::Value| -> bool {
+        if let Some(cmd) = entry.get("command").and_then(|c| c.as_str()) {
+            if is_our_hook(cmd) { return true; }
+        }
+        if let Some(inner_hooks) = entry.get("hooks").and_then(|h| h.as_array()) {
+            return inner_hooks.iter().any(|h| {
+                h.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_our_hook(c))
+            });
+        }
+        false
+    };
+
+    let gemini_events = [
+        "SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent",
+        "BeforeTool", "AfterTool", "Notification", "PreCompress",
+    ];
+
+    let hook_entry = serde_json::json!({
+        "matcher": "*",
+        "hooks": [{ "name": "ooclaw", "type": "command", "command": hook_command }]
+    });
+
+    for event_name in gemini_events {
+        let arr = hooks.entry(event_name.to_string()).or_insert(serde_json::json!([]));
+        let list = arr.as_array_mut().ok_or("hook event is not an array")?;
+        list.retain(|entry| !has_our_entry(entry));
+        list.push(hook_entry.clone());
+    }
+
+    // Gemini CLI requires enableHooks to be true for hooks to fire
+    if settings.get("tools").is_none() {
+        settings["tools"] = serde_json::json!({});
+    }
+    settings["tools"]["enableHooks"] = serde_json::json!(true);
+
+    let json_str = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(&settings_path, json_str).map_err(|e| e.to_string())?;
+    log::info!("[gemini_hooks] installed hooks to {:?}", settings_path);
+
+    Ok(())
 }
 
 // ─── Cursor Integration ───────────────────────────────────────────────
@@ -11872,6 +12168,74 @@ fn start_cursor_socket_server(
     }
 }
 
+/// Start the Gemini CLI IPC server.
+/// On macOS/Linux: Unix domain socket at /tmp/ooclaw-gemini.sock
+/// On Windows: TCP server on localhost:19285
+fn start_gemini_socket_server(
+    claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    app: tauri::AppHandle,
+) {
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/ooclaw-gemini.sock";
+        let _ = std::fs::remove_file(socket_path);
+        let listener = match std::os::unix::net::UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[gemini_socket] bind failed: {}", e); return; }
+        };
+        log::info!("[gemini_socket] listening on {}", socket_path);
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            // Gemini events never block (no PermissionRequest)
+                            process_claude_event(&buf, &state, &app, Some("gemini"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:19285") {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[gemini_socket] TCP bind failed: {}", e); return; }
+        };
+        log::info!("[gemini_socket] listening on 127.0.0.1:19285");
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            process_claude_event(&buf, &state, &app, Some("gemini"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
 /// Start the Claude IPC server.
 /// On macOS/Linux: Unix domain socket at /tmp/ooclaw-claude.sock
 /// On Windows: TCP server on localhost:19283
@@ -12323,6 +12687,10 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(install_cursor_hooks()) {
                 log::warn!("Failed to install Cursor hooks on startup: {}", e);
             }
+            // Install Gemini CLI hooks on startup (idempotent, skips if ~/.gemini/ missing)
+            if let Err(e) = tauri::async_runtime::block_on(install_gemini_hooks()) {
+                log::warn!("Failed to install Gemini hooks on startup: {}", e);
+            }
 
             // One log file per app run, named with a startup timestamp so we
             // never lose the previous session's logs to rotation. Goes to the
@@ -12553,6 +12921,14 @@ pub fn run() {
                 start_cursor_socket_server(sessions_arc, app.handle().clone());
             }
 
+            // Start Gemini CLI socket server (shares ClaudeState for unified session tracking).
+            // Unix uses /tmp/ooclaw-gemini.sock, Windows uses TCP 127.0.0.1:19285.
+            {
+                let claude_state = app.state::<ClaudeState>();
+                let sessions_arc = Arc::clone(&claude_state.sessions);
+                start_gemini_socket_server(sessions_arc, app.handle().clone());
+            }
+
             // System tray — use saved language, fallback to system language
             let initial_lang = {
                 let store_path = app.path().app_data_dir().ok().map(|p| p.join("settings.json"));
@@ -12621,7 +12997,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

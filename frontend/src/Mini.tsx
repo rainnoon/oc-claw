@@ -113,7 +113,7 @@ const MINI_SPRITE_DISPLAY_MULTIPLIER = 2
 const SESSION_SPRITE_DISPLAY_MULTIPLIER = 0.88
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
-type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
+type ClaudeStatsSource = 'cc' | 'codex' | 'cursor' | 'gemini'
 const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'spin', 'milktea', 'walkout']
 
 // Priority: higher number = harder to interrupt
@@ -468,6 +468,7 @@ export default function Mini() {
   const resolveClaudeStatsSource = useCallback((source?: string): ClaudeStatsSource => {
     if (source === 'cursor') return 'cursor'
     if (source === 'codex') return 'codex'
+    if (source === 'gemini') return 'gemini'
     return 'cc'
   }, [])
   const resolveClaudeStatsSourceBySession = useCallback(
@@ -488,9 +489,11 @@ export default function Mini() {
   const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
   const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
   const [enableCursor, setEnableCursor] = useState(true)
+  const [enableGemini, setEnableGemini] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
+  const [geminiSoundEnabled, setGeminiSoundEnabled] = useState(true)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
@@ -2031,6 +2034,10 @@ export default function Mini() {
       const curEnabled = cur !== false
       setEnableCursor(curEnabled)
       if (curEnabled) invoke('install_cursor_hooks').catch(() => {})
+      const gem = await store.get('enable_gemini')
+      const gemEnabled = gem !== false
+      setEnableGemini(gemEnabled)
+      if (gemEnabled) invoke('install_gemini_hooks').catch(() => {})
       if (isWindowsPlatform) {
         // Codex is not yet supported on Windows; keep it forced off.
         await store.set('enable_codex', false)
@@ -2042,6 +2049,8 @@ export default function Mini() {
       if (typeof codsnd === 'boolean') setCodexSoundEnabled(codsnd)
       const csnd = await store.get('cursor_sound_enabled')
       if (typeof csnd === 'boolean') setCursorSoundEnabled(csnd)
+      const gsnd = await store.get('gemini_sound_enabled')
+      if (typeof gsnd === 'boolean') setGeminiSoundEnabled(gsnd)
       const ns = (await store.get('notify_sound')) as string
       if (ns === 'default' || ns === 'manbo') setNotifySound(ns)
       const ws = await store.get('waiting_sound')
@@ -2107,7 +2116,7 @@ export default function Mini() {
   // Poll Claude/Codex/Cursor sessions
   useEffect(() => {
     if (appMode !== 'coding') { setClaudeSessions([]); return }
-    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor)) {
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini)) {
       setClaudeSessions([])
       return
     }
@@ -2192,7 +2201,7 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, appMode])
 
   // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
@@ -2201,6 +2210,8 @@ export default function Mini() {
   codexSoundEnabledRef.current = codexSoundEnabled
   const cursorSoundEnabledRef = useRef(cursorSoundEnabled)
   cursorSoundEnabledRef.current = cursorSoundEnabled
+  const geminiSoundEnabledRef = useRef(geminiSoundEnabled)
+  geminiSoundEnabledRef.current = geminiSoundEnabled
   const notifySoundRef = useRef(notifySound)
   notifySoundRef.current = notifySound
   const waitingSoundRef = useRef(waitingSound)
@@ -2217,14 +2228,15 @@ export default function Mini() {
   enableClaudeDesktopRef.current = enableClaudeDesktop
   useEffect(() => {
     if (appMode !== 'coding') return
-    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor)) return
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini)) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
       const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
       const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
       const isCodex = ev.payload?.source === 'codex' || currentSession?.source === 'codex'
+      const isGemini = ev.payload?.source === 'gemini' || currentSession?.source === 'gemini'
       const hostTerminal = ev.payload?.hostTerminal || currentSession?.hostTerminal
-      const isClaudeDesktop = !isCursor && !isCodex && hostTerminal === 'Claude Desktop'
-      const isClaudeCli = !isCursor && !isCodex && !isClaudeDesktop
+      const isClaudeDesktop = !isCursor && !isCodex && !isGemini && hostTerminal === 'Claude Desktop'
+      const isClaudeCli = !isCursor && !isCodex && !isGemini && !isClaudeDesktop
       // Drop the event entirely if the matching listener toggle is off, so
       // muted streams never trigger auto-expand or completion popups either.
       if (isClaudeDesktop && !enableClaudeDesktopRef.current) return
@@ -2235,7 +2247,7 @@ export default function Mini() {
           expandFnRef.current()
         }
       }
-      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : soundEnabledRef.current
+      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : isGemini ? geminiSoundEnabledRef.current : soundEnabledRef.current
       if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
       if (notifySoundRef.current === 'manbo') {
@@ -2247,7 +2259,7 @@ export default function Mini() {
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, appMode])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
@@ -2349,6 +2361,7 @@ export default function Mini() {
   const visibleClaudeSessions = claudeSessions.filter((cs) => {
     if (cs.source === 'cursor') return enableCursor
     if (cs.source === 'codex') return enableCodex
+    if (cs.source === 'gemini') return enableGemini
     const isDesktop = cs.hostTerminal === 'Claude Desktop'
     return isDesktop ? enableClaudeDesktop : enableClaudeCode
   })
@@ -3106,6 +3119,8 @@ export default function Mini() {
           setEnableCodex(isWindowsPlatform ? false : cod !== false)
           const cur = await store.get('enable_cursor')
           setEnableCursor(cur !== false)
+          const gem = await store.get('enable_gemini')
+          setEnableGemini(gem !== false)
         } catch {}
         // Trigger immediate refresh so config changes are reflected right away.
         fetchAgents()
@@ -3404,6 +3419,8 @@ export default function Mini() {
         setEnableCodex(isWindowsPlatform ? false : cod !== false)
         const cur = await store.get('enable_cursor')
         setEnableCursor(cur !== false)
+        const gem = await store.get('enable_gemini')
+        setEnableGemini(gem !== false)
         fetchAgents()
         try {
           await invoke('set_mini_size', {
@@ -4449,6 +4466,7 @@ export default function Mini() {
                                 ...(isWindowsPlatform && enableClaudeDesktop ? ['Claude Code Desktop'] : []),
                                 ...(enableCodex ? ['Codex'] : []),
                                 ...(enableCursor ? ['Cursor'] : []),
+                                ...(enableGemini ? ['Gemini'] : []),
                               ]
                               return (
                                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
@@ -4683,8 +4701,9 @@ export default function Mini() {
                                 const timeAgo = formatTimeAgo(cs.updatedAt || 0)
                                 const isCursorSource = cs.source === 'cursor'
                                 const isCodexSource = cs.source === 'codex'
-                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : 'Claude'
-                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : 'bg-[#3f211d] text-[#e87a65]'
+                                const isGeminiSource = cs.source === 'gemini'
+                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : 'Claude'
+                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : isGeminiSource ? 'bg-[#1d2736] text-[#8ab4f8]' : 'bg-[#3f211d] text-[#e87a65]'
                                 const openClaudeDetail = () => {
                                   setSelectedAgentId(null)
                                   setSelectedSessionKey(null)
@@ -4702,7 +4721,7 @@ export default function Mini() {
                                     transition={{ duration: 0.2, delay: index * 0.05 }}
                                     data-no-drag
                                     onClick={() => {
-                                      if (!isWaiting) {
+                                      if (!isWaiting || isGeminiSource) {
                                         if (cs.source === 'cursor') {
                                           invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
                                         } else {
@@ -4710,7 +4729,7 @@ export default function Mini() {
                                         }
                                       }
                                     }}
-                                    className={`group hover:bg-white/[0.04] transition-colors ${isWaiting ? '' : 'cursor-pointer'}`}
+                                    className={`group hover:bg-white/[0.04] transition-colors ${(!isWaiting || isGeminiSource) ? 'cursor-pointer' : ''}`}
                                     style={{ padding: '10px 16px' }}
                                   >
                                     <div className="flex min-w-0 w-full items-center gap-3">
@@ -4924,10 +4943,13 @@ export default function Mini() {
                                               hoverExpandedRef.current = false
                                               collapse()
                                             }
-                                            // Codex approval should be made in Codex's own UI.
+                                            // Codex / Gemini approval should be made in their own UI.
                                             // oc-claw only surfaces a reminder and a jump action
                                             // so the user can approve there.
-                                            if (cs.source === 'codex') {
+                                            if (cs.source === 'codex' || cs.source === 'gemini') {
+                                              const jumpLabel = cs.source === 'gemini'
+                                                ? t('mini.viewInGemini', '前往 Gemini')
+                                                : t('mini.viewInCodex', '前往 Codex')
                                               return (
                                                 <>
                                                   <button
@@ -4940,7 +4962,7 @@ export default function Mini() {
                                                     }}
                                                     className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
                                                   >
-                                                    {t('mini.viewInCodex', '前往 Codex')}
+                                                    {jumpLabel}
                                                   </button>
                                                   <button
                                                     data-no-drag
@@ -5036,11 +5058,13 @@ export default function Mini() {
                                           <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
                                         </div>
                                         <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin text-[12px] text-slate-400 leading-[1.6] markdown-content">
-                                          {(cs.source === 'cursor' || cs.source === 'codex') && cs.lastResponse === '✓' ? (
+                                          {(cs.source === 'cursor' || cs.source === 'codex' || cs.source === 'gemini') && cs.lastResponse === '✓' ? (
                                             <p>
                                               {cs.source === 'codex'
                                                 ? t('mini.codeDone', 'Code has finished working. Click to view.')
-                                                : t('mini.cursorDone', 'Cursor has finished working. Click to view.')}
+                                                : cs.source === 'gemini'
+                                                  ? t('mini.geminiDone', 'Gemini has finished working. Click to view.')
+                                                  : t('mini.cursorDone', 'Cursor has finished working. Click to view.')}
                                             </p>
                                           ) : (
                                             <ReactMarkdown>{cs.lastResponse}</ReactMarkdown>
@@ -5292,6 +5316,7 @@ export default function Mini() {
                               ...(isWindowsPlatform && enableClaudeDesktop ? ['Claude Code Desktop'] : []),
                               ...(enableCodex ? ['Codex'] : []),
                               ...(enableCursor ? ['Cursor'] : []),
+                              ...(enableGemini ? ['Gemini'] : []),
                             ]
                             return targets.length > 0 ? <p className="text-slate-500 text-sm font-medium">{t('mini.startTracking', { targets: targets.join(' / ') })}</p> : null
                           })()}
@@ -5741,6 +5766,13 @@ export default function Mini() {
                           setCursorSoundEnabled(v)
                           const store = await getStore()
                           await store.set('cursor_sound_enabled', v)
+                          await store.save()
+                        }}
+                        geminiSoundEnabled={geminiSoundEnabled}
+                        onToggleGeminiSoundEnabled={async (v) => {
+                          setGeminiSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('gemini_sound_enabled', v)
                           await store.save()
                         }}
                         waitingSound={waitingSound}
