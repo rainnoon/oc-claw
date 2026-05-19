@@ -6659,6 +6659,10 @@ pub struct ClaudeSession {
     /// CC CLI sessions from CC Desktop sessions and gate them independently.
     #[serde(rename = "hostTerminal", skip_serializing_if = "Option::is_none")]
     pub host_terminal: Option<String>,
+    /// Hermes platform identifier (e.g. "cli", "feishu", "slack", "discord").
+    /// Used to decide which application to activate on session click.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
     /// Bound Cursor extension port for this session.
     /// Unlike `pid`, this is stable for the lifetime of a Cursor window.
     /// We resolve it from the session cwd/workspace and reuse it on click.
@@ -6770,6 +6774,97 @@ fn empty_claude_stats() -> ClaudeStats {
         daily_stats,
         model: "unsupported".to_string(),
     }
+}
+
+fn collect_hermes_stats() -> Result<ClaudeStats, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let db_path = home.join(".hermes").join("state.db");
+    if !db_path.exists() {
+        return Ok(empty_claude_stats());
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open hermes state.db: {}", e))?;
+
+    let now = chrono::Utc::now();
+    let cutoff = now - chrono::Duration::days(14);
+    let cutoff_ts = cutoff.timestamp() as f64;
+
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    for i in (0..14).rev() {
+        let day = (chrono::Local::now() - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        daily_map.insert(day.clone(), ClaudeDailyStats {
+            date: day, input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0, messages: 0, sessions: 0,
+        });
+    }
+
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_cache_write = 0u64;
+    let mut total_messages = 0u64;
+    let mut total_sessions = 0u64;
+    let mut model = String::new();
+
+    let mut stmt = conn.prepare(
+        "SELECT started_at, input_tokens, output_tokens, cache_read_tokens, \
+         cache_write_tokens, message_count, model \
+         FROM sessions WHERE started_at > ?1 ORDER BY started_at DESC"
+    ).map_err(|e| format!("prepare: {}", e))?;
+
+    let rows = stmt.query_map(rusqlite::params![cutoff_ts], |row| {
+        Ok((
+            row.get::<_, f64>(0)?,
+            row.get::<_, i64>(1).unwrap_or(0),
+            row.get::<_, i64>(2).unwrap_or(0),
+            row.get::<_, i64>(3).unwrap_or(0),
+            row.get::<_, i64>(4).unwrap_or(0),
+            row.get::<_, i64>(5).unwrap_or(0),
+            row.get::<_, String>(6).unwrap_or_default(),
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    for row in rows {
+        let (ts, inp, out, cr, cw, msgs, mdl) = row.map_err(|e| format!("row: {}", e))?;
+        let day = chrono::DateTime::from_timestamp(ts as i64, 0)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+
+        if let Some(entry) = daily_map.get_mut(&day) {
+            entry.input_tokens += inp as u64;
+            entry.output_tokens += out as u64;
+            entry.cache_read_tokens += cr as u64;
+            entry.cache_write_tokens += cw as u64;
+            entry.messages += msgs as u64;
+            entry.sessions += 1;
+        }
+
+        total_input += inp as u64;
+        total_output += out as u64;
+        total_cache_read += cr as u64;
+        total_cache_write += cw as u64;
+        total_messages += msgs as u64;
+        total_sessions += 1;
+        if model.is_empty() && !mdl.is_empty() {
+            model = mdl;
+        }
+    }
+
+    let daily_stats: Vec<ClaudeDailyStats> = daily_map.into_values().collect();
+
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
+        total_messages: total_messages,
+        total_sessions: total_sessions,
+        daily_stats,
+        model,
+    })
 }
 
 fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
@@ -7222,8 +7317,120 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
             }
         }
     }
+    // Supplement with recent Hermes sessions from state.db so historical
+    // sessions appear even if oc-claw was started after the Hermes session.
+    let live_hermes_ids: std::collections::HashSet<String> = list.iter()
+        .filter(|s| s.source == "hermes")
+        .map(|s| s.session_id.clone())
+        .collect();
+    if let Ok(db_sessions) = load_recent_hermes_sessions_from_db() {
+        for dbs in db_sessions {
+            if !live_hermes_ids.contains(&dbs.session_id) {
+                list.push(dbs);
+            }
+        }
+    }
+
     list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(list)
+}
+
+/// Load recent Hermes sessions (last 2h) from ~/.hermes/state.db.
+fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let db_path = home.join(".hermes").join("state.db");
+    if !db_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open hermes state.db: {}", e))?;
+
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as f64 - 7200.0;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens \
+         FROM sessions WHERE started_at > ?1 ORDER BY started_at DESC LIMIT 20"
+    ).map_err(|e| format!("prepare: {}", e))?;
+
+    let rows = stmt.query_map(rusqlite::params![cutoff], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1).unwrap_or_default(),
+            row.get::<_, String>(2).unwrap_or_default(),
+            row.get::<_, f64>(3).unwrap_or(0.0),
+            row.get::<_, Option<f64>>(4).unwrap_or(None),
+            row.get::<_, i64>(5).unwrap_or(0),
+            row.get::<_, i64>(6).unwrap_or(0),
+            row.get::<_, i64>(7).unwrap_or(0),
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    let mut sessions = Vec::new();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+    // Prepare statements for fetching last user/assistant message per session
+    let mut user_stmt = conn.prepare(
+        "SELECT substr(content, 1, 200) FROM messages \
+         WHERE session_id = ?1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1"
+    ).map_err(|e| format!("prepare user msg: {}", e))?;
+
+    for row in rows {
+        let (id, source, _model, started_at, ended_at, _msg_count, _input_tok, _output_tok) =
+            row.map_err(|e| format!("row: {}", e))?;
+
+        let updated_at_ms = if let Some(end) = ended_at {
+            if end > 0.0 { (end * 1000.0) as u64 } else { (started_at * 1000.0) as u64 }
+        } else {
+            (started_at * 1000.0) as u64
+        };
+
+        let is_active = ended_at.is_none() || ended_at == Some(0.0);
+        let status = if is_active && (now_ms - updated_at_ms) < 300_000 {
+            "processing".to_string()
+        } else {
+            "stopped".to_string()
+        };
+
+        let platform = source.clone();
+
+        let user_prompt: Option<String> = user_stmt
+            .query_row(rusqlite::params![&id], |r| r.get(0)).ok();
+        // last_response intentionally set to None for DB-loaded sessions:
+        // it is only used for real-time completion notifications, and
+        // historical sessions should never trigger the auto-expand popup.
+
+        sessions.push(ClaudeSession {
+            session_id: id,
+            status,
+            source: "hermes".to_string(),
+            cwd: "~/.hermes".to_string(),
+            tool: None,
+            tool_input: None,
+            user_prompt,
+            interactive: false,
+            updated_at: updated_at_ms,
+            is_processing: is_active && (now_ms - updated_at_ms) < 300_000,
+            pid: None,
+            pending_agents: 0,
+            permission_suggestions: None,
+            last_response: None,
+            is_active_tab: false,
+            terminal_id: None,
+            host_terminal: None,
+            platform: Some(platform),
+            cursor_port: None,
+            cursor_workspace_root: None,
+            cursor_workspace_name: None,
+            cursor_native_handle: None,
+        });
+    }
+
+    Ok(sessions)
 }
 
 #[tauri::command]
@@ -7399,6 +7606,14 @@ async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String>
     // instead of mixing in Claude Code's totals as if they were Cursor's.
     if source == "cursor" {
         return Ok(empty_claude_stats());
+    }
+
+    if source == "gemini" {
+        return Ok(empty_claude_stats());
+    }
+
+    if source == "hermes" {
+        return collect_hermes_stats();
     }
 
     let jsonl_files = match source.as_str() {
@@ -9006,6 +9221,7 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
     let pid = session.pid;
     let source = session.source.clone();
     let host_terminal = session.host_terminal.clone();
+    let platform = session.platform.clone();
     drop(sessions);
 
     #[cfg(target_os = "macos")]
@@ -9180,6 +9396,40 @@ end tell"#,
                 }
             }
             return Err("No PID tracked for this Gemini session".to_string());
+        } else if source == "hermes" {
+            // Hermes supports multiple platforms. Use the platform field to
+            // decide which application to activate, like OpenClaw does for
+            // Feishu/Lark/Discord/Slack channels.
+            let plat = platform.as_deref().unwrap_or("cli").to_lowercase();
+            let app_name = if plat.contains("feishu") || plat.contains("lark") {
+                Some("Lark")
+            } else if plat.contains("telegram") {
+                Some("Telegram")
+            } else if plat.contains("discord") {
+                Some("Discord")
+            } else if plat.contains("slack") {
+                Some("Slack")
+            } else if plat.contains("wechat") || plat.contains("weixin") {
+                Some("WeChat")
+            } else if plat.contains("whatsapp") {
+                Some("WhatsApp")
+            } else if plat.contains("mattermost") {
+                Some("Mattermost")
+            } else {
+                None
+            };
+            if let Some(name) = app_name {
+                if try_activate_app(name) {
+                    return Ok(format!("Activated {}", name));
+                }
+            }
+            // Fallback: try common terminal apps for CLI platform
+            for term in ["Ghostty", "Terminal", "iTerm2", "iTerm", "Warp"] {
+                if try_activate_app(term) {
+                    return Ok(format!("Activated {}", term));
+                }
+            }
+            return Err(format!("No PID tracked for this Hermes session (platform: {})", plat));
         } else {
             return Err("No PID tracked for this session".to_string());
         };
@@ -9983,7 +10233,10 @@ if ($appPath) {{
 async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>, String> {
     let path = match resolve_session_jsonl_path(&session_id, None) {
         Some(p) => p,
-        None => return Ok(vec![]),
+        None => {
+            // Fallback: try Hermes state.db
+            return load_hermes_conversation(&session_id);
+        }
     };
 
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -10065,6 +10318,109 @@ async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>,
     }
 
     messages.reverse();
+    Ok(messages)
+}
+
+/// Load conversation messages for a Hermes session from ~/.hermes/state.db.
+fn load_hermes_conversation(session_id: &str) -> Result<Vec<ChatMessage>, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let db_path = home.join(".hermes").join("state.db");
+    if !db_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open hermes state.db: {}", e))?;
+
+    let mut stmt = conn.prepare(
+        "SELECT role, content, tool_name, tool_calls, timestamp \
+         FROM messages WHERE session_id = ?1 ORDER BY timestamp ASC LIMIT 500"
+    ).map_err(|e| format!("prepare: {}", e))?;
+
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, f64>(4)?,
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    let mut messages = Vec::new();
+    for row in rows {
+        let (role, content, tool_name, tool_calls, ts) = row.map_err(|e| format!("row: {}", e))?;
+
+        // Format timestamp as ISO string
+        let ts_secs = ts as i64;
+        let ts_nanos = ((ts - ts_secs as f64) * 1_000_000_000.0) as u32;
+        let timestamp = chrono::DateTime::from_timestamp(ts_secs, ts_nanos)
+            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
+
+        if role == "tool" {
+            // Tool result: show tool_name and truncated content
+            let name = tool_name.unwrap_or_default();
+            let body = content.unwrap_or_default();
+            let truncated = if body.len() > 300 {
+                format!("{}…", &body[..300])
+            } else {
+                body
+            };
+            let text = if name.is_empty() {
+                format!("[Tool result]\n{}", truncated)
+            } else {
+                format!("[Tool: {}]\n{}", name, truncated)
+            };
+            messages.push(ChatMessage { role: "assistant".to_string(), text, timestamp });
+            continue;
+        }
+
+        if role == "assistant" {
+            // Check for tool_calls (function calls the model wants to make)
+            if let Some(ref tc_str) = tool_calls {
+                if let Ok(tc_arr) = serde_json::from_str::<Vec<serde_json::Value>>(tc_str) {
+                    for tc in &tc_arr {
+                        let fn_name = tc.get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown");
+                        let fn_args = tc.get("function")
+                            .and_then(|f| f.get("arguments"))
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("");
+                        let args_truncated = if fn_args.len() > 200 {
+                            format!("{}…", &fn_args[..200])
+                        } else {
+                            fn_args.to_string()
+                        };
+                        let text = format!("🔧 {}\n```\n{}\n```", fn_name, args_truncated);
+                        messages.push(ChatMessage { role: "assistant".to_string(), text, timestamp: timestamp.clone() });
+                    }
+                }
+            }
+            // Also include text content if present
+            if let Some(ref text) = content {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    messages.push(ChatMessage { role: "assistant".to_string(), text: trimmed.to_string(), timestamp: timestamp.clone() });
+                }
+            }
+            continue;
+        }
+
+        if role == "user" || role == "human" {
+            let text = content.unwrap_or_default();
+            let trimmed = text.trim();
+            if trimmed.is_empty() { continue; }
+            messages.push(ChatMessage { role: "user".to_string(), text: trimmed.to_string(), timestamp });
+            continue;
+        }
+
+        // system or other roles: skip
+    }
+
     Ok(messages)
 }
 
@@ -10995,6 +11351,7 @@ fn process_claude_event(
                     permission_suggestions: None,
                     terminal_id: None,
                     host_terminal: None,
+                    platform: None,
                     cursor_port: None,
                     cursor_workspace_root: None,
                     cursor_workspace_name: None,
@@ -11010,7 +11367,8 @@ fn process_claude_event(
                         "cc" => 1,
                         "codex" => 2,
                         "gemini" => 3,
-                        "cursor" => 4,
+                        "hermes" => 4,
+                        "cursor" => 5,
                         _ => 0,
                     }
                 };
@@ -11149,6 +11507,13 @@ fn process_claude_event(
                         session.host_terminal = find_host_app_for_pid_win(pid_u32);
                         log::info!("[claude_event] session={} host_terminal={:?}",
                             &session_id[..session_id.len().min(8)], session.host_terminal);
+                    }
+                }
+
+                // Store Hermes platform from hook event (e.g. "cli", "feishu", "slack")
+                if let Some(p) = event.get("platform").and_then(|v| v.as_str()) {
+                    if !p.is_empty() {
+                        session.platform = Some(p.to_string());
                     }
                 }
 
@@ -11618,6 +11983,634 @@ try {
     log::info!("[gemini_hooks] installed hooks to {:?}", settings_path);
 
     Ok(())
+}
+
+// ─── Hermes Agent Integration ──────────────────────────────────────────
+
+/// Install a Python plugin for Hermes Agent.
+/// Creates ~/.hermes/plugins/ooclaw/{plugin.yaml,__init__.py} that
+/// forwards lifecycle events to the oc-claw Unix socket.
+#[tauri::command]
+async fn install_hermes_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let hermes_dir = home.join(".hermes");
+
+    if !hermes_dir.exists() {
+        log::info!("[hermes_hooks] ~/.hermes/ not found — skipping");
+        return Ok(());
+    }
+
+    let plugin_dir = hermes_dir.join("plugins").join("ooclaw");
+    std::fs::create_dir_all(&plugin_dir).map_err(|e| e.to_string())?;
+
+    let plugin_yaml = r#"name: ooclaw
+version: 0.1.0
+description: "Forward Hermes Agent events to oc-claw desktop pet."
+author: "oc-claw"
+hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_finalize
+  - on_session_reset
+  - pre_approval_request
+  - post_approval_response
+"#;
+    std::fs::write(plugin_dir.join("plugin.yaml"), plugin_yaml).map_err(|e| e.to_string())?;
+
+    // The Python plugin is written as a static string with a placeholder for
+    // the connection target (Unix socket path or TCP port).
+    #[cfg(unix)]
+    let connect_code = r#"SOCKET_PATH = "/tmp/ooclaw-hermes.sock"
+
+def _send(payload):
+    import os as _os
+    if not _os.path.exists(SOCKET_PATH):
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(SOCKET_PATH)
+        s.sendall(json.dumps(payload).encode("utf-8"))
+        s.shutdown(socket.SHUT_WR)
+        s.close()
+    except Exception:
+        pass"#;
+
+    #[cfg(windows)]
+    let connect_code = r#"TCP_PORT = 19286
+
+def _send(payload):
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(("127.0.0.1", TCP_PORT))
+        s.sendall(json.dumps(payload).encode("utf-8"))
+        s.shutdown(socket.SHUT_WR)
+        s.close()
+    except Exception:
+        pass"#;
+
+    let init_py = format!(
+        r##"# ooclaw plugin for Hermes Agent - forwards events to oc-claw.
+from __future__ import annotations
+import json, os, socket
+from typing import Any, Dict, Tuple
+
+{connect_code}
+
+HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
+    "on_session_start": ("waiting_for_input", "SessionStart"),
+    "pre_llm_call": ("processing", "UserPromptSubmit"),
+    "post_llm_call": ("waiting_for_input", "Stop"),
+    "pre_tool_call": ("running_tool", "PreToolUse"),
+    "post_tool_call": ("processing", "PostToolUse"),
+    "on_session_end": ("waiting_for_input", "Stop"),
+    "on_session_finalize": ("ended", "SessionEnd"),
+    "on_session_reset": ("waiting_for_input", "SessionStart"),
+    "pre_approval_request": ("waiting", "PermissionRequest"),
+    "post_approval_response": ("processing", "PostToolUse"),
+}}
+
+def _handle(event_name, **kwargs):
+    mapping = HOOK_TO_EVENT.get(event_name)
+    if not mapping:
+        return
+    status, cc_event = mapping
+    if event_name == "post_tool_call":
+        result = kwargs.get("result")
+        if isinstance(result, dict) and (result.get("error") or
+            (isinstance(result.get("exit_code"), int) and result["exit_code"] != 0)):
+            status, cc_event = "processing", "PostToolUse"
+    session_id = kwargs.get("session_id", "") or kwargs.get("conversation_id", "")
+    if not session_id:
+        return
+    tool_name = ""
+    if event_name in ("pre_tool_call", "post_tool_call", "pre_approval_request"):
+        tool_name = kwargs.get("tool_name", "") or kwargs.get("tool", "") or ""
+    platform = kwargs.get("platform", "") or ""
+    payload = {{
+        "sessionId": session_id,
+        "cwd": os.getcwd(),
+        "event": cc_event,
+        "claudeStatus": status,
+        "source": "hermes",
+        "pid": os.getpid(),
+        "platform": platform,
+    }}
+    if tool_name:
+        payload["tool"] = tool_name
+    _send(payload)
+
+def _make_cb(event_name):
+    def cb(**kwargs):
+        try:
+            _handle(event_name, **kwargs)
+        except Exception:
+            pass
+        return None
+    cb.__name__ = "ooclaw_" + event_name
+    return cb
+
+def register(ctx):
+    for hook_name in HOOK_TO_EVENT:
+        ctx.register_hook(hook_name, _make_cb(hook_name))
+"##, connect_code = connect_code);
+
+    std::fs::write(plugin_dir.join("__init__.py"), init_py).map_err(|e| e.to_string())?;
+    log::info!("[hermes_hooks] installed plugin to {:?}", plugin_dir);
+
+    // Hermes plugins are opt-in. Run `hermes plugins enable ooclaw` to
+    // register the plugin so it loads on the next session.  If the CLI
+    // is not on PATH we fall back to patching config.yaml directly.
+    let hermes_bin = which_hermes();
+    if let Some(bin) = hermes_bin {
+        let out = std::process::Command::new(&bin)
+            .args(["plugins", "enable", "ooclaw"])
+            .output();
+        match out {
+            Ok(o) => log::info!("[hermes_hooks] plugins enable: {}", String::from_utf8_lossy(&o.stdout)),
+            Err(e) => log::warn!("[hermes_hooks] plugins enable failed: {}", e),
+        }
+    } else {
+        // Fallback: patch config.yaml plugins.enabled list directly
+        let config_path = hermes_dir.join("config.yaml");
+        if config_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                if !content.contains("ooclaw") {
+                    let patched = if content.contains("plugins:") {
+                        content.replace(
+                            "plugins:\n  enabled: []",
+                            "plugins:\n  enabled:\n  - ooclaw",
+                        ).replace(
+                            "plugins:\n  enabled:",
+                            "plugins:\n  enabled:\n  - ooclaw",
+                        )
+                    } else {
+                        format!("{}\nplugins:\n  enabled:\n  - ooclaw\n  disabled: []\n", content.trim_end())
+                    };
+                    let _ = std::fs::write(&config_path, patched);
+                    log::info!("[hermes_hooks] patched config.yaml to enable ooclaw plugin");
+                }
+            }
+        }
+    }
+
+    // ── Gateway hook (for Feishu / Telegram / Slack / etc.) ──
+    // Gateway uses a separate hook system under ~/.hermes/hooks/<name>/
+    let hooks_dir = hermes_dir.join("hooks").join("ooclaw");
+    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
+
+    let hook_yaml = r#"name: ooclaw
+description: Forward Hermes gateway events to oc-claw desktop pet
+events:
+  - session:start
+  - agent:start
+  - agent:end
+  - session:end
+  - session:reset
+"#;
+    std::fs::write(hooks_dir.join("HOOK.yaml"), hook_yaml).map_err(|e| e.to_string())?;
+
+    #[cfg(unix)]
+    let gw_connect_code = r#"SOCKET_PATH = "/tmp/ooclaw-hermes.sock"
+
+def _send_to_ooclaw(payload):
+    raw = json.dumps(payload) + "\n"
+    if not os.path.exists(SOCKET_PATH):
+        _log("socket not found: " + SOCKET_PATH)
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(2)
+        s.connect(SOCKET_PATH)
+        s.sendall(raw.encode("utf-8"))
+        s.close()
+        _log(f"sent OK: {payload.get('event')} status={payload.get('claudeStatus')}")
+    except Exception as e:
+        _log(f"send FAILED: {e}")"#;
+
+    #[cfg(windows)]
+    let gw_connect_code = r#"TCP_PORT = 19286
+
+def _send_to_ooclaw(payload):
+    raw = json.dumps(payload) + "\n"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2)
+        s.connect(("127.0.0.1", TCP_PORT))
+        s.sendall(raw.encode("utf-8"))
+        s.close()
+        _log(f"sent OK: {payload.get('event')} status={payload.get('claudeStatus')}")
+    except Exception as e:
+        _log(f"send FAILED: {e}")"#;
+
+    let handler_py = format!(
+        r##""""
+Gateway hook handler for oc-claw integration.
+Forwards Hermes gateway lifecycle events to oc-claw via socket.
+"""
+import json, os, socket, sys, datetime
+
+LOG_DIR = os.path.expanduser("~/.hermes/logs")
+LOG_FILE = os.path.join(LOG_DIR, "ooclaw-hook.log")
+
+def _log(msg):
+    os.makedirs(LOG_DIR, exist_ok=True)
+    ts = datetime.datetime.now().isoformat()
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{{ts}}] {{msg}}\n")
+
+{gw_connect_code}
+
+EVENT_MAP = {{
+    "session:start": ("SessionStart", "waiting_for_input"),
+    "agent:start":   ("UserPromptSubmit", "processing"),
+    "agent:end":     ("Stop", "waiting_for_input"),
+    "session:end":   ("Stop", "waiting_for_input"),
+    "session:reset": ("SessionStart", "waiting_for_input"),
+}}
+
+def handle(event_type, context):
+    _log(f"hook called: {{event_type}} context_keys={{list(context.keys())}}")
+    mapping = EVENT_MAP.get(event_type)
+    if not mapping:
+        _log(f"unmapped event: {{event_type}}")
+        return
+    oc_event, claude_status = mapping
+    platform = context.get("platform", "")
+    user_id = context.get("user_id", "")
+    session_id = context.get("session_id", "")
+    if not session_id:
+        session_id = f"gw_{{platform}}_{{user_id}}" if user_id else f"gw_{{platform}}"
+    payload = {{
+        "sessionId": session_id,
+        "cwd": "",
+        "event": oc_event,
+        "claudeStatus": claude_status,
+        "source": "hermes",
+        "pid": os.getpid(),
+        "platform": platform or "gateway",
+    }}
+    _log(f"payload: {{json.dumps(payload)}}")
+    _send_to_ooclaw(payload)
+"##, gw_connect_code = gw_connect_code);
+
+    std::fs::write(hooks_dir.join("handler.py"), handler_py).map_err(|e| e.to_string())?;
+    log::info!("[hermes_hooks] installed gateway hook to {:?}", hooks_dir);
+
+    Ok(())
+}
+
+/// Try to find the hermes binary on PATH or known locations.
+fn which_hermes() -> Option<std::path::PathBuf> {
+    // Check PATH first
+    if let Ok(output) = std::process::Command::new("which").arg("hermes").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(std::path::PathBuf::from(path));
+            }
+        }
+    }
+    // Known locations
+    if let Some(home) = dirs::home_dir() {
+        let candidates = [
+            home.join(".local/bin/hermes"),
+            home.join(".hermes/hermes-agent/venv/bin/hermes"),
+        ];
+        for c in &candidates {
+            if c.exists() {
+                return Some(c.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Diagnose the Hermes integration by checking plugin installation,
+/// enabled state, and sending a test event through the socket.
+/// Returns a structured JSON result so the frontend can display status.
+#[tauri::command]
+async fn test_hermes_hook() -> Result<serde_json::Value, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let hermes_dir = home.join(".hermes");
+    let mut checks: Vec<serde_json::Value> = Vec::new();
+
+    // 1. Check if ~/.hermes exists
+    if !hermes_dir.exists() {
+        checks.push(serde_json::json!({"step": "hermes_dir", "ok": false, "msg": "~/.hermes not found — Hermes Agent is not installed"}));
+        return Ok(serde_json::json!({"ok": false, "checks": checks}));
+    }
+    checks.push(serde_json::json!({"step": "hermes_dir", "ok": true, "msg": "~/.hermes exists"}));
+
+    // 2. Check plugin files
+    let plugin_dir = hermes_dir.join("plugins").join("ooclaw");
+    let has_yaml = plugin_dir.join("plugin.yaml").exists();
+    let has_py = plugin_dir.join("__init__.py").exists();
+    if has_yaml && has_py {
+        checks.push(serde_json::json!({"step": "plugin_files", "ok": true, "msg": "Plugin files installed"}));
+    } else {
+        checks.push(serde_json::json!({"step": "plugin_files", "ok": false, "msg": format!("Missing: {}", if !has_yaml && !has_py { "plugin.yaml + __init__.py" } else if !has_yaml { "plugin.yaml" } else { "__init__.py" })}));
+    }
+
+    // 3. Check plugin enabled in config.yaml
+    let config_path = hermes_dir.join("config.yaml");
+    let enabled = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        content.contains("ooclaw")
+    } else {
+        false
+    };
+    if enabled {
+        checks.push(serde_json::json!({"step": "plugin_enabled", "ok": true, "msg": "Plugin enabled in config.yaml"}));
+    } else {
+        checks.push(serde_json::json!({"step": "plugin_enabled", "ok": false, "msg": "Plugin not enabled — run: hermes plugins enable ooclaw"}));
+    }
+
+    // 4. Check socket exists
+    #[cfg(unix)]
+    let socket_ok = std::path::Path::new("/tmp/ooclaw-hermes.sock").exists();
+    #[cfg(windows)]
+    let socket_ok = std::net::TcpStream::connect("127.0.0.1:19286").is_ok();
+
+    if socket_ok {
+        checks.push(serde_json::json!({"step": "socket", "ok": true, "msg": "Socket server running"}));
+    } else {
+        checks.push(serde_json::json!({"step": "socket", "ok": false, "msg": "Socket not found — oc-claw server may not be running"}));
+    }
+
+    // 5. Send a test event through the socket to verify end-to-end
+    let test_session_id = format!("hermes-test-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+    let test_payload = serde_json::json!({
+        "sessionId": test_session_id,
+        "cwd": hermes_dir.to_string_lossy(),
+        "event": "UserPromptSubmit",
+        "claudeStatus": "processing",
+        "source": "hermes",
+        "pid": std::process::id(),
+    });
+
+    #[cfg(unix)]
+    {
+        match std::os::unix::net::UnixStream::connect("/tmp/ooclaw-hermes.sock") {
+            Ok(mut stream) => {
+                use std::io::Write;
+                let data = serde_json::to_string(&test_payload).unwrap();
+                let _ = stream.write_all(data.as_bytes());
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                checks.push(serde_json::json!({"step": "test_event", "ok": true, "msg": format!("Test event sent (session: {})", &test_session_id[..20])}));
+
+                // Wait a tiny bit, then send stop to clean up
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let stop_payload = serde_json::json!({
+                    "sessionId": test_session_id,
+                    "cwd": hermes_dir.to_string_lossy(),
+                    "event": "Stop",
+                    "claudeStatus": "waiting_for_input",
+                    "source": "hermes",
+                    "pid": std::process::id(),
+                });
+                if let Ok(mut s2) = std::os::unix::net::UnixStream::connect("/tmp/ooclaw-hermes.sock") {
+                    let d2 = serde_json::to_string(&stop_payload).unwrap();
+                    let _ = s2.write_all(d2.as_bytes());
+                    let _ = s2.shutdown(std::net::Shutdown::Write);
+                }
+            }
+            Err(e) => {
+                checks.push(serde_json::json!({"step": "test_event", "ok": false, "msg": format!("Socket connect failed: {}", e)}));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        match std::net::TcpStream::connect("127.0.0.1:19286") {
+            Ok(mut stream) => {
+                use std::io::Write;
+                let data = serde_json::to_string(&test_payload).unwrap();
+                let _ = stream.write_all(data.as_bytes());
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                checks.push(serde_json::json!({"step": "test_event", "ok": true, "msg": format!("Test event sent (session: {})", &test_session_id[..20])}));
+
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let stop_payload = serde_json::json!({
+                    "sessionId": test_session_id,
+                    "cwd": hermes_dir.to_string_lossy(),
+                    "event": "Stop",
+                    "claudeStatus": "waiting_for_input",
+                    "source": "hermes",
+                    "pid": std::process::id(),
+                });
+                if let Ok(mut s2) = std::net::TcpStream::connect("127.0.0.1:19286") {
+                    let d2 = serde_json::to_string(&stop_payload).unwrap();
+                    let _ = s2.write_all(d2.as_bytes());
+                    let _ = s2.shutdown(std::net::Shutdown::Write);
+                }
+            }
+            Err(e) => {
+                checks.push(serde_json::json!({"step": "test_event", "ok": false, "msg": format!("TCP connect failed: {}", e)}));
+            }
+        }
+    }
+
+    let all_ok = checks.iter().all(|c| c["ok"].as_bool().unwrap_or(false));
+    Ok(serde_json::json!({"ok": all_ok, "checks": checks}))
+}
+
+// ─── Hermes SSH Remote ────────────────────────────────────────────────
+
+/// Read Hermes stats from a remote server's ~/.hermes/state.db via SSH.
+/// Uses python3 on the remote to query SQLite (avoids sqlite3 CLI dependency).
+#[tauri::command]
+async fn get_hermes_remote_stats(ssh_host: String, ssh_user: String) -> Result<ClaudeStats, String> {
+    let py_script = r#"
+import json, sqlite3, time, os
+db = os.path.expanduser('~/.hermes/state.db')
+if not os.path.exists(db):
+    print('{"error":"no_db"}')
+    exit(0)
+conn = sqlite3.connect(db)
+cutoff = time.time() - 14*86400
+cur = conn.execute(
+    'SELECT started_at, input_tokens, output_tokens, cache_read_tokens, '
+    'cache_write_tokens, message_count, model '
+    'FROM sessions WHERE started_at > ? ORDER BY started_at DESC',
+    (cutoff,))
+rows = [dict(zip(['ts','inp','out','cr','cw','msgs','model'], r)) for r in cur.fetchall()]
+conn.close()
+print(json.dumps(rows))
+"#;
+    let cmd = format!("python3 -c {}", shell_escape_single(py_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+
+    if trimmed.contains("\"error\"") && trimmed.contains("no_db") {
+        return Ok(empty_claude_stats());
+    }
+
+    let rows: Vec<serde_json::Value> = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse hermes remote stats: {} (output: {})", e, &trimmed[..trimmed.len().min(200)]))?;
+
+    let now = chrono::Local::now();
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    for i in (0..14).rev() {
+        let day = (now - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        daily_map.insert(day.clone(), ClaudeDailyStats {
+            date: day, input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0, messages: 0, sessions: 0,
+        });
+    }
+
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_cache_write = 0u64;
+    let mut total_messages = 0u64;
+    let mut total_sessions = 0u64;
+    let mut model = String::new();
+
+    for row in &rows {
+        let ts = row["ts"].as_f64().unwrap_or(0.0);
+        let inp = row["inp"].as_i64().unwrap_or(0) as u64;
+        let out = row["out"].as_i64().unwrap_or(0) as u64;
+        let cr = row["cr"].as_i64().unwrap_or(0) as u64;
+        let cw = row["cw"].as_i64().unwrap_or(0) as u64;
+        let msgs = row["msgs"].as_i64().unwrap_or(0) as u64;
+        let mdl = row["model"].as_str().unwrap_or("");
+
+        let day = chrono::DateTime::from_timestamp(ts as i64, 0)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+
+        if let Some(entry) = daily_map.get_mut(&day) {
+            entry.input_tokens += inp;
+            entry.output_tokens += out;
+            entry.cache_read_tokens += cr;
+            entry.cache_write_tokens += cw;
+            entry.messages += msgs;
+            entry.sessions += 1;
+        }
+
+        total_input += inp;
+        total_output += out;
+        total_cache_read += cr;
+        total_cache_write += cw;
+        total_messages += msgs;
+        total_sessions += 1;
+        if model.is_empty() && !mdl.is_empty() {
+            model = mdl.to_string();
+        }
+    }
+
+    let daily_stats: Vec<ClaudeDailyStats> = daily_map.into_values().collect();
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
+        total_messages: total_messages,
+        total_sessions: total_sessions,
+        daily_stats,
+        model,
+    })
+}
+
+/// Poll active Hermes sessions on a remote server via SSH.
+/// Reads ~/.hermes/sessions/sessions.json for gateway session list,
+/// and checks gateway.log for recent activity.
+#[tauri::command]
+async fn get_hermes_remote_sessions(ssh_host: String, ssh_user: String) -> Result<Vec<serde_json::Value>, String> {
+    let py_script = r#"
+import json, os, time
+sj = os.path.expanduser('~/.hermes/sessions/sessions.json')
+db = os.path.expanduser('~/.hermes/state.db')
+results = []
+# Active gateway sessions from sessions.json
+if os.path.exists(sj):
+    try:
+        data = json.load(open(sj))
+        for key, v in data.items():
+            sid = v.get('session_id','')
+            plat = v.get('platform','cli')
+            updated = v.get('updated_at','')
+            results.append({'sessionId': sid, 'platform': plat, 'updatedAt': updated,
+                            'displayName': v.get('display_name',''), 'source': 'hermes'})
+    except: pass
+# Recent sessions from state.db (last 2h)
+if os.path.exists(db):
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db)
+        cutoff = time.time() - 7200
+        cur = conn.execute(
+            'SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens '
+            'FROM sessions WHERE started_at > ? ORDER BY started_at DESC LIMIT 20', (cutoff,))
+        for r in cur.fetchall():
+            ended = r[4]
+            active = ended is None or ended == 0 or ended == ''
+            results.append({'sessionId': r[0], 'platform': r[1] or 'cli', 'model': r[2] or '',
+                            'startedAt': r[3], 'messageCount': r[5] or 0,
+                            'inputTokens': r[6] or 0, 'outputTokens': r[7] or 0,
+                            'active': active, 'source': 'hermes'})
+        conn.close()
+    except: pass
+print(json.dumps(results))
+"#;
+    let cmd = format!("python3 -c {}", shell_escape_single(py_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse hermes remote sessions: {}", e))?;
+    Ok(sessions)
+}
+
+/// Test Hermes SSH connectivity: check if ~/.hermes exists, state.db readable,
+/// gateway is running.
+#[tauri::command]
+async fn test_hermes_ssh(ssh_host: String, ssh_user: String) -> Result<serde_json::Value, String> {
+    let py_script = r#"
+import json, os, subprocess
+checks = {}
+hermes_dir = os.path.expanduser('~/.hermes')
+checks['hermes_installed'] = os.path.isdir(hermes_dir)
+checks['state_db'] = os.path.exists(os.path.join(hermes_dir, 'state.db'))
+checks['sessions_json'] = os.path.exists(os.path.join(hermes_dir, 'sessions', 'sessions.json'))
+checks['config_yaml'] = os.path.exists(os.path.join(hermes_dir, 'config.yaml'))
+# Check gateway process
+try:
+    out = subprocess.check_output(['pgrep', '-f', 'hermes gateway'], stderr=subprocess.DEVNULL).decode().strip()
+    checks['gateway_running'] = len(out.split()) > 0
+    checks['gateway_pids'] = out.split()
+except: checks['gateway_running'] = False
+# Check session count in state.db
+if checks['state_db']:
+    try:
+        import sqlite3, time
+        conn = sqlite3.connect(os.path.join(hermes_dir, 'state.db'))
+        cutoff = time.time() - 14*86400
+        cnt = conn.execute('SELECT COUNT(*) FROM sessions WHERE started_at > ?', (cutoff,)).fetchone()[0]
+        checks['sessions_14d'] = cnt
+        total = conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
+        checks['sessions_total'] = total
+        conn.close()
+    except Exception as e: checks['db_error'] = str(e)
+print(json.dumps(checks))
+"#;
+    let cmd = format!("python3 -c {}", shell_escape_single(py_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+    let result: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse hermes ssh test: {}", e))?;
+    Ok(result)
+}
+
+/// Escape a string for use inside single quotes in a shell command.
+fn shell_escape_single(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 // ─── Cursor Integration ───────────────────────────────────────────────
@@ -12236,6 +13229,73 @@ fn start_gemini_socket_server(
     }
 }
 
+/// Start the Hermes Agent IPC server.
+/// On macOS/Linux: Unix domain socket at /tmp/ooclaw-hermes.sock
+/// On Windows: TCP server on localhost:19286
+fn start_hermes_socket_server(
+    claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    app: tauri::AppHandle,
+) {
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/ooclaw-hermes.sock";
+        let _ = std::fs::remove_file(socket_path);
+        let listener = match std::os::unix::net::UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[hermes_socket] bind failed: {}", e); return; }
+        };
+        log::info!("[hermes_socket] listening on {}", socket_path);
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            process_claude_event(&buf, &state, &app, Some("hermes"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:19286") {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[hermes_socket] TCP bind failed: {}", e); return; }
+        };
+        log::info!("[hermes_socket] listening on 127.0.0.1:19286");
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            process_claude_event(&buf, &state, &app, Some("hermes"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
 /// Start the Claude IPC server.
 /// On macOS/Linux: Unix domain socket at /tmp/ooclaw-claude.sock
 /// On Windows: TCP server on localhost:19283
@@ -12691,6 +13751,10 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(install_gemini_hooks()) {
                 log::warn!("Failed to install Gemini hooks on startup: {}", e);
             }
+            // Install Hermes Agent plugin on startup (idempotent, skips if ~/.hermes/ missing)
+            if let Err(e) = tauri::async_runtime::block_on(install_hermes_hooks()) {
+                log::warn!("Failed to install Hermes hooks on startup: {}", e);
+            }
 
             // One log file per app run, named with a startup timestamp so we
             // never lose the previous session's logs to rotation. Goes to the
@@ -12929,6 +13993,14 @@ pub fn run() {
                 start_gemini_socket_server(sessions_arc, app.handle().clone());
             }
 
+            // Start Hermes Agent socket server.
+            // Unix uses /tmp/ooclaw-hermes.sock, Windows uses TCP 127.0.0.1:19286.
+            {
+                let claude_state = app.state::<ClaudeState>();
+                let sessions_arc = Arc::clone(&claude_state.sessions);
+                start_hermes_socket_server(sessions_arc, app.handle().clone());
+            }
+
             // System tray — use saved language, fallback to system language
             let initial_lang = {
                 let store_path = app.path().app_data_dir().ok().map(|p| p.join("settings.json"));
@@ -12997,7 +14069,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, get_hermes_remote_stats, get_hermes_remote_sessions, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

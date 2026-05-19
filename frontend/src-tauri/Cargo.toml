@@ -28,6 +28,7 @@ base64 = "0.22"
 chrono = "0.4"
 dirs = "5"
 percent-encoding = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }

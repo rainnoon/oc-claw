@@ -113,7 +113,7 @@ const MINI_SPRITE_DISPLAY_MULTIPLIER = 2
 const SESSION_SPRITE_DISPLAY_MULTIPLIER = 0.88
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
-type ClaudeStatsSource = 'cc' | 'codex' | 'cursor' | 'gemini'
+type ClaudeStatsSource = 'cc' | 'codex' | 'cursor' | 'gemini' | 'hermes'
 const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'spin', 'milktea', 'walkout']
 
 // Priority: higher number = harder to interrupt
@@ -469,6 +469,7 @@ export default function Mini() {
     if (source === 'cursor') return 'cursor'
     if (source === 'codex') return 'codex'
     if (source === 'gemini') return 'gemini'
+    if (source === 'hermes') return 'hermes'
     return 'cc'
   }, [])
   const resolveClaudeStatsSourceBySession = useCallback(
@@ -490,10 +491,13 @@ export default function Mini() {
   const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
   const [enableCursor, setEnableCursor] = useState(true)
   const [enableGemini, setEnableGemini] = useState(true)
+  const [enableHermes, setEnableHermes] = useState(true)
+  const [hermesSshConns, setHermesSshConns] = useState<{ host: string; user: string }[]>([])
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
   const [geminiSoundEnabled, setGeminiSoundEnabled] = useState(true)
+  const [hermesSoundEnabled, setHermesSoundEnabled] = useState(true)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
@@ -2038,6 +2042,12 @@ export default function Mini() {
       const gemEnabled = gem !== false
       setEnableGemini(gemEnabled)
       if (gemEnabled) invoke('install_gemini_hooks').catch(() => {})
+      const herm = await store.get('enable_hermes')
+      const hermEnabled = herm !== false
+      setEnableHermes(hermEnabled)
+      if (hermEnabled) invoke('install_hermes_hooks').catch(() => {})
+      const sshConns = await store.get('hermes_ssh_connections') as { host: string; user: string }[] | null
+      if (sshConns && sshConns.length > 0) setHermesSshConns(sshConns.filter(c => c.host && c.user))
       if (isWindowsPlatform) {
         // Codex is not yet supported on Windows; keep it forced off.
         await store.set('enable_codex', false)
@@ -2051,6 +2061,8 @@ export default function Mini() {
       if (typeof csnd === 'boolean') setCursorSoundEnabled(csnd)
       const gsnd = await store.get('gemini_sound_enabled')
       if (typeof gsnd === 'boolean') setGeminiSoundEnabled(gsnd)
+      const hsnd = await store.get('hermes_sound_enabled')
+      if (typeof hsnd === 'boolean') setHermesSoundEnabled(hsnd)
       const ns = (await store.get('notify_sound')) as string
       if (ns === 'default' || ns === 'manbo') setNotifySound(ns)
       const ws = await store.get('waiting_sound')
@@ -2116,7 +2128,7 @@ export default function Mini() {
   // Poll Claude/Codex/Cursor sessions
   useEffect(() => {
     if (appMode !== 'coding') { setClaudeSessions([]); return }
-    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini)) {
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini || enableHermes)) {
       setClaudeSessions([])
       return
     }
@@ -2193,6 +2205,36 @@ export default function Mini() {
             seenCompletions.delete(sid)
           }
         }
+        // Merge remote Hermes sessions from SSH connections
+        if (enableHermes && hermesSshConns.length > 0) {
+          try {
+            const remoteResults = await Promise.allSettled(
+              hermesSshConns.map(c => invoke('get_hermes_remote_sessions', { sshHost: c.host, sshUser: c.user }) as Promise<any[]>)
+            )
+            for (let ci = 0; ci < remoteResults.length; ci++) {
+              const r = remoteResults[ci]
+              if (r.status !== 'fulfilled' || !Array.isArray(r.value)) continue
+              const conn = hermesSshConns[ci]
+              const label = `${conn.user}@${conn.host}`
+              for (const rs of r.value) {
+                if (!rs.active && !rs.updatedAt) continue
+                sessions.push({
+                  sessionId: `ssh:${conn.host}:${rs.sessionId}`,
+                  status: rs.active ? 'processing' : 'stopped',
+                  source: 'hermes',
+                  platform: rs.platform || 'cli',
+                  cwd: '',
+                  tool: '',
+                  model: rs.model || '',
+                  hostTerminal: label,
+                  updatedAt: rs.startedAt ? new Date(rs.startedAt * 1000).toISOString() : rs.updatedAt || '',
+                  isActiveTab: false,
+                })
+              }
+            }
+          } catch {}
+        }
+
         setClaudeSessions(sessions)
       } catch {
         /* ignore */
@@ -2201,7 +2243,7 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableHermes, hermesSshConns, appMode])
 
   // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
@@ -2212,6 +2254,8 @@ export default function Mini() {
   cursorSoundEnabledRef.current = cursorSoundEnabled
   const geminiSoundEnabledRef = useRef(geminiSoundEnabled)
   geminiSoundEnabledRef.current = geminiSoundEnabled
+  const hermesSoundEnabledRef = useRef(hermesSoundEnabled)
+  hermesSoundEnabledRef.current = hermesSoundEnabled
   const notifySoundRef = useRef(notifySound)
   notifySoundRef.current = notifySound
   const waitingSoundRef = useRef(waitingSound)
@@ -2228,15 +2272,16 @@ export default function Mini() {
   enableClaudeDesktopRef.current = enableClaudeDesktop
   useEffect(() => {
     if (appMode !== 'coding') return
-    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini)) return
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini || enableHermes)) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
       const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
       const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
       const isCodex = ev.payload?.source === 'codex' || currentSession?.source === 'codex'
       const isGemini = ev.payload?.source === 'gemini' || currentSession?.source === 'gemini'
+      const isHermes = ev.payload?.source === 'hermes' || currentSession?.source === 'hermes'
       const hostTerminal = ev.payload?.hostTerminal || currentSession?.hostTerminal
-      const isClaudeDesktop = !isCursor && !isCodex && !isGemini && hostTerminal === 'Claude Desktop'
-      const isClaudeCli = !isCursor && !isCodex && !isGemini && !isClaudeDesktop
+      const isClaudeDesktop = !isCursor && !isCodex && !isGemini && !isHermes && hostTerminal === 'Claude Desktop'
+      const isClaudeCli = !isCursor && !isCodex && !isGemini && !isHermes && !isClaudeDesktop
       // Drop the event entirely if the matching listener toggle is off, so
       // muted streams never trigger auto-expand or completion popups either.
       if (isClaudeDesktop && !enableClaudeDesktopRef.current) return
@@ -2247,7 +2292,7 @@ export default function Mini() {
           expandFnRef.current()
         }
       }
-      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : isGemini ? geminiSoundEnabledRef.current : soundEnabledRef.current
+      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : isGemini ? geminiSoundEnabledRef.current : isHermes ? hermesSoundEnabledRef.current : soundEnabledRef.current
       if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
       if (notifySoundRef.current === 'manbo') {
@@ -2259,7 +2304,7 @@ export default function Mini() {
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableHermes, appMode])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
@@ -2362,6 +2407,7 @@ export default function Mini() {
     if (cs.source === 'cursor') return enableCursor
     if (cs.source === 'codex') return enableCodex
     if (cs.source === 'gemini') return enableGemini
+    if (cs.source === 'hermes') return enableHermes
     const isDesktop = cs.hostTerminal === 'Claude Desktop'
     return isDesktop ? enableClaudeDesktop : enableClaudeCode
   })
@@ -3121,6 +3167,10 @@ export default function Mini() {
           setEnableCursor(cur !== false)
           const gem = await store.get('enable_gemini')
           setEnableGemini(gem !== false)
+          const herm = await store.get('enable_hermes')
+          setEnableHermes(herm !== false)
+          const hsc = await store.get('hermes_ssh_connections') as { host: string; user: string }[] | null
+          if (hsc) setHermesSshConns(hsc.filter(c => c.host && c.user))
         } catch {}
         // Trigger immediate refresh so config changes are reflected right away.
         fetchAgents()
@@ -3421,6 +3471,10 @@ export default function Mini() {
         setEnableCursor(cur !== false)
         const gem = await store.get('enable_gemini')
         setEnableGemini(gem !== false)
+        const herm = await store.get('enable_hermes')
+        setEnableHermes(herm !== false)
+        const hsc2 = await store.get('hermes_ssh_connections') as { host: string; user: string }[] | null
+        if (hsc2) setHermesSshConns(hsc2.filter(c => c.host && c.user))
         fetchAgents()
         try {
           await invoke('set_mini_size', {
@@ -4467,6 +4521,7 @@ export default function Mini() {
                                 ...(enableCodex ? ['Codex'] : []),
                                 ...(enableCursor ? ['Cursor'] : []),
                                 ...(enableGemini ? ['Gemini'] : []),
+                                ...(enableHermes ? ['Hermes'] : []),
                               ]
                               return (
                                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
@@ -4702,8 +4757,24 @@ export default function Mini() {
                                 const isCursorSource = cs.source === 'cursor'
                                 const isCodexSource = cs.source === 'codex'
                                 const isGeminiSource = cs.source === 'gemini'
-                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : 'Claude'
-                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : isGeminiSource ? 'bg-[#1d2736] text-[#8ab4f8]' : 'bg-[#3f211d] text-[#e87a65]'
+                                const isHermesSource = cs.source === 'hermes'
+                                const hermesPlatform = isHermesSource && cs.platform ? cs.platform : ''
+                                const hermesPlatformLabel = (() => {
+                                  if (!hermesPlatform) return ''
+                                  const p = hermesPlatform.toLowerCase()
+                                  if (p.includes('feishu') || p.includes('lark')) return 'Feishu'
+                                  if (p.includes('telegram')) return 'Telegram'
+                                  if (p.includes('discord')) return 'Discord'
+                                  if (p.includes('slack')) return 'Slack'
+                                  if (p.includes('wechat') || p.includes('weixin')) return 'WeChat'
+                                  if (p.includes('whatsapp')) return 'WhatsApp'
+                                  if (p === 'cli' || p === 'terminal') return ''
+                                  return hermesPlatform.charAt(0).toUpperCase() + hermesPlatform.slice(1)
+                                })()
+                                const isRemoteHermes = isHermesSource && cs.sessionId?.startsWith('ssh:')
+                                const remoteHost = isRemoteHermes ? cs.hostTerminal : ''
+                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : isHermesSource ? ('Hermes' + (hermesPlatformLabel ? ` · ${hermesPlatformLabel}` : '') + (remoteHost ? ` · ${remoteHost}` : '')) : 'Claude'
+                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : isGeminiSource ? 'bg-[#1d2736] text-[#8ab4f8]' : isHermesSource ? 'bg-[#2d1f3f] text-[#c084fc]' : 'bg-[#3f211d] text-[#e87a65]'
                                 const openClaudeDetail = () => {
                                   setSelectedAgentId(null)
                                   setSelectedSessionKey(null)
@@ -4721,15 +4792,30 @@ export default function Mini() {
                                     transition={{ duration: 0.2, delay: index * 0.05 }}
                                     data-no-drag
                                     onClick={() => {
-                                      if (!isWaiting || isGeminiSource) {
+                                      if (!isWaiting || isGeminiSource || isHermesSource) {
                                         if (cs.source === 'cursor') {
                                           invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
+                                        } else if (isHermesSource && cs.platform) {
+                                          const p = (cs.platform || '').toLowerCase()
+                                          const appName =
+                                            p.includes('feishu') || p.includes('lark') ? 'Lark'
+                                            : p.includes('telegram') ? 'Telegram'
+                                            : p.includes('discord') ? 'Discord'
+                                            : p.includes('slack') ? 'Slack'
+                                            : p.includes('wechat') || p.includes('weixin') ? 'WeChat'
+                                            : p.includes('whatsapp') ? 'WhatsApp'
+                                            : null
+                                          if (appName) {
+                                            invoke('activate_app', { appName }).catch((err: unknown) => console.warn('activate failed:', err))
+                                          } else {
+                                            invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
+                                          }
                                         } else {
                                           invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
                                         }
                                       }
                                     }}
-                                    className={`group hover:bg-white/[0.04] transition-colors ${(!isWaiting || isGeminiSource) ? 'cursor-pointer' : ''}`}
+                                    className={`group hover:bg-white/[0.04] transition-colors ${(!isWaiting || isGeminiSource || isHermesSource) ? 'cursor-pointer' : ''}`}
                                     style={{ padding: '10px 16px' }}
                                   >
                                     <div className="flex min-w-0 w-full items-center gap-3">
@@ -4946,8 +5032,19 @@ export default function Mini() {
                                             // Codex / Gemini approval should be made in their own UI.
                                             // oc-claw only surfaces a reminder and a jump action
                                             // so the user can approve there.
-                                            if (cs.source === 'codex' || cs.source === 'gemini') {
-                                              const jumpLabel = cs.source === 'gemini'
+                                            if (cs.source === 'codex' || cs.source === 'gemini' || cs.source === 'hermes') {
+                                              const hermesPlatLabel = (() => {
+                                                if (cs.source !== 'hermes' || !cs.platform) return ''
+                                                const p = (cs.platform || '').toLowerCase()
+                                                if (p.includes('feishu') || p.includes('lark')) return 'Feishu'
+                                                if (p.includes('telegram')) return 'Telegram'
+                                                if (p.includes('discord')) return 'Discord'
+                                                if (p.includes('slack')) return 'Slack'
+                                                return ''
+                                              })()
+                                              const jumpLabel = cs.source === 'hermes'
+                                                ? (hermesPlatLabel ? t('mini.viewInHermes', 'Go to Hermes').replace('Hermes', hermesPlatLabel) : t('mini.viewInHermes', 'Go to Hermes'))
+                                                : cs.source === 'gemini'
                                                 ? t('mini.viewInGemini', '前往 Gemini')
                                                 : t('mini.viewInCodex', '前往 Codex')
                                               return (
@@ -4956,7 +5053,22 @@ export default function Mini() {
                                                     data-no-drag
                                                     onClick={(e) => {
                                                       e.stopPropagation()
-                                                      invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                                      if (cs.source === 'hermes' && cs.platform) {
+                                                        const p = (cs.platform || '').toLowerCase()
+                                                        const appName =
+                                                          p.includes('feishu') || p.includes('lark') ? 'Lark'
+                                                          : p.includes('telegram') ? 'Telegram'
+                                                          : p.includes('discord') ? 'Discord'
+                                                          : p.includes('slack') ? 'Slack'
+                                                          : null
+                                                        if (appName) {
+                                                          invoke('activate_app', { appName }).catch(() => {})
+                                                        } else {
+                                                          invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                                        }
+                                                      } else {
+                                                        invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                                      }
                                                       hoverExpandedRef.current = false
                                                       collapse()
                                                     }}
@@ -5317,6 +5429,7 @@ export default function Mini() {
                               ...(enableCodex ? ['Codex'] : []),
                               ...(enableCursor ? ['Cursor'] : []),
                               ...(enableGemini ? ['Gemini'] : []),
+                              ...(enableHermes ? ['Hermes'] : []),
                             ]
                             return targets.length > 0 ? <p className="text-slate-500 text-sm font-medium">{t('mini.startTracking', { targets: targets.join(' / ') })}</p> : null
                           })()}
@@ -5773,6 +5886,13 @@ export default function Mini() {
                           setGeminiSoundEnabled(v)
                           const store = await getStore()
                           await store.set('gemini_sound_enabled', v)
+                          await store.save()
+                        }}
+                        hermesSoundEnabled={hermesSoundEnabled}
+                        onToggleHermesSoundEnabled={async (v) => {
+                          setHermesSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('hermes_sound_enabled', v)
                           await store.save()
                         }}
                         waitingSound={waitingSound}

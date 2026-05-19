@@ -231,7 +231,268 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
   )
 }
 
-export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, geminiSoundEnabled, onToggleGeminiSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; geminiSoundEnabled: boolean; onToggleGeminiSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
+type HermesConn = { id: string; type: 'local' | 'remote'; host?: string; user?: string }
+
+function HermesConnectionRow({ conn, onUpdate, onDelete, t }: {
+  conn: HermesConn; onUpdate: (c: HermesConn) => void; onDelete: () => void
+  t: any
+}) {
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
+  const [testMsg, setTestMsg] = useState('')
+  const cancelledRef = useRef(false)
+
+  const testConnection = async () => {
+    cancelledRef.current = false
+    setTesting(true)
+    setTestResult(null)
+    setTestMsg('')
+    try {
+      if (conn.type === 'remote') {
+        await invoke('reset_ssh', { sshHost: conn.host, sshUser: conn.user }).catch(() => {})
+        const result: any = await invoke('test_hermes_ssh', { sshHost: conn.host, sshUser: conn.user })
+        if (cancelledRef.current) return
+        const parts: string[] = []
+        if (result.hermes_installed) parts.push('Hermes ✓')
+        else parts.push('Hermes ✗')
+        if (result.state_db) parts.push(`DB ✓ (${result.sessions_14d || 0} sessions/14d)`)
+        else parts.push('DB ✗')
+        if (result.gateway_running) parts.push('Gateway ✓')
+        else parts.push('Gateway ✗')
+        let keyInfo = ''
+        try {
+          const key = await invoke('get_ssh_key_info', { sshHost: conn.host, sshUser: conn.user }) as string | null
+          if (key) keyInfo = ` · ${t('settings.key', 'Key')} ${key}`
+        } catch {}
+        setTestMsg(parts.join(' · ') + keyInfo)
+        setTestResult(result.hermes_installed && result.state_db ? 'success' : 'error')
+      } else {
+        const result: any = await invoke('test_hermes_hook')
+        if (cancelledRef.current) return
+        const ok = !!result.ok
+        const checks: { ok: boolean; msg: string }[] = result.checks || []
+        setTestMsg(checks.map(c => `${c.ok ? '✓' : '✗'} ${c.msg}`).join(' · '))
+        setTestResult(ok ? 'success' : 'error')
+      }
+      setTimeout(() => setTestResult(null), 5000)
+    } catch (e: any) {
+      if (cancelledRef.current) return
+      setTestResult('error')
+      setTestMsg(String(e))
+    }
+    setTesting(false)
+  }
+
+  const cancelTest = () => {
+    cancelledRef.current = true
+    setTesting(false)
+    setTestResult(null)
+    setTestMsg('')
+    if (conn.type === 'remote' && conn.host && conn.user) {
+      invoke('close_ssh', { sshHost: conn.host, sshUser: conn.user }).catch(() => {})
+    }
+  }
+
+  return (
+    <div className="p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
+            {(['local', 'remote'] as const).map((typ) => (
+              <button
+                key={typ}
+                onClick={() => onUpdate({ ...conn, type: typ })}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === typ ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
+              >
+                {typ === 'local' ? t('settings.local', 'Local') : t('settings.remote', 'Remote')}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-white/30">
+            {conn.type === 'local' ? '~/.hermes' : conn.host ? `${conn.user || 'root'}@${conn.host}` : t('settings.notConfigured', 'Not configured')}
+          </span>
+        </div>
+        <button onClick={onDelete} className="p-1.5 text-white/20 hover:text-red-400 transition-colors rounded-lg hover:bg-red-500/10">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <AnimatePresence>
+        {conn.type === 'remote' && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="flex flex-col gap-3 overflow-hidden"
+          >
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={conn.user || ''}
+                onChange={(e) => onUpdate({ ...conn, user: e.target.value })}
+                placeholder={t('settings.username', 'Username')}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                className="w-24 bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+              />
+              <span className="self-center text-white/30 text-sm">@</span>
+              <input
+                type="text"
+                value={conn.host || ''}
+                onChange={(e) => onUpdate({ ...conn, host: e.target.value })}
+                placeholder={t('settings.serverAddress', 'Server address')}
+                className="flex-1 bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 transition-colors"
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={testConnection}
+          disabled={testing || (conn.type === 'remote' && (!conn.host || !conn.user))}
+          className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-white transition-colors flex items-center gap-1.5 disabled:opacity-50"
+        >
+          {testing && <Loader2 className="w-3 h-3 animate-spin" />}
+          {t('common.test', 'Test')}
+        </button>
+        {testing && (
+          <button
+            onClick={cancelTest}
+            className="px-3 py-1.5 bg-white/5 hover:bg-red-500/20 border border-white/10 rounded-lg text-xs font-medium text-white/50 hover:text-red-400 transition-colors"
+          >
+            {t('common.cancel', 'Cancel')}
+          </button>
+        )}
+        {testResult === 'success' && (
+          <span className="text-xs text-emerald-400 flex items-center gap-1">
+            <Check className="w-3 h-3" /> {t('common.success', 'Success')} {testMsg && `· ${testMsg}`}
+          </span>
+        )}
+        {testResult === 'error' && (
+          <div className="text-xs text-red-400 w-full">
+            <span>{t('common.failed', 'Failed')}</span>
+            <pre className="mt-1 p-2 bg-red-500/10 border border-red-500/20 rounded-lg whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto font-mono text-[11px] leading-relaxed select-text">
+              {testMsg}
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
+  enableHermes: boolean
+  toggleHermes: (v: boolean) => void
+  hermesHookStatus: string
+  t: any
+}) {
+  const [conns, setConns] = useState<HermesConn[]>([])
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const store = await getStore()
+        const saved = await store.get<HermesConn[]>('hermes_connections')
+        if (saved && saved.length > 0) {
+          setConns(saved)
+        } else {
+          // Migrate from old hermes_ssh_connections format
+          const oldSsh = await store.get<{ host: string; user: string }[]>('hermes_ssh_connections')
+          if (oldSsh && oldSsh.length > 0) {
+            const migrated: HermesConn[] = oldSsh.map(c => ({
+              id: crypto.randomUUID(), type: 'remote' as const, host: c.host, user: c.user,
+            }))
+            setConns(migrated)
+            await store.set('hermes_connections', migrated)
+          } else if (enableHermes) {
+            const defaultConn: HermesConn[] = [{ id: crypto.randomUUID(), type: 'local' }]
+            setConns(defaultConn)
+            await store.set('hermes_connections', defaultConn)
+          }
+        }
+      } catch {}
+    })()
+  }, [enableHermes])
+
+  const saveConns = async (updated: HermesConn[]) => {
+    setConns(updated)
+    try {
+      const store = await getStore()
+      await store.set('hermes_connections', updated)
+      // Keep hermes_ssh_connections in sync for Mini.tsx polling
+      const sshOnly = updated.filter(c => c.type === 'remote' && c.host && c.user).map(c => ({ host: c.host!, user: c.user! }))
+      await store.set('hermes_ssh_connections', sshOnly)
+    } catch {}
+  }
+
+  const addConnection = () => {
+    const hasLocal = conns.some(c => c.type === 'local')
+    saveConns([...conns, { id: crypto.randomUUID(), type: hasLocal ? 'remote' : 'local' }])
+  }
+
+  const updateConn = (idx: number, c: HermesConn) => {
+    const updated = [...conns]
+    updated[idx] = c
+    saveConns(updated)
+  }
+
+  const deleteConn = (idx: number) => {
+    const conn = conns[idx]
+    if (conn.type === 'remote' && conn.host && conn.user) {
+      invoke('close_ssh', { sshHost: conn.host, sshUser: conn.user }).catch(() => {})
+    }
+    saveConns(conns.filter((_, i) => i !== idx))
+  }
+
+  return (
+    <section className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-medium text-white">{t('settings.hermesConnections', 'Hermes Agent')}</h2>
+        <button
+          onClick={addConnection}
+          className="flex items-center gap-1 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-medium text-white transition-colors"
+        >
+          <Plus className="w-3 h-3" /> {t('common.add', 'Add')}
+        </button>
+      </div>
+
+      <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+        <div className="flex items-center justify-between p-4 border-b border-white/5">
+          <div className="flex flex-col gap-1">
+            <span className="text-sm font-medium text-white/90">{t('settings.enableHermes', 'Enable Hermes Agent')}</span>
+            <span className="text-xs text-white/40">{t('settings.enableHermesDesc', 'Monitor Hermes Agent sessions')}</span>
+            {hermesHookStatus && <span className="text-xs text-white/30 mt-1">{hermesHookStatus}</span>}
+          </div>
+          <Toggle checked={enableHermes} onChange={toggleHermes} />
+        </div>
+      </div>
+
+      <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden divide-y divide-white/5">
+        {conns.length === 0 ? (
+          <div className="text-center text-white/30 py-8 text-sm">
+            {t('settings.noConnections', 'No connections configured')}
+          </div>
+        ) : (
+          conns.map((conn, idx) => (
+            <HermesConnectionRow
+              key={conn.id}
+              conn={conn}
+              onUpdate={(c) => updateConn(idx, c)}
+              onDelete={() => deleteConn(idx)}
+              t={t}
+            />
+          ))
+        )}
+      </div>
+    </section>
+  )
+}
+
+export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, geminiSoundEnabled, onToggleGeminiSoundEnabled, hermesSoundEnabled, onToggleHermesSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; geminiSoundEnabled: boolean; onToggleGeminiSoundEnabled: (v: boolean) => void; hermesSoundEnabled: boolean; onToggleHermesSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
   const { t, i18n } = useTranslation()
   const isWindowsPlatform = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
   const [connections, setConnections] = useState<OcConnection[]>([])
@@ -245,6 +506,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
   const [cursorHookStatus, setCursorHookStatus] = useState('')
   const [enableGemini, setEnableGemini] = useState(true)
   const [geminiHookStatus, setGeminiHookStatus] = useState('')
+  const [enableHermes, setEnableHermes] = useState(true)
+  const [hermesHookStatus, setHermesHookStatus] = useState('')
   const [enableAutostart, setEnableAutostart] = useState(false)
   const [autostartStatus, setAutostartStatus] = useState('')
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; hasUpdate: boolean; url: string } | null>(null)
@@ -313,6 +576,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       if (typeof cur === 'boolean') setEnableCursor(cur)
       const gem = await store.get('enable_gemini')
       if (typeof gem === 'boolean') setEnableGemini(gem)
+      const herm = await store.get('enable_hermes')
+      if (typeof herm === 'boolean') setEnableHermes(herm)
       // Reconcile autostart toggle with the system: the OS-level registration
       // (registry on Windows, LaunchAgent on macOS) is the source of truth in
       // case the user disabled it externally; mirror that into our store so
@@ -509,6 +774,21 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         setGeminiHookStatus(t('settings.hookInstalled'))
       } catch (e: any) {
         setGeminiHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
+      }
+    }
+  }
+
+  const toggleHermes = async (val: boolean) => {
+    setEnableHermes(val)
+    const store = await getStore()
+    await store.set('enable_hermes', val)
+    await store.save()
+    if (val) {
+      try {
+        await invoke('install_hermes_hooks')
+        setHermesHookStatus(t('settings.hookInstalled'))
+      } catch (e: any) {
+        setHermesHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
       }
     }
   }
@@ -736,6 +1016,14 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </div>
       </section>
 
+      {/* Hermes Agent */}
+      <HermesSection
+        enableHermes={enableHermes}
+        toggleHermes={toggleHermes}
+        hermesHookStatus={hermesHookStatus}
+        t={t}
+      />
+
       {/* 显示设置 */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
@@ -939,6 +1227,13 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               <span className="text-xs text-white/40">{t('settings.geminiSoundDesc', 'Play sound when Gemini finishes a task')}</span>
             </div>
             <Toggle checked={geminiSoundEnabled} onChange={onToggleGeminiSoundEnabled} />
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.hermesSound', 'Hermes Completion Sound')}</span>
+              <span className="text-xs text-white/40">{t('settings.hermesSoundDesc', 'Play sound when Hermes finishes a task')}</span>
+            </div>
+            <Toggle checked={hermesSoundEnabled} onChange={onToggleHermesSoundEnabled} />
           </div>
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
