@@ -6686,7 +6686,7 @@ pub struct ClaudeSession {
     /// CC CLI sessions from CC Desktop sessions and gate them independently.
     #[serde(rename = "hostTerminal", skip_serializing_if = "Option::is_none")]
     pub host_terminal: Option<String>,
-    /// Hermes platform identifier (e.g. "cli", "feishu", "slack", "discord").
+    /// Hermes platform identifier (e.g. "feishu", "slack", "discord").
     /// Used to decide which application to activate on session click.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
@@ -7442,6 +7442,11 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
         };
 
         let platform = source.clone();
+
+        // Only show Gateway sessions (feishu, slack, etc.), skip CLI sessions
+        if platform == "cli" || platform == "terminal" || platform.is_empty() {
+            continue;
+        }
 
         let user_prompt: Option<String> = user_stmt
             .query_row(rusqlite::params![&id], |r| r.get(0)).ok();
@@ -9449,7 +9454,7 @@ end tell"#,
             // Hermes supports multiple platforms. Use the platform field to
             // decide which application to activate, like OpenClaw does for
             // Feishu/Lark/Discord/Slack channels.
-            let plat = platform.as_deref().unwrap_or("cli").to_lowercase();
+            let plat = platform.as_deref().unwrap_or("unknown").to_lowercase();
             let app_name = if plat.contains("feishu") || plat.contains("lark") {
                 Some("Lark")
             } else if plat.contains("telegram") {
@@ -9472,7 +9477,7 @@ end tell"#,
                     return Ok(format!("Activated {}", name));
                 }
             }
-            // Fallback: try common terminal apps for CLI platform
+            // Fallback: try common terminal apps
             for term in ["Ghostty", "Terminal", "iTerm2", "iTerm", "Warp"] {
                 if try_activate_app(term) {
                     return Ok(format!("Activated {}", term));
@@ -10435,7 +10440,7 @@ async fn get_hermes_sessions_summary() -> Result<Vec<serde_json::Value>, String>
 /// Each entry has: type (user/assistant/tool), summary, timestamp.
 /// Results are ordered newest-first so the frontend can display them directly.
 #[tauri::command]
-async fn get_hermes_recent_activity() -> Result<Vec<serde_json::Value>, String> {
+async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json::Value>, String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
     let db_path = home.join(".hermes").join("state.db");
     if !db_path.exists() {
@@ -10446,15 +10451,26 @@ async fn get_hermes_recent_activity() -> Result<Vec<serde_json::Value>, String> 
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ).map_err(|e| format!("open state.db: {}", e))?;
 
-    // Read tool_calls without truncation so JSON parsing succeeds
-    let mut stmt = conn.prepare(
-        "SELECT role, substr(content, 1, 200), tool_name, tool_calls, tool_call_id, timestamp \
-         FROM messages \
-         WHERE role IN ('user', 'assistant', 'tool') \
-         ORDER BY timestamp DESC LIMIT 60"
-    ).map_err(|e| format!("prepare: {}", e))?;
+    let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if session_id.is_empty() {
+        (
+            "SELECT role, substr(content, 1, 200), tool_name, tool_calls, tool_call_id, timestamp \
+             FROM messages WHERE role IN ('user', 'assistant', 'tool') \
+             ORDER BY timestamp DESC LIMIT 60".to_string(),
+            vec![],
+        )
+    } else {
+        (
+            "SELECT role, substr(content, 1, 200), tool_name, tool_calls, tool_call_id, timestamp \
+             FROM messages WHERE role IN ('user', 'assistant', 'tool') AND session_id = ?1 \
+             ORDER BY timestamp DESC LIMIT 60".to_string(),
+            vec![Box::new(session_id.clone())],
+        )
+    };
 
-    let rows = stmt.query_map([], |row| {
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {}", e))?;
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<String>>(1)?,
@@ -10574,6 +10590,73 @@ async fn get_hermes_recent_activity() -> Result<Vec<serde_json::Value>, String> 
         }
     }
     Ok(results)
+}
+
+/// Return recent activity from a remote Hermes instance via SSH.
+#[tauri::command]
+async fn get_hermes_remote_recent_activity(ssh_host: String, ssh_user: String, session_id: String) -> Result<Vec<serde_json::Value>, String> {
+    let sid_escaped = session_id.replace('\'', "");
+    let py_script = format!(r#"
+import json, os, sqlite3, sys
+db = os.path.expanduser('~/.hermes/state.db')
+if not os.path.exists(db):
+    print('[]')
+    exit(0)
+conn = sqlite3.connect(db)
+sid = '{sid}'
+if sid:
+    cur = conn.execute(
+        'SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
+        'FROM messages WHERE role IN ("user","assistant","tool") AND session_id = ? '
+        'ORDER BY timestamp DESC LIMIT 30', (sid,))
+else:
+    cur = conn.execute(
+        'SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
+        'FROM messages WHERE role IN ("user","assistant","tool") '
+        'ORDER BY timestamp DESC LIMIT 30')
+rows = []
+cid_map = {{}}
+for r in cur.fetchall():
+    role, content, tool_name, tool_calls, tool_call_id, ts = r
+    rows.append((role, content, tool_name, tool_calls, tool_call_id, ts))
+    if role == 'assistant' and tool_calls:
+        try:
+            for tc in json.loads(tool_calls):
+                cid = tc.get('id') or tc.get('call_id','')
+                fname = (tc.get('function') or {{}}).get('name','unknown')
+                if cid: cid_map[cid] = fname
+        except: pass
+conn.close()
+results = []
+def trunc(s, n=60):
+    return s[:n]+'...' if len(s)>n else s
+for role, content, tool_name, tool_calls, tool_call_id, ts in rows:
+    if role == 'tool':
+        name = tool_name or ''
+        if not name and tool_call_id:
+            name = cid_map.get(tool_call_id, 'tool')
+        if not name: name = 'tool'
+        results.append({{'type':'tool','summary':'\u26a1 '+name,'toolName':name,'timestamp':ts}})
+    elif role == 'assistant':
+        if tool_calls:
+            try:
+                for tc in json.loads(tool_calls):
+                    fname = (tc.get('function') or {{}}).get('name','unknown')
+                    results.append({{'type':'tool','summary':'\u26a1 '+fname,'toolName':fname,'timestamp':ts}})
+            except: pass
+        if content and content.strip():
+            results.append({{'type':'assistant','summary':trunc(content.strip()),'timestamp':ts}})
+    elif role in ('user','human'):
+        if content and content.strip():
+            results.append({{'type':'user','summary':trunc(content.strip()),'timestamp':ts}})
+print(json.dumps(results[:15]))
+"#, sid = sid_escaped);
+    let cmd = format!("python3 -c {}", shell_escape_single(&py_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+    let items: Vec<serde_json::Value> = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse hermes remote activity: {}", e))?;
+    Ok(items)
 }
 
 /// Load conversation messages for a Hermes session from ~/.hermes/state.db.
@@ -11765,7 +11848,7 @@ fn process_claude_event(
                     }
                 }
 
-                // Store Hermes platform from hook event (e.g. "cli", "feishu", "slack")
+                // Store Hermes platform from hook event (e.g. "feishu", "slack")
                 if let Some(p) = event.get("platform").and_then(|v| v.as_str()) {
                     if !p.is_empty() {
                         session.platform = Some(p.to_string());
@@ -12807,35 +12890,73 @@ async fn get_hermes_remote_sessions(ssh_host: String, ssh_user: String) -> Resul
 import json, os, time
 sj = os.path.expanduser('~/.hermes/sessions/sessions.json')
 db = os.path.expanduser('~/.hermes/state.db')
+seen = set()
 results = []
+now = time.time()
+# Helper: check if session is actually active via DB
+db_conn = None
+if os.path.exists(db):
+    try:
+        import sqlite3
+        db_conn = sqlite3.connect(db)
+    except: pass
+def check_active(sid):
+    if not db_conn: return True
+    try:
+        row = db_conn.execute('SELECT ended_at FROM sessions WHERE id=?', (sid,)).fetchone()
+        if row:
+            ended = row[0]
+            if ended and isinstance(ended, (int,float)) and ended > 0:
+                return False
+        last_ts = db_conn.execute('SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
+        if last_ts and (now - last_ts) > 120:
+            return False
+    except: pass
+    return True
 # Active gateway sessions from sessions.json
 if os.path.exists(sj):
     try:
         data = json.load(open(sj))
         for key, v in data.items():
             sid = v.get('session_id','')
-            plat = v.get('platform','cli')
+            if sid: seen.add(sid)
+            plat = v.get('platform','')
+            if plat in ('cli','terminal',''): continue
             updated = v.get('updated_at','')
+            active = check_active(sid) if sid else True
             results.append({'sessionId': sid, 'platform': plat, 'updatedAt': updated,
-                            'displayName': v.get('display_name',''), 'source': 'hermes'})
+                            'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
+                            'startedAt': now})
     except: pass
 # Recent sessions from state.db (last 2h)
-if os.path.exists(db):
+if db_conn:
     try:
-        import sqlite3
-        conn = sqlite3.connect(db)
-        cutoff = time.time() - 7200
-        cur = conn.execute(
+        cutoff = now - 7200
+        cur = db_conn.execute(
             'SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens '
             'FROM sessions WHERE started_at > ? ORDER BY started_at DESC LIMIT 20', (cutoff,))
         for r in cur.fetchall():
+            sid = r[0]
+            if sid in seen: continue
+            plat_db = r[1] or ''
+            if plat_db in ('cli','terminal',''): continue
+            seen.add(sid)
             ended = r[4]
-            active = ended is None or ended == 0 or ended == ''
-            results.append({'sessionId': r[0], 'platform': r[1] or 'cli', 'model': r[2] or '',
+            active = ended is None or (isinstance(ended, (int,float)) and ended == 0)
+            if active:
+                try:
+                    last_ts = db_conn.execute(
+                        'SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
+                    if last_ts and (now - last_ts) > 120:
+                        active = False
+                except: pass
+            results.append({'sessionId': sid, 'platform': r[1] or '', 'model': r[2] or '',
                             'startedAt': r[3], 'messageCount': r[5] or 0,
                             'inputTokens': r[6] or 0, 'outputTokens': r[7] or 0,
                             'active': active, 'source': 'hermes'})
-        conn.close()
+    except: pass
+if db_conn:
+    try: db_conn.close()
     except: pass
 print(json.dumps(results))
 "#;
@@ -14369,7 +14490,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())

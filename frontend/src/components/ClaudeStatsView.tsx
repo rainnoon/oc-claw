@@ -114,16 +114,19 @@ interface HermesActivity {
   timestamp: number
 }
 
-function HermesDetailView({ stats, isActive, channel }: { stats: ClaudeStats; isActive?: boolean; channel?: string }) {
+function HermesDetailView({ stats, isActive, channel, sshConn, sessionId }: { stats: ClaudeStats; isActive?: boolean; channel?: string; sshConn?: { host: string; user: string }; sessionId?: string }) {
   const { t } = useTranslation()
   const [activities, setActivities] = useState<HermesActivity[]>([])
 
   useEffect(() => {
-    invoke('get_hermes_recent_activity').then((items: any) => {
+    const cmd = sshConn
+      ? invoke('get_hermes_remote_recent_activity', { sshHost: sshConn.host, sshUser: sshConn.user, sessionId: sessionId || '' })
+      : invoke('get_hermes_recent_activity', { sessionId: sessionId || '' })
+    cmd.then((items: any) => {
       if (!items?.length) return
       setActivities(items.slice(0, 3))
     }).catch(() => {})
-  }, [])
+  }, [sshConn?.host, sshConn?.user, sessionId])
 
   const fmtTime = (ts: number) => {
     const d = new Date(ts * 1000)
@@ -222,7 +225,7 @@ function HermesDetailView({ stats, isActive, channel }: { stats: ClaudeStats; is
   )
 }
 
-export function ClaudeStatsView({ source = 'cc', isActive, channel }: { source?: ClaudeStatsSource; isActive?: boolean; channel?: string }) {
+export function ClaudeStatsView({ source = 'cc', isActive, channel, sshConn, hermesSessionId }: { source?: ClaudeStatsSource; isActive?: boolean; channel?: string; sshConn?: { host: string; user: string }; hermesSessionId?: string }) {
   const { t } = useTranslation()
   const [stats, setStats] = useState<ClaudeStats | null>(null)
 
@@ -284,7 +287,7 @@ export function ClaudeStatsView({ source = 'cc', isActive, channel }: { source?:
 
   // Hermes: use AgentDetailView-style layout
   if (source === 'hermes') {
-    return <HermesDetailView stats={stats} isActive={isActive} channel={channel} />
+    return <HermesDetailView stats={stats} isActive={isActive} channel={channel} sshConn={sshConn} sessionId={hermesSessionId} />
   }
 
   return (

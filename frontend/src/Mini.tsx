@@ -429,6 +429,8 @@ export default function Mini() {
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
   const [showClaudeStats, setShowClaudeStats] = useState(false)
   const [claudeStatsSource, setClaudeStatsSource] = useState<ClaudeStatsSource>('cc')
+  const [claudeStatsSsh, setClaudeStatsSsh] = useState<{ host: string; user: string } | null>(null)
+  const [claudeStatsSessionId, setClaudeStatsSessionId] = useState<string | null>(null)
   const [sessionNicknames, setSessionNicknames] = useState<Record<string, string>>({})
   const [editingSessionTitle, setEditingSessionTitle] = useState<string | null>(null)
   const editingTitleValueRef = useRef('')
@@ -492,7 +494,7 @@ export default function Mini() {
   const [enableCursor, setEnableCursor] = useState(true)
   const [enableGemini, setEnableGemini] = useState(true)
   const [enableHermes, setEnableHermes] = useState(true)
-  const [hermesSshConns, setHermesSshConns] = useState<{ host: string; user: string }[]>([])
+  const [hermesConns, setHermesConns] = useState<{ id: string; type: 'local' | 'remote'; host?: string; user?: string }[]>([])
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
@@ -2046,8 +2048,8 @@ export default function Mini() {
       const hermEnabled = herm !== false
       setEnableHermes(hermEnabled)
       if (hermEnabled) invoke('install_hermes_hooks').catch(() => {})
-      const sshConns = await store.get('hermes_ssh_connections') as { host: string; user: string }[] | null
-      if (sshConns && sshConns.length > 0) setHermesSshConns(sshConns.filter(c => c.host && c.user))
+      const hermConns = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
+      if (hermConns) setHermesConns(hermConns)
       if (isWindowsPlatform) {
         // Codex is not yet supported on Windows; keep it forced off.
         await store.set('enable_codex', false)
@@ -2216,29 +2218,40 @@ export default function Mini() {
             seenCompletions.delete(sid)
           }
         }
+        // Filter out local Hermes sessions if no local connection is configured
+        const hasLocalHermes = hermesConns.some(c => c.type === 'local')
+        if (!hasLocalHermes) {
+          for (let i = sessions.length - 1; i >= 0; i--) {
+            if (sessions[i].source === 'hermes' && !sessions[i].sessionId?.startsWith('ssh:')) {
+              sessions.splice(i, 1)
+            }
+          }
+        }
         // Merge remote Hermes sessions from SSH connections
-        if (enableHermes && hermesSshConns.length > 0) {
+        const remoteHermesConns = hermesConns.filter(c => c.type === 'remote' && c.host && c.user)
+        if (enableHermes && remoteHermesConns.length > 0) {
           try {
             const remoteResults = await Promise.allSettled(
-              hermesSshConns.map(c => invoke('get_hermes_remote_sessions', { sshHost: c.host, sshUser: c.user }) as Promise<any[]>)
+              remoteHermesConns.map(c => invoke('get_hermes_remote_sessions', { sshHost: c.host, sshUser: c.user }) as Promise<any[]>)
             )
             for (let ci = 0; ci < remoteResults.length; ci++) {
               const r = remoteResults[ci]
               if (r.status !== 'fulfilled' || !Array.isArray(r.value)) continue
-              const conn = hermesSshConns[ci]
+              const conn = remoteHermesConns[ci]
               const label = `${conn.user}@${conn.host}`
               for (const rs of r.value) {
-                if (!rs.active && !rs.updatedAt) continue
+                if (!rs.active && !rs.updatedAt && !rs.startedAt) continue
                 sessions.push({
                   sessionId: `ssh:${conn.host}:${rs.sessionId}`,
                   status: rs.active ? 'processing' : 'stopped',
                   source: 'hermes',
-                  platform: rs.platform || 'cli',
+                  platform: rs.platform || '',
                   cwd: '',
                   tool: '',
                   model: rs.model || '',
                   hostTerminal: label,
                   updatedAt: rs.startedAt ? new Date(rs.startedAt * 1000).toISOString() : rs.updatedAt || '',
+                  user_prompt: rs.messageCount ? `${rs.messageCount} msgs` : '',
                   isActiveTab: false,
                 })
               }
@@ -2254,7 +2267,7 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableHermes, hermesSshConns, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableHermes, hermesConns, appMode])
 
   // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
@@ -3180,8 +3193,8 @@ export default function Mini() {
           setEnableGemini(gem !== false)
           const herm = await store.get('enable_hermes')
           setEnableHermes(herm !== false)
-          const hsc = await store.get('hermes_ssh_connections') as { host: string; user: string }[] | null
-          if (hsc) setHermesSshConns(hsc.filter(c => c.host && c.user))
+          const hcn = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
+          if (hcn) setHermesConns(hcn)
         } catch {}
         // Trigger immediate refresh so config changes are reflected right away.
         fetchAgents()
@@ -3484,8 +3497,8 @@ export default function Mini() {
         setEnableGemini(gem !== false)
         const herm = await store.get('enable_hermes')
         setEnableHermes(herm !== false)
-        const hsc2 = await store.get('hermes_ssh_connections') as { host: string; user: string }[] | null
-        if (hsc2) setHermesSshConns(hsc2.filter(c => c.host && c.user))
+        const hcn2 = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
+        if (hcn2) setHermesConns(hcn2)
         fetchAgents()
         try {
           await invoke('set_mini_size', {
@@ -4507,7 +4520,7 @@ export default function Mini() {
                               data: cs,
                               claudeIdx: ci,
                               active: cs.status === 'processing' || cs.status === 'tool_running',
-                              updatedAt: cs.updatedAt || 0,
+                              updatedAt: cs.updatedAt ? new Date(cs.updatedAt).getTime() : 0,
                             }))
                             // Sort: waiting first, then everything else by recency.
                             const getPriority = (item: (typeof unified)[0] | (typeof claudeUnified)[0]) => {
@@ -4753,7 +4766,8 @@ export default function Mini() {
                                 )
                               } else {
                                 const cs = item.data
-                                const defaultProjectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                const isHermesSrc = cs.source === 'hermes'
+                                const defaultProjectName = cs.cwd ? cs.cwd.split('/').pop() : (isHermesSrc ? (cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
                                 const projectName = sessionNicknames[cs.sessionId] || defaultProjectName
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
@@ -4764,7 +4778,7 @@ export default function Mini() {
                                 const petState: PetState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle'
                                 const claudeSpriteState: CodexPetState = petStateToCodexState(petState)
                                 const subtitle = cs.userPrompt || ''
-                                const timeAgo = formatTimeAgo(cs.updatedAt || 0)
+                                const timeAgo = formatTimeAgo(cs.updatedAt ? (typeof cs.updatedAt === 'string' ? new Date(cs.updatedAt).getTime() : cs.updatedAt) : 0)
                                 const isCursorSource = cs.source === 'cursor'
                                 const isCodexSource = cs.source === 'codex'
                                 const isGeminiSource = cs.source === 'gemini'
@@ -4779,18 +4793,27 @@ export default function Mini() {
                                   if (p.includes('slack')) return 'Slack'
                                   if (p.includes('wechat') || p.includes('weixin')) return 'WeChat'
                                   if (p.includes('whatsapp')) return 'WhatsApp'
-                                  if (p === 'cli' || p === 'terminal') return ''
+                                  if (!p || p === 'cli' || p === 'terminal') return ''
                                   return hermesPlatform.charAt(0).toUpperCase() + hermesPlatform.slice(1)
                                 })()
                                 const isRemoteHermes = isHermesSource && cs.sessionId?.startsWith('ssh:')
-                                const remoteHost = isRemoteHermes ? cs.hostTerminal : ''
-                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : isHermesSource ? ('Hermes' + (hermesPlatformLabel ? ` · ${hermesPlatformLabel}` : '') + (remoteHost ? ` · ${remoteHost}` : '')) : 'Claude'
+                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : isHermesSource ? ('Hermes' + (hermesPlatformLabel ? ` · ${hermesPlatformLabel}` : '')) : 'Claude'
                                 const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : isGeminiSource ? 'bg-[#1d2736] text-[#8ab4f8]' : isHermesSource ? 'bg-[#2d1f3f] text-[#c084fc]' : 'bg-[#3f211d] text-[#e87a65]'
                                 const openClaudeDetail = () => {
                                   setSelectedAgentId(null)
                                   setSelectedSessionKey(null)
                                   setSelectedClaudeSession(null)
                                   setClaudeStatsSource(resolveClaudeStatsSource(cs.source))
+                                  if (isRemoteHermes && cs.sessionId) {
+                                    const sshHost = cs.sessionId.split(':')[1] || ''
+                                    const matchedConn = hermesConns.find(c => c.type === 'remote' && c.host === sshHost)
+                                    setClaudeStatsSsh(matchedConn?.host && matchedConn?.user ? { user: matchedConn.user, host: matchedConn.host } : null)
+                                    const rawId = cs.sessionId?.replace(/^ssh:[^:]+:/, '') || null
+                                    setClaudeStatsSessionId(rawId)
+                                  } else {
+                                    setClaudeStatsSsh(null)
+                                    setClaudeStatsSessionId(isHermesSource ? (cs.sessionId || null) : null)
+                                  }
                                   setShowClaudeStats(true)
                                 }
                                 return (
@@ -4804,10 +4827,17 @@ export default function Mini() {
                                     data-no-drag
                                     onClick={() => {
                                       if (isHermesSource) {
-                                        setSelectedAgentId(null)
-                                        setSelectedSessionKey(null)
-                                        setShowClaudeStats(false)
-                                        setSelectedClaudeSession(cs.sessionId)
+                                        const p = (cs.platform || '').toLowerCase()
+                                        const appName = p.includes('feishu') || p.includes('lark') ? 'Lark'
+                                          : p.includes('telegram') ? 'Telegram'
+                                          : p.includes('discord') ? 'Discord'
+                                          : p.includes('slack') ? 'Slack'
+                                          : p.includes('wechat') || p.includes('weixin') ? 'WeChat'
+                                          : p.includes('whatsapp') ? 'WhatsApp'
+                                          : null
+                                        if (appName) {
+                                          invoke('activate_app', { appName }).catch(() => {})
+                                        }
                                         return
                                       }
                                       if (!isWaiting || isGeminiSource) {
@@ -5463,7 +5493,7 @@ export default function Mini() {
                               data: cs,
                               claudeIdx: ci,
                               active: cs.status === 'processing' || cs.status === 'tool_running',
-                              updatedAt: cs.updatedAt || 0,
+                              updatedAt: cs.updatedAt ? new Date(cs.updatedAt).getTime() : 0,
                             }))
                             const merged = [...unified, ...claudeUnified].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
 
@@ -5517,7 +5547,7 @@ export default function Mini() {
                                 )
                               } else {
                                 const cs = item.data
-                                const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                const projectName = cs.cwd ? cs.cwd.split('/').pop() : (cs.source === 'hermes' ? (cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
                                 const statusText = cs.tool
@@ -5639,6 +5669,8 @@ export default function Mini() {
                     source={claudeStatsSource}
                     isActive={claudeStatsSource === 'hermes' ? claudeSessions.some(s => s.source === 'hermes' && (s.status === 'processing' || s.status === 'tool_running')) : undefined}
                     channel={claudeStatsSource === 'hermes' ? (claudeSessions.find(s => s.source === 'hermes')?.platform || undefined) : undefined}
+                    sshConn={claudeStatsSsh ?? undefined}
+                    hermesSessionId={claudeStatsSessionId ?? undefined}
                   />
                 </motion.div>
               ) : (
