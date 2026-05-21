@@ -113,7 +113,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
           <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
             {(['local', 'remote'] as const).map((typ) => {
               // Only one local connection allowed across all connections
-              const disabled = typ === 'local' && disableLocal && conn.type !== 'local'
+              const disabled = typ === 'local' && disableLocal
               return (
                 <button
                   key={typ}
@@ -300,7 +300,7 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
         <div className="flex items-center gap-3">
           <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
             {(['local', 'remote'] as const).map((typ) => {
-              const disabled = typ === 'local' && disableLocal && conn.type !== 'local'
+              const disabled = typ === 'local' && disableLocal
               return (
                 <button
                   key={typ}
@@ -424,6 +424,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
   hermesHookStatus: string
   t: any
 }) {
+  const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
   const [conns, setConns] = useState<HermesConn[]>([])
 
   useEffect(() => {
@@ -432,7 +433,8 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
         const store = await getStore()
         const saved = await store.get<HermesConn[]>('hermes_connections')
         if (saved && saved.length > 0) {
-          setConns(saved)
+          const filtered = isWindows ? saved.filter(c => c.type !== 'local') : saved
+          setConns(filtered.length > 0 ? filtered : saved)
         } else {
           // Migrate from old hermes_ssh_connections format
           const oldSsh = await store.get<{ host: string; user: string }[]>('hermes_ssh_connections')
@@ -443,7 +445,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
             setConns(migrated)
             await store.set('hermes_connections', migrated)
           } else if (enableHermes) {
-            const defaultConn: HermesConn[] = [{ id: crypto.randomUUID(), type: 'local' }]
+            const defaultConn: HermesConn[] = [{ id: crypto.randomUUID(), type: isWindows ? 'remote' : 'local' }]
             setConns(defaultConn)
             await store.set('hermes_connections', defaultConn)
           }
@@ -465,7 +467,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
 
   const addConnection = () => {
     const hasLocal = conns.some(c => c.type === 'local')
-    saveConns([...conns, { id: crypto.randomUUID(), type: hasLocal ? 'remote' : 'local' }])
+    saveConns([...conns, { id: crypto.randomUUID(), type: (isWindows || hasLocal) ? 'remote' : 'local' }])
   }
 
   const updateConn = (idx: number, c: HermesConn) => {
@@ -514,7 +516,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
               conn={conn}
               onUpdate={(c) => updateConn(idx, c)}
               onDelete={() => deleteConn(idx)}
-              disableLocal={conns.some((c, i) => i !== idx && c.type === 'local')}
+              disableLocal={isWindows || conns.some((c, i) => i !== idx && c.type === 'local')}
               t={t}
             />
           ))

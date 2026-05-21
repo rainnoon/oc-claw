@@ -6806,6 +6806,153 @@ fn empty_claude_stats() -> ClaudeStats {
     }
 }
 
+fn collect_gemini_stats() -> Result<ClaudeStats, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let gemini_dir = home.join(".gemini");
+
+    let log_path = {
+        let settings_path = gemini_dir.join("settings.json");
+        let mut path: Option<std::path::PathBuf> = None;
+        if settings_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&settings_path) {
+                if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(outfile) = settings.get("telemetry")
+                        .and_then(|t| t.get("outfile"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let p = std::path::PathBuf::from(outfile);
+                        if p.is_absolute() {
+                            path = Some(p);
+                        } else {
+                            path = Some(home.join(outfile));
+                        }
+                    }
+                }
+            }
+        }
+        path.unwrap_or_else(|| gemini_dir.join("telemetry.jsonl"))
+    };
+
+    if !log_path.exists() {
+        return Ok(empty_claude_stats());
+    }
+
+    let content = std::fs::read_to_string(&log_path)
+        .map_err(|e| format!("read gemini telemetry: {}", e))?;
+
+    // The telemetry file is pretty-printed JSON objects concatenated
+    // without delimiters (e.g. "}\n{"). Use a streaming deserializer.
+    let stream = serde_json::Deserializer::from_str(&content).into_iter::<serde_json::Value>();
+
+    let now = chrono::Utc::now();
+    let cutoff = now - chrono::Duration::days(14);
+    let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_messages = 0u64;
+    let mut total_sessions = 0u64;
+    let mut model = String::new();
+    let mut seen_session_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for item in stream {
+        let parsed = match item {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let attrs = parsed.get("attributes").unwrap_or(&parsed);
+
+        let event_name = attrs.get("event.name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if event_name == "gemini_cli.api_response" {
+            let ts = attrs.get("event.timestamp")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let date = ts.get(..10).unwrap_or("").to_string();
+            if !date.is_empty() && date < cutoff_str { continue; }
+
+            let input = attrs.get("input_token_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = attrs.get("output_token_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cached = attrs.get("cached_content_token_count").and_then(|v| v.as_u64()).unwrap_or(0);
+
+            if model.is_empty() {
+                if let Some(m) = attrs.get("model").and_then(|v| v.as_str()) {
+                    model = m.to_string();
+                }
+            }
+
+            total_input += input;
+            total_output += output;
+            total_cache_read += cached;
+            total_messages += 1;
+
+            if !date.is_empty() {
+                let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                    date: date.clone(),
+                    input_tokens: 0, output_tokens: 0,
+                    cache_read_tokens: 0, cache_write_tokens: 0,
+                    messages: 0, sessions: 0,
+                });
+                entry.input_tokens += input;
+                entry.output_tokens += output;
+                entry.cache_read_tokens += cached;
+                entry.messages += 1;
+            }
+        } else if event_name == "gemini_cli.config" {
+            let session_id = attrs.get("session.id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !session_id.is_empty() && seen_session_ids.insert(session_id) {
+                total_sessions += 1;
+                let ts = attrs.get("event.timestamp")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let date = ts.get(..10).unwrap_or("").to_string();
+                if !date.is_empty() && date >= cutoff_str {
+                    let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                        date: date.clone(),
+                        input_tokens: 0, output_tokens: 0,
+                        cache_read_tokens: 0, cache_write_tokens: 0,
+                        messages: 0, sessions: 0,
+                    });
+                    entry.sessions += 1;
+                }
+            }
+        }
+    }
+
+    // Fill in all 14 days so the chart shows a complete timeline
+    let now_local = chrono::Local::now();
+    let mut daily_stats: Vec<ClaudeDailyStats> = Vec::with_capacity(14);
+    for i in (0..14).rev() {
+        let day = (now_local - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        let entry = daily_map.remove(&day).unwrap_or(ClaudeDailyStats {
+            date: day.clone(),
+            input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0,
+            messages: 0, sessions: 0,
+        });
+        daily_stats.push(entry);
+    }
+
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: 0,
+        total_messages,
+        total_sessions,
+        daily_stats,
+        model,
+    })
+}
+
 fn collect_hermes_stats() -> Result<ClaudeStats, String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
     let db_path = home.join(".hermes").join("state.db");
@@ -7663,7 +7810,7 @@ async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String>
     }
 
     if source == "gemini" {
-        return Ok(empty_claude_stats());
+        return collect_gemini_stats();
     }
 
     if source == "hermes" {
@@ -8966,6 +9113,67 @@ fn find_running_claude_desktop_pid() -> Option<u32> {
     result
 }
 
+/// Walk up the process tree from `pid` to find the nearest ancestor that owns
+/// a visible window (i.e. the terminal hosting a CLI process like gemini/hermes).
+#[cfg(target_os = "windows")]
+fn find_ancestor_window_pid(pid: u32) -> Option<u32> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible,
+    };
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    fn pid_has_visible_window(target: u32) -> bool {
+        struct Ctx { target: u32, found: bool }
+        extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            unsafe {
+                let ctx = &mut *(lparam.0 as *mut Ctx);
+                if !IsWindowVisible(hwnd).as_bool() { return BOOL(1); }
+                let mut p: u32 = 0;
+                GetWindowThreadProcessId(hwnd, Some(&mut p));
+                if p == ctx.target && GetWindowTextLengthW(hwnd) > 0 {
+                    ctx.found = true;
+                    return BOOL(0);
+                }
+                BOOL(1)
+            }
+        }
+        let mut ctx = Ctx { target, found: false };
+        unsafe { let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut Ctx as isize)); }
+        ctx.found
+    }
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entries: Vec<(u32, u32)> = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            while Process32NextW(snapshot, &mut entry).is_ok() {
+                entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+
+    let mut current = pid;
+    for _ in 0..10 {
+        let parent = entries.iter().find(|(p, _)| *p == current).map(|(_, pp)| *pp)?;
+        if parent == 0 || parent == current { return None; }
+        if pid_has_visible_window(parent) {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
+
 /// Find the first running process whose exe name (case-insensitive) matches
 /// any of the given names. Returns its PID so we can activate its window.
 #[cfg(target_os = "windows")]
@@ -9778,6 +9986,10 @@ end tell"#,
         }
 
         if let Some(p) = pid {
+            if let Some(parent) = find_ancestor_window_pid(p) {
+                activate_window_by_pid(parent);
+                return Ok(format!("Activated terminal for PID {}", p));
+            }
             activate_window_by_pid(p);
             return Ok(format!("Activated window for PID {}", p));
         }
@@ -12426,6 +12638,23 @@ try {
         settings["tools"] = serde_json::json!({});
     }
     settings["tools"]["enableHooks"] = serde_json::json!(true);
+
+    // Enable local telemetry so we can collect token usage stats.
+    // Uses ~/.gemini/telemetry.jsonl as the output file.
+    let telemetry = settings.get("telemetry").cloned().unwrap_or(serde_json::json!({}));
+    let already_enabled = telemetry.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !already_enabled {
+        let telem_outfile = gemini_dir.join("telemetry.jsonl").to_string_lossy().replace('\\', "/");
+        settings["telemetry"] = serde_json::json!({
+            "enabled": true,
+            "target": "local",
+            "outfile": telem_outfile,
+            "logPrompts": false,
+        });
+    } else if telemetry.get("outfile").is_none() {
+        let telem_outfile = gemini_dir.join("telemetry.jsonl").to_string_lossy().replace('\\', "/");
+        settings["telemetry"]["outfile"] = serde_json::json!(telem_outfile);
+    }
 
     let json_str = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(&settings_path, json_str).map_err(|e| e.to_string())?;

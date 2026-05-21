@@ -5075,6 +5075,14 @@ export default function Mini() {
                                                 if (p.includes('slack')) return 'Slack'
                                                 return ''
                                               })()
+                                              const isWinGemini = isWindowsPlatform && cs.source === 'gemini'
+                                              if (isWinGemini) {
+                                                return (
+                                                  <span className="text-[11px] text-white/40 text-center py-1">
+                                                    {t('mini.goToTerminal', 'Please approve in the terminal')}
+                                                  </span>
+                                                )
+                                              }
                                               const jumpLabel = cs.source === 'hermes'
                                                 ? (hermesPlatLabel ? t('mini.viewInHermes', 'Go to Hermes').replace('Hermes', hermesPlatLabel) : t('mini.viewInHermes', 'Go to Hermes'))
                                                 : cs.source === 'gemini'

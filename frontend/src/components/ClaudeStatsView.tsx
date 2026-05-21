@@ -261,13 +261,9 @@ export function ClaudeStatsView({ source = 'cc', isActive, channel, sshConn, her
           ? 'claudeStats.titleHermes'
           : 'claudeStats.title'
 
-  if (source === 'cursor' || source === 'gemini') {
-    const unsupportedTitle = source === 'cursor'
-      ? t('claudeStats.cursorUnsupportedTitle', 'Cursor 暂不支持详细统计')
-      : t('claudeStats.geminiUnsupportedTitle', 'Gemini CLI 暂不支持详细统计')
-    const unsupportedDesc = source === 'cursor'
-      ? t('claudeStats.cursorUnsupportedDesc', 'Cursor 不向第三方工具暴露每次请求的 token 用量，oc-claw 无法在本地准确还原。请在 Cursor 应用内查看用量。')
-      : t('claudeStats.geminiUnsupportedDesc', 'Gemini CLI 通过实时事件与 oc-claw 通信，暂不支持本地 token 统计。')
+  if (source === 'cursor') {
+    const unsupportedTitle = t('claudeStats.cursorUnsupportedTitle', 'Cursor 暂不支持详细统计')
+    const unsupportedDesc = t('claudeStats.cursorUnsupportedDesc', 'Cursor 不向第三方工具暴露每次请求的 token 用量，oc-claw 无法在本地准确还原。请在 Cursor 应用内查看用量。')
     return (
       <div className="flex-1 min-h-0 px-5 py-5 flex flex-col gap-6">
         <div className="flex items-center justify-between">
