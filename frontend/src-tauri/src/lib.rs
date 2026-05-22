@@ -13270,14 +13270,17 @@ def check_active(sid):
             'SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? ORDER BY timestamp DESC LIMIT 1',
             (sid,)).fetchone()
         if not last:
-            return started_at and (now - started_at) < 60
+            return started_at and (now - started_at) < 120
         role, tool_calls, ts = last
-        age = now - ts if ts else 9999
-        if role == 'assistant' and not tool_calls:
-            return age < 8
         if role in ('user', 'human'):
-            return age < 30
-        return age < 60
+            return True
+        if role == 'tool':
+            return True
+        if role == 'assistant':
+            if tool_calls:
+                return True
+            return False
+        return ts and (now - ts) < 30
     except: pass
     return True
 # Active gateway sessions from sessions.json
