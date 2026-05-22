@@ -10928,19 +10928,23 @@ if not os.path.exists(db):
     exit(0)
 conn = sqlite3.connect(db)
 sid = '{sid}'
+_q = ('SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
+      'FROM messages WHERE role IN ("user","assistant","tool")')
 if sid:
-    cur = conn.execute(
-        'SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
-        'FROM messages WHERE role IN ("user","assistant","tool") AND session_id = ? '
-        'ORDER BY timestamp DESC LIMIT 30', (sid,))
+    cur = conn.execute(_q + ' AND session_id = ? ORDER BY timestamp DESC LIMIT 30', (sid,))
+    _rows = cur.fetchall()
+    if not _rows:
+        cur = conn.execute(_q + ' AND session_id LIKE ? ORDER BY timestamp DESC LIMIT 30', ('%'+sid+'%',))
+        _rows = cur.fetchall()
+    if not _rows:
+        cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
+        _rows = cur.fetchall()
 else:
-    cur = conn.execute(
-        'SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
-        'FROM messages WHERE role IN ("user","assistant","tool") '
-        'ORDER BY timestamp DESC LIMIT 30')
+    cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
+    _rows = cur.fetchall()
 rows = []
 cid_map = {{}}
-for r in cur.fetchall():
+for r in _rows:
     role, content, tool_name, tool_calls, tool_call_id, ts = r
     rows.append((role, content, tool_name, tool_calls, tool_call_id, ts))
     if role == 'assistant' and tool_calls:
