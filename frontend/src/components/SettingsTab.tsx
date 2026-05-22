@@ -299,18 +299,15 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
-            {(['local', 'remote'] as const).map((typ) => {
-              const disabled = typ === 'local' && disableLocal
-              return (
-                <button
-                  key={typ}
-                  onClick={() => !disabled && onUpdate({ ...conn, type: typ })}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === typ ? 'bg-white/10 text-white' : disabled ? 'text-white/15 cursor-not-allowed' : 'text-white/40 hover:text-white/60'}`}
-                >
-                  {typ === 'local' ? t('settings.local') : t('settings.remote')}
-                </button>
-              )
-            })}
+            {(['local', 'remote'] as const).filter(typ => !(typ === 'local' && disableLocal)).map((typ) => (
+              <button
+                key={typ}
+                onClick={() => onUpdate({ ...conn, type: typ })}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === typ ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
+              >
+                {typ === 'local' ? t('settings.local') : t('settings.remote')}
+              </button>
+            ))}
           </div>
           <span className="text-xs text-white/30">
             {conn.type === 'local' ? '~/.hermes' : conn.host ? `${conn.user || 'root'}@${conn.host}` : t('settings.notConfigured')}
@@ -433,8 +430,8 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
         const store = await getStore()
         const saved = await store.get<HermesConn[]>('hermes_connections')
         if (saved && saved.length > 0) {
-          const filtered = isWindows ? saved.filter(c => c.type !== 'local') : saved
-          setConns(filtered.length > 0 ? filtered : saved)
+          const adjusted = isWindows ? saved.map(c => c.type === 'local' ? { ...c, type: 'remote' as const } : c) : saved
+          setConns(adjusted)
         } else {
           // Migrate from old hermes_ssh_connections format
           const oldSsh = await store.get<{ host: string; user: string }[]>('hermes_ssh_connections')
