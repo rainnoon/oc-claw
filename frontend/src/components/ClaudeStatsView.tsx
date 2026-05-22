@@ -235,10 +235,17 @@ export function ClaudeStatsView({ source = 'cc', isActive, channel, sshConn, her
 
   useEffect(() => {
     setStats(null)
-    const cmd = (source === 'hermes' && sshConn)
-      ? invoke('get_hermes_remote_stats', { sshHost: sshConn.host, sshUser: sshConn.user })
-      : invoke('get_claude_stats', { source })
-    cmd.then((s: any) => setStats(s)).catch(() => {})
+    const fetchStats = () => {
+      const cmd = (source === 'hermes' && sshConn)
+        ? invoke('get_hermes_remote_stats', { sshHost: sshConn.host, sshUser: sshConn.user })
+        : invoke('get_claude_stats', { source })
+      cmd.then((s: any) => setStats(s)).catch(() => {})
+    }
+    fetchStats()
+    if (source === 'hermes') {
+      const t = setInterval(fetchStats, 10000)
+      return () => clearInterval(t)
+    }
   }, [source, sshConn?.host, sshConn?.user])
 
   if (!stats) {
