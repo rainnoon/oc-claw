@@ -13281,8 +13281,8 @@ def check_active(sid):
         if role == 'assistant':
             if tool_calls:
                 return True
-            return age < 15
-        return age < 30
+            return age < 5
+        return age < 10
     except: pass
     return True
 # Active gateway sessions from sessions.json
