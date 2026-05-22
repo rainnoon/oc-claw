@@ -86,7 +86,7 @@ fn unix_now() -> u64 {
 }
 
 fn ssh_backoff_remaining(host_key: &str) -> Option<u64> {
-    let map = ssh_backoff_map().lock().unwrap();
+    let map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     let state = map.get(host_key)?;
     if state.fail_count == 0 { return None; }
     let cooldown = std::cmp::min(15u64 * 2u64.pow(state.fail_count.saturating_sub(1)), 300);
@@ -95,14 +95,14 @@ fn ssh_backoff_remaining(host_key: &str) -> Option<u64> {
 }
 
 fn ssh_backoff_record_failure(host_key: &str) {
-    let mut map = ssh_backoff_map().lock().unwrap();
+    let mut map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     let state = map.entry(host_key.to_string()).or_insert(SshBackoffState { fail_count: 0, fail_epoch: 0 });
     state.fail_count += 1;
     state.fail_epoch = unix_now();
 }
 
 fn ssh_backoff_reset(host_key: &str) {
-    let mut map = ssh_backoff_map().lock().unwrap();
+    let mut map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     map.remove(host_key);
 }
 
@@ -893,7 +893,7 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             ssh_backoff_record_failure(&host_key);
-            let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
+            let count = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner()).get(&host_key).map(|s| s.fail_count).unwrap_or(0);
             let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
             log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
             return Err(format!("SSH master failed [exit {}]: {}", code, stderr));
@@ -917,7 +917,7 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         // prevents hitting server-side MaxStartups limits.
         if let Err(e) = win_ssh_mux::ensure(ssh_user, ssh_host).await {
             ssh_backoff_record_failure(&host_key);
-            let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
+            let count = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner()).get(&host_key).map(|s| s.fail_count).unwrap_or(0);
             log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
             return Err(format!("SSH connection failed: {}", e));
         }
@@ -940,7 +940,7 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
                 let expanded = path.replace("~", &home_dir_string());
                 if std::path::Path::new(&expanded).exists() {
                     log::info!("[ssh] {} will use key: {}", host_key, expanded);
-                    ssh_key_map().lock().unwrap().insert(host_key.clone(), expanded);
+                    ssh_key_map().lock().unwrap_or_else(|e| e.into_inner()).insert(host_key.clone(), expanded);
                     break;
                 }
             }
@@ -1104,7 +1104,7 @@ fn exit_app(app: tauri::AppHandle) {
 #[tauri::command]
 fn get_ssh_key_info(ssh_host: String, ssh_user: String) -> Option<String> {
     let key = format!("{}@{}", ssh_user, ssh_host);
-    ssh_key_map().lock().unwrap().get(&key).cloned()
+    ssh_key_map().lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
 }
 
 /// Reset backoff, gracefully close the existing SSH master process, and
@@ -1120,7 +1120,7 @@ async fn reset_ssh(ssh_host: String, ssh_user: String) {
     // from piling up and conflicting with the new master.
     let _ = close_ssh_master(&ssh_host, &ssh_user).await;
     // Clear cached key info since we're starting fresh
-    ssh_key_map().lock().unwrap().remove(&host_key);
+    ssh_key_map().lock().unwrap_or_else(|e| e.into_inner()).remove(&host_key);
     log::info!("[reset_ssh] cleared backoff, killed master, and reset for {}", host_key);
 }
 
@@ -1147,7 +1147,7 @@ async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result
         #[cfg(windows)]
         { win_ssh_mux::kill_all().await; }
         // Clear all backoff entries
-        ssh_backoff_map().lock().unwrap().clear();
+        ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner()).clear();
         return Ok(());
     }
     close_ssh_master(&sh, &su).await
