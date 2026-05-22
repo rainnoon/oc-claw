@@ -1538,7 +1538,7 @@ export default function Mini() {
       const initialMascotScale = typeof storedMascotScale === 'number' ? clampMascotScale(storedMascotScale) : 1
       const storedLargeMascot = await store.get('large_mascot')
       const storedLargeMascotScale = await store.get('large_mascot_scale')
-      const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(4, storedLargeMascotScale)) : 5
+      const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(1, storedLargeMascotScale)) : 5
       const existingMode = await loadAppMode()
       // Avoid startup flicker: decide large/small mascot from the persisted mode
       // BEFORE applying initial React/native window state. Otherwise we briefly
@@ -6001,6 +6001,9 @@ export default function Mini() {
                           const store = await getStore()
                           await store.set('large_mascot_scale', clamped)
                           await store.save()
+                          if (largeMascotRef.current) {
+                            invoke('set_pet_mode_window', { active: appModeRef.current === 'pet', mascotScale: mascotScaleRef.current, largeMascotScale: clamped }).catch(() => {})
+                          }
                         }}
                         appMode={appMode}
                         onChangeAppMode={handleSelectAppMode}
