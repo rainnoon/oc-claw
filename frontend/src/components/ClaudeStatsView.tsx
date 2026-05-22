@@ -119,13 +119,17 @@ function HermesDetailView({ stats, isActive, channel, sshConn, sessionId }: { st
   const [activities, setActivities] = useState<HermesActivity[]>([])
 
   useEffect(() => {
-    const cmd = sshConn
-      ? invoke('get_hermes_remote_recent_activity', { sshHost: sshConn.host, sshUser: sshConn.user, sessionId: sessionId || '' })
-      : invoke('get_hermes_recent_activity', { sessionId: sessionId || '' })
-    cmd.then((items: any) => {
-      if (!items?.length) return
-      setActivities(items.slice(0, 3))
-    }).catch(() => {})
+    const fetchActivity = () => {
+      const cmd = sshConn
+        ? invoke('get_hermes_remote_recent_activity', { sshHost: sshConn.host, sshUser: sshConn.user, sessionId: sessionId || '' })
+        : invoke('get_hermes_recent_activity', { sessionId: sessionId || '' })
+      cmd.then((items: any) => {
+        if (items?.length) setActivities(items.slice(0, 3))
+      }).catch(() => {})
+    }
+    fetchActivity()
+    const t = setInterval(fetchActivity, 5000)
+    return () => clearInterval(t)
   }, [sshConn?.host, sshConn?.user, sessionId])
 
   const fmtTime = (ts: number) => {
