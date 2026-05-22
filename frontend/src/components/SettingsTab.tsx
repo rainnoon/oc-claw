@@ -882,8 +882,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             <div className="p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex flex-col gap-1">
-                  <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Large Mascot Size')}</span>
-                  <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for large mascot mode')}</span>
+                  <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Mascot Size')}</span>
+                  <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for mascot')}</span>
                 </div>
                 <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
               </div>
@@ -1105,8 +1105,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           <div className="p-4 border-b border-white/5">
             <div className="flex items-center justify-between mb-2">
               <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Large Mascot Size')}</span>
-                <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for large mascot mode')}</span>
+                <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Mascot Size')}</span>
+                <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for mascot')}</span>
               </div>
               <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
             </div>

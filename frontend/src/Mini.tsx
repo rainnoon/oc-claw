@@ -1325,16 +1325,8 @@ export default function Mini() {
       // First time entering coding mode (no persisted preference): default
       // to the large mascot so new users see it out of the box. Existing
       // users who have explicitly toggled the size are left alone.
-      if (mode === 'coding') {
-        const store = await load('settings.json', { defaults: {}, autoSave: true })
-        const existingLM = await store.get('large_mascot')
-        if (typeof existingLM !== 'boolean') {
-          setLargeMascot(true)
-          largeMascotRef.current = true
-          await store.set('large_mascot', true)
-          await store.save()
-        }
-      }
+      setLargeMascot(true)
+      largeMascotRef.current = true
       // When switching mode from inside Settings, keep the settings window
       // completely untouched. enterSettings already disabled pet pass-
       // through, and any extra native resize/move call (even an
@@ -1348,7 +1340,7 @@ export default function Mini() {
       await invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
       // Restore window back to collapsed mascot size
       try {
-        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current })
       } catch {}
     }
   }, [])
@@ -1545,15 +1537,7 @@ export default function Mini() {
       // render the stored small mascot and then switch to large in pet mode.
       // Default to large mascot for both pet and coding modes when the user
       // has no explicit preference yet; respect the stored boolean otherwise.
-      let initialLargeMascot: boolean
-      if (typeof storedLargeMascot === 'boolean') {
-        initialLargeMascot = storedLargeMascot
-      } else {
-        initialLargeMascot = existingMode === 'coding' || existingMode === 'pet'
-      }
-      if (existingMode === 'pet') {
-        initialLargeMascot = true
-      }
+      const initialLargeMascot = true
       setMascotPosition(initialMascotPosition)
       setMascotScale(initialMascotScale)
       setLargeMascot(initialLargeMascot)
@@ -1586,7 +1570,7 @@ export default function Mini() {
           position: initialMascotPosition,
           efficiency: true,
           mascotScale: initialMascotScale,
-          largeMascot: existingMode === 'pet' ? true : initialLargeMascot,
+          largeMascot: true,
           largeMascotScale: initialLargeMascotScale,
         }).catch(() => {})
         if (existingMode === 'pet') {
@@ -2567,7 +2551,7 @@ export default function Mini() {
         expandedRef.current = true
         setShowPanel(true)
       } else {
-        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current })
         await restoreCollapsedMascotPosition()
         setExpanded(false)
         expandedRef.current = false
@@ -3225,7 +3209,7 @@ export default function Mini() {
             petOriginBeforeSettingsRef.current = null
           }
         } else if (wasSettings) {
-          await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+          await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current })
           await restoreCollapsedMascotPosition()
         } else {
           await invoke('set_mini_expanded', {
@@ -3233,7 +3217,7 @@ export default function Mini() {
             position: mascotPositionRef.current,
             efficiency: viewModeRef.current === 'efficiency',
             mascotScale: mascotScaleRef.current,
-            largeMascot: largeMascotRef.current,
+            largeMascot: true,
             largeMascotScale: largeMascotScaleRef.current,
           })
           await restoreCollapsedMascotPosition()
@@ -3505,7 +3489,7 @@ export default function Mini() {
             restore: true,
             position: mascotPositionRef.current,
             mascotScale: mascotScaleRef.current,
-            largeMascot: largeMascotRef.current,
+            largeMascot: true,
             largeMascotScale: largeMascotScaleRef.current,
           })
           await restoreCollapsedMascotPosition()
@@ -3962,8 +3946,8 @@ export default function Mini() {
   const collapsedMascotSize = Math.round(MASCOT_BASE_SIZE * mascotScale)
   const collapsedPlaceholderRadius = Math.round(10 * mascotScale)
   const collapsedPlaceholderFontSize = Math.max(16, Math.round(16 * mascotScale))
-  const collapsedStatusSize = largeMascot ? 5 : 6
-  const collapsedStatusBorder = largeMascot ? 1.1 : 1.2
+  const collapsedStatusSize = 5
+  const collapsedStatusBorder = 1.1
   const largeMascotVisualSize = collapsedMascotSize * largeMascotScale
 
   useEffect(() => {
@@ -4203,14 +4187,14 @@ export default function Mini() {
               <div
                 style={{
                   position: 'relative',
-                  width: collapsedMascotSize * MINI_SPRITE_DISPLAY_MULTIPLIER,
-                  height: Math.round(collapsedMascotSize * MINI_SPRITE_DISPLAY_MULTIPLIER * (208 / 192)),
+                  width: largeMascotVisualSize,
+                  height: Math.round(largeMascotVisualSize * (208 / 192)),
                 }}
               >
                 <MiniPetMascot
                   pet={miniPet}
                   baseState={mainSpriteState}
-                  size={collapsedMascotSize * MINI_SPRITE_DISPLAY_MULTIPLIER}
+                  size={largeMascotVisualSize}
                   enableHoverJump
                   externalHover={mascotHover}
                   useExternalHover={!isWindowsPlatform}
@@ -4220,8 +4204,8 @@ export default function Mini() {
             ) : (
               <div
                 style={{
-                  width: collapsedMascotSize,
-                  height: collapsedMascotSize,
+                  width: largeMascotVisualSize,
+                  height: largeMascotVisualSize,
                   borderRadius: collapsedPlaceholderRadius,
                   background: 'rgba(0,0,0,0.3)',
                   display: 'flex',
@@ -6001,9 +5985,6 @@ export default function Mini() {
                           const store = await getStore()
                           await store.set('large_mascot_scale', clamped)
                           await store.save()
-                          if (largeMascotRef.current) {
-                            invoke('set_pet_mode_window', { active: appModeRef.current === 'pet', mascotScale: mascotScaleRef.current, largeMascotScale: clamped }).catch(() => {})
-                          }
                         }}
                         appMode={appMode}
                         onChangeAppMode={handleSelectAppMode}

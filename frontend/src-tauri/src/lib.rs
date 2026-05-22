@@ -3211,8 +3211,9 @@ fn collapsed_mascot_window_size(scale: f64) -> (f64, f64) {
 
 fn large_collapsed_mascot_window_size(scale: f64, large_scale: f64) -> (f64, f64) {
     let lms = if large_scale.is_finite() && large_scale >= 1.0 && large_scale <= 6.0 { large_scale } else { LARGE_MASCOT_SIZE_MULTIPLIER };
-    let size = 43.0 * scale * lms;
-    (size, size)
+    let w = 43.0 * scale * lms;
+    let h = (w * 208.0 / 192.0).ceil();
+    (w, h)
 }
 
 /// Compute a UI-scale multiplier for Windows based on the monitor's logical
