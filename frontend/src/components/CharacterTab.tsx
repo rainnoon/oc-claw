@@ -85,7 +85,7 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
     )
     await saveCharacters(updated)
     setCharacters(updated)
-    const fileName = gifPath.split('/').pop() || ''
+    const fileName = gifPath.replace(/\\/g, '/').split('/').pop() || ''
     try { await invoke('delete_character_gif', { charName, subfolder: `mini/${cat}`, fileName }) } catch { /* ignore */ }
   }
 
@@ -100,7 +100,7 @@ export function CharacterTab({ activeTab }: { activeTab: 'pet' | 'mini' }) {
     )
     await saveCharacters(updated)
     setCharacters(updated)
-    const fileName = gifPath.split('/').pop() || ''
+    const fileName = gifPath.replace(/\\/g, '/').split('/').pop() || ''
     const subfolder = category === 'rest' ? 'pet/rest' : 'pet/crawl'
     try { await invoke('delete_character_gif', { charName, subfolder, fileName }) } catch { /* ignore */ }
   }

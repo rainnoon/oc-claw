@@ -137,7 +137,7 @@ export function CreateCharacterModal({ isOpen, onClose, onSaved }: Props) {
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
       const ext = filePath.split('.').pop()?.toLowerCase() || 'png'
       const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png'
-      const fileName = filePath.split('/').pop() || 'image.png'
+      const fileName = filePath.replace(/\\/g, '/').split('/').pop() || 'image.png'
       processFile(new File([bytes], fileName, { type: mime }))
     } catch {
       setError(t('createChar.cantReadFile'))
