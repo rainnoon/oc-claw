@@ -13294,7 +13294,7 @@ if os.path.exists(sj):
             sid = v.get('session_id','')
             if sid: seen.add(sid)
             plat = v.get('platform','')
-            if plat in ('cli','terminal','','cron'): continue
+            if plat in ('cron',): continue
             updated = v.get('updated_at','')
             active = check_active(sid) if sid else True
             last_msg_info = ''
@@ -13319,7 +13319,7 @@ if db_conn:
             sid = r[0]
             if sid in seen: continue
             plat_db = r[1] or ''
-            if plat_db in ('cli','terminal','','cron'): continue
+            if plat_db in ('cron',): continue
             seen.add(sid)
             ended = r[4]
             active = ended is None
