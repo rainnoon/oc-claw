@@ -241,6 +241,8 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
   const [testMsg, setTestMsg] = useState('')
   const [showGuide, setShowGuide] = useState(false)
+  const [needsPlugin, setNeedsPlugin] = useState(false)
+  const [installingPlugin, setInstallingPlugin] = useState(false)
   const cancelledRef = useRef(false)
 
   const testConnection = async () => {
@@ -260,6 +262,9 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
         else parts.push('DB ✗')
         if (result.gateway_running) parts.push('Gateway ✓')
         else parts.push('Gateway ✗')
+        if (result.plugin_installed && result.plugin_enabled) parts.push('Plugin ✓')
+        else if (result.plugin_installed) parts.push('Plugin ✓ (未启用)')
+        else parts.push('Plugin ✗')
         let keyInfo = ''
         try {
           const key = await invoke('get_ssh_key_info', { sshHost: conn.host, sshUser: conn.user }) as string | null
@@ -267,6 +272,7 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
         } catch {}
         setTestMsg(parts.join(' · ') + keyInfo)
         setTestResult(result.hermes_installed && result.state_db ? 'success' : 'error')
+        setNeedsPlugin(!result.plugin_installed || !result.plugin_enabled)
       } else {
         const result: any = await invoke('test_hermes_hook')
         if (cancelledRef.current) return
@@ -401,6 +407,29 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
           <span className="text-xs text-emerald-400 flex items-center gap-1">
             <Check className="w-3 h-3" /> {t('common.success')} {testMsg && `· ${testMsg}`}
           </span>
+        )}
+        {testResult === 'success' && needsPlugin && (
+          <button
+            disabled={installingPlugin}
+            onClick={async () => {
+              setInstallingPlugin(true)
+              try {
+                const r: any = await invoke('install_hermes_remote_plugin', { sshHost: conn.host, sshUser: conn.user })
+                if (r.installed && r.enabled) {
+                  setNeedsPlugin(false)
+                  setTestMsg(testMsg.replace('Plugin ✗', 'Plugin ✓').replace('Plugin ✓ (未启用)', 'Plugin ✓'))
+                } else {
+                  setTestMsg(testMsg + ' · 安装失败')
+                }
+              } catch (e: any) {
+                setTestMsg(testMsg + ' · ' + String(e))
+              }
+              setInstallingPlugin(false)
+            }}
+            className="px-3 py-1 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/30 rounded-lg text-xs font-medium text-cyan-400 transition-colors"
+          >
+            {installingPlugin ? '安装中...' : '安装插件'}
+          </button>
         )}
         {testResult === 'error' && (
           <div className="text-xs text-red-400 w-full">
