@@ -7573,15 +7573,22 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
          WHERE session_id = ?1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1"
     ).map_err(|e| format!("prepare user msg: {}", e))?;
 
+    // Fetch last message timestamp to determine real activity time
+    let mut last_msg_stmt = conn.prepare(
+        "SELECT MAX(timestamp) FROM messages \
+         WHERE session_id = ?1 AND role NOT IN ('session_meta', 'system', 'metadata')"
+    ).map_err(|e| format!("prepare last msg ts: {}", e))?;
+
     for row in rows {
         let (id, source, _model, started_at, ended_at, _msg_count, _input_tok, _output_tok) =
             row.map_err(|e| format!("row: {}", e))?;
 
-        let updated_at_ms = if let Some(end) = ended_at {
-            if end > 0.0 { (end * 1000.0) as u64 } else { (started_at * 1000.0) as u64 }
-        } else {
-            (started_at * 1000.0) as u64
-        };
+        // Use the last message timestamp as the true "updated_at" for sorting/status.
+        // Hermes gateway sessions never have ended_at set, and started_at can be hours old.
+        let last_msg_ts: Option<f64> = last_msg_stmt
+            .query_row(rusqlite::params![&id], |r| r.get(0)).ok().flatten();
+        let best_ts = last_msg_ts.unwrap_or(started_at);
+        let updated_at_ms = (best_ts * 1000.0) as u64;
 
         let is_active = ended_at.is_none() || ended_at == Some(0.0);
         let status = if is_active && (now_ms - updated_at_ms) < 300_000 {
@@ -12763,8 +12770,9 @@ def _send(payload):
     let init_py = format!(
         r##"# ooclaw plugin for Hermes Agent - forwards events to oc-claw.
 from __future__ import annotations
-import json, os, socket
+import json, os, socket, time
 from typing import Any, Dict, Tuple
+from pathlib import Path
 
 {connect_code}
 
@@ -12780,6 +12788,26 @@ HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
     "pre_approval_request": ("waiting", "PermissionRequest"),
     "post_approval_response": ("processing", "PostToolUse"),
 }}
+
+def _status_file_path():
+    \"\"\"Find the ooclaw status file path under the active profile or hermes home.\"\"\"
+    hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
+    profile = os.environ.get("HERMES_PROFILE", "")
+    if profile:
+        return os.path.join(hermes_home, "profiles", profile, "ooclaw-status.json")
+    # Default profile uses hermes_home directly
+    return os.path.join(hermes_home, "ooclaw-status.json")
+
+def _write_status(payload):
+    \"\"\"Write status to a local file for remote SSH polling.\"\"\"
+    try:
+        status_path = _status_file_path()
+        tmp_path = status_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp_path, status_path)
+    except Exception:
+        pass
 
 def _handle(event_name, **kwargs):
     mapping = HOOK_TO_EVENT.get(event_name)
@@ -12812,6 +12840,7 @@ def _handle(event_name, **kwargs):
         "source": "hermes",
         "pid": os.getpid(),
         "platform": platform,
+        "timestamp": time.time(),
     }}
     if tool_name:
         payload["tool"] = tool_name
@@ -12826,6 +12855,7 @@ def _handle(event_name, **kwargs):
         if resp and isinstance(resp, str):
             payload["lastResponse"] = resp[:2000]
     _send(payload)
+    _write_status(payload)
 
 def _make_cb(event_name):
     def cb(**kwargs):
@@ -13281,11 +13311,35 @@ if os.path.isdir(profiles_root):
 seen = set()
 results = []
 now = time.time()
+# Read ooclaw plugin status files for real-time activity info
+_ooclaw_status = {}  # profile_name -> status dict
+for _pdir in profile_dirs:
+    _pname = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
+    _sf = os.path.join(_pdir, 'ooclaw-status.json')
+    if not os.path.exists(_sf):
+        _sf = os.path.join(hermes_home, 'ooclaw-status.json') if _pname == 'default' else _sf
+    try:
+        if os.path.exists(_sf):
+            with open(_sf) as _f:
+                _st = json.load(_f)
+            # Only trust if timestamp is recent (within 60s)
+            if _st.get('timestamp') and (now - _st['timestamp']) < 60:
+                _ooclaw_status[_pname] = _st
+    except: pass
 for _pdir in profile_dirs:
     sj = os.path.join(_pdir, 'sessions', 'sessions.json')
     db = os.path.join(_pdir, 'state.db')
     _profile_name = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
     db_conn = None
+    # Check if state.db WAL is recently modified (indicates active writing)
+    _db_recently_written = False
+    for _wal_path in [db + '-wal', db]:
+        try:
+            _mtime = os.path.getmtime(_wal_path)
+            if (now - _mtime) < 30:
+                _db_recently_written = True
+                break
+        except: pass
     if os.path.exists(db):
         try:
             import sqlite3
@@ -13335,12 +13389,23 @@ for _pdir in profile_dirs:
         return None
     def check_active(sid):
         if not db_conn: return True
+        # Check ooclaw plugin status first — most reliable real-time signal
+        _ost = _ooclaw_status.get(_profile_name)
+        if _ost and _ost.get('sessionId') == sid:
+            st = _ost.get('claudeStatus', '')
+            if st in ('processing', 'running_tool', 'waiting'):
+                return True
         try:
             latest_sid = _find_latest_session(sid)
             row = db_conn.execute('SELECT ended_at, started_at FROM sessions WHERE id=?', (latest_sid,)).fetchone()
             if not row: return True
             ended_at, started_at = row
             if ended_at is not None: return False
+            # If the DB/WAL was written to in the last 30s, Hermes is actively
+            # writing — the session is definitely processing right now.
+            if _db_recently_written: return True
+            # Hermes batches message writes — during active processing, the DB
+            # may not have the latest messages yet.  Use a generous window.
             last = db_conn.execute(
                 "SELECT role, tool_calls, timestamp FROM messages "
                 "WHERE session_id=? AND role NOT IN ('session_meta','system','metadata') "
@@ -13348,11 +13413,19 @@ for _pdir in profile_dirs:
             if not last: return True
             role, tool_calls, ts = last
             age = now - ts if ts else 9999
+            # If the last user message was sent recently, Hermes is likely
+            # still processing (messages are flushed after the full turn).
             if role in ('user', 'human'): return True
             if role == 'tool': return True
             if role == 'assistant':
-                return bool(tool_calls) or age < 5
-            return age < 10
+                # tool_calls means a tool is pending/running
+                if bool(tool_calls): return True
+                # Final text response: Hermes flushes all messages at once
+                # after a turn completes.  A short age means the turn JUST
+                # finished — not currently processing.  But we still treat
+                # it as active for a brief window so the UI doesn't flicker.
+                return age < 30
+            return age < 30
         except: pass
         return True
     _pfx = '' if _profile_name == 'default' else _profile_name + ':'
@@ -13368,9 +13441,11 @@ for _pdir in profile_dirs:
                 active = check_active(sid) if sid else True
                 # Gateway often updates sessions.json before message rows are flushed.
                 # If DB says inactive but updated_at is very recent, treat as active.
+                # Hermes gateway updates sessions.json at the START of each turn,
+                # and complex tasks can take several minutes.  Use a generous window.
                 if not active:
                     uts = _parse_updated_ts(updated)
-                    if uts and (now - uts) < 45:
+                    if uts and (now - uts) < 600:
                         active = True
                 label = plat
                 if _profile_name != 'default': label = _profile_name + ('/' + plat if plat else '')
@@ -13383,7 +13458,8 @@ for _pdir in profile_dirs:
                     except: pass
                 results.append({'sessionId': _pfx + sid, 'platform': label, 'updatedAt': updated,
                                 'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
-                                'startedAt': last_ts})
+                                'startedAt': last_ts,
+                                'ooclaw': _ooclaw_status.get(_profile_name) if _ooclaw_status.get(_profile_name, {}).get('sessionId') == sid else None})
         except: pass
     if db_conn:
         try:
