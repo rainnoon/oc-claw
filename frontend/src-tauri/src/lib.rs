@@ -13518,18 +13518,32 @@ try:
     checks['gateway_running'] = len(out.split()) > 0
     checks['gateway_pids'] = out.split()
 except: checks['gateway_running'] = False
-# Check ooclaw plugin status
-plugin_dir = os.path.join(hermes_dir, 'plugins', 'ooclaw')
-checks['plugin_installed'] = os.path.exists(os.path.join(plugin_dir, '__init__.py'))
-# Check if plugin is enabled in config.yaml
+# Check ooclaw plugin status — check all profile dirs
+checks['plugin_installed'] = False
 checks['plugin_enabled'] = False
-config_path = os.path.join(hermes_dir, 'config.yaml')
-if os.path.exists(config_path):
-    try:
-        with open(config_path) as f:
-            content = f.read()
-        checks['plugin_enabled'] = 'ooclaw' in content
-    except: pass
+_check_dirs = [hermes_dir] + glob.glob(os.path.join(hermes_dir, 'profiles', '*'))
+for _cd in _check_dirs:
+    _pd = os.path.join(_cd, 'plugins', 'ooclaw')
+    if os.path.exists(os.path.join(_pd, '__init__.py')):
+        checks['plugin_installed'] = True
+        # Check if enabled via hermes CLI (look for enabled marker or config reference)
+        _cfg = os.path.join(_cd, 'config.yaml')
+        if os.path.exists(_cfg):
+            try:
+                with open(_cfg) as f:
+                    content = f.read()
+                if 'ooclaw' in content:
+                    checks['plugin_enabled'] = True
+            except: pass
+        # Also check plugins state file
+        _state = os.path.join(_cd, 'plugins', '.enabled')
+        if os.path.exists(_state):
+            try:
+                with open(_state) as f:
+                    if 'ooclaw' in f.read():
+                        checks['plugin_enabled'] = True
+            except: pass
+        break
 # Check profiles
 profiles = ['default']
 profiles_root = os.path.join(hermes_dir, 'profiles')
@@ -13732,10 +13746,22 @@ def register(ctx):
 
     // Build a Python script that writes the plugin files and enables it
     let install_script = format!(r#"
-import json, os, subprocess
+import json, os, subprocess, glob
 
 hermes_dir = os.path.expanduser('~/.hermes')
-plugin_dir = os.path.join(hermes_dir, 'plugins', 'ooclaw')
+
+# Detect active profile — plugin must go into the profile's plugins dir
+# Hermes uses HERMES_HOME = ~/.hermes/profiles/<name> when a profile is active
+profile_dirs = glob.glob(os.path.join(hermes_dir, 'profiles', '*'))
+# Find the most recently used profile (by config.yaml mtime)
+best_home = hermes_dir
+for pd in profile_dirs:
+    cfg = os.path.join(pd, 'config.yaml')
+    if os.path.exists(cfg):
+        best_home = pd
+        break  # usually only one profile on remote servers
+
+plugin_dir = os.path.join(best_home, 'plugins', 'ooclaw')
 os.makedirs(plugin_dir, exist_ok=True)
 
 # Write plugin.yaml
