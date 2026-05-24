@@ -10935,14 +10935,28 @@ if not os.path.exists(db):
     print('[]')
     exit(0)
 conn = sqlite3.connect(db)
-def _follow_chain(s):
+def _resolve_latest_session(s):
     cur = s
+    # 1) Follow compression split chain (parent -> newest child)
     for _ in range(20):
-        child = conn.execute('SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1', (cur,)).fetchone()
-        if not child: break
+        child = conn.execute(
+            'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
+            (cur,)).fetchone()
+        if not child:
+            break
         cur = child[0]
+    # 2) Hermes gateway may fork per-thread ids like "<sid>:om_xxx"
+    # that do not always use parent_session_id. Prefer the newest id
+    # matching either the original sid prefix or the chained sid prefix.
+    row = conn.execute(
+        'SELECT id FROM sessions WHERE (id = ? OR id LIKE ? OR id = ? OR id LIKE ?) '
+        'ORDER BY started_at DESC LIMIT 1',
+        (s, s + ':%', cur, cur + ':%')
+    ).fetchone()
+    if row:
+        cur = row[0]
     return cur
-sid = _follow_chain(raw_sid) if raw_sid else ''
+sid = _resolve_latest_session(raw_sid) if raw_sid else ''
 _q = ('SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
       'FROM messages WHERE role IN ("user","assistant","tool")')
 if sid:
@@ -13278,14 +13292,24 @@ for _pdir in profile_dirs:
             db_conn = sqlite3.connect(db)
         except: pass
     def _find_latest_session(sid):
-        """Follow parent_session_id chain to the newest child session."""
+        """Resolve newest session id for this logical thread."""
         current = sid
+        # 1) Follow compression split chain
         for _ in range(20):
             child = db_conn.execute(
                 'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
                 (current,)).fetchone()
-            if not child: break
+            if not child:
+                break
             current = child[0]
+        # 2) Also match thread-forked ids like "<sid>:om_xxx"
+        row = db_conn.execute(
+            'SELECT id FROM sessions WHERE (id = ? OR id LIKE ? OR id = ? OR id LIKE ?) '
+            'ORDER BY started_at DESC LIMIT 1',
+            (sid, sid + ':%', current, current + ':%')
+        ).fetchone()
+        if row:
+            current = row[0]
         return current
     def check_active(sid):
         if not db_conn: return True
