@@ -13774,13 +13774,28 @@ with open(os.path.join(plugin_dir, '__init__.py'), 'w') as f:
 
 # Try to enable via hermes CLI
 result = {{"installed": True, "enabled": False, "method": "none"}}
-try:
-    out = subprocess.run(['hermes', 'plugins', 'enable', 'ooclaw'],
-                        capture_output=True, text=True, timeout=5)
-    if out.returncode == 0:
-        result["enabled"] = True
-        result["method"] = "cli"
-except:
+import shutil
+hermes_bin = shutil.which('hermes')
+if not hermes_bin:
+    # Common locations for hermes installed via uv
+    for p in [os.path.expanduser('~/.local/bin/hermes'),
+              os.path.expanduser('~/.local/share/uv/tools/hermes-agent/bin/hermes'),
+              '/usr/local/bin/hermes']:
+        if os.path.exists(p):
+            hermes_bin = p
+            break
+if hermes_bin:
+    try:
+        out = subprocess.run([hermes_bin, 'plugins', 'enable', 'ooclaw'],
+                            capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            result["enabled"] = True
+            result["method"] = "cli"
+        else:
+            result["enable_error"] = out.stderr or out.stdout
+    except Exception as e:
+        result["enable_error"] = str(e)
+if not result["enabled"]:
     # Fallback: patch config.yaml
     config_path = os.path.join(hermes_dir, 'config.yaml')
     if os.path.exists(config_path):
