@@ -13269,14 +13269,28 @@ for _pdir in profile_dirs:
             import sqlite3
             db_conn = sqlite3.connect(db)
         except: pass
+    def _find_latest_session(sid):
+        """Follow parent_session_id chain to the newest child session."""
+        current = sid
+        for _ in range(20):
+            child = db_conn.execute(
+                'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
+                (current,)).fetchone()
+            if not child: break
+            current = child[0]
+        return current
     def check_active(sid):
         if not db_conn: return True
         try:
-            row = db_conn.execute('SELECT ended_at, started_at FROM sessions WHERE id=?', (sid,)).fetchone()
+            latest_sid = _find_latest_session(sid)
+            row = db_conn.execute('SELECT ended_at, started_at FROM sessions WHERE id=?', (latest_sid,)).fetchone()
             if not row: return True
             ended_at, started_at = row
             if ended_at is not None: return False
-            last = db_conn.execute('SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? ORDER BY timestamp DESC LIMIT 1', (sid,)).fetchone()
+            last = db_conn.execute(
+                "SELECT role, tool_calls, timestamp FROM messages "
+                "WHERE session_id=? AND role NOT IN ('session_meta','system','metadata') "
+                "ORDER BY timestamp DESC LIMIT 1", (latest_sid,)).fetchone()
             if not last: return True
             role, tool_calls, ts = last
             age = now - ts if ts else 9999
@@ -13303,12 +13317,21 @@ for _pdir in profile_dirs:
                 last_ts = now
                 if db_conn and sid:
                     try:
-                        lts = db_conn.execute('SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
+                        _lsid2 = _find_latest_session(sid)
+                        lts = db_conn.execute("SELECT MAX(timestamp) FROM messages WHERE session_id=? AND role NOT IN ('session_meta','system','metadata')", (_lsid2,)).fetchone()[0]
                         if lts: last_ts = lts
                     except: pass
+                _dbg = ''
+                if db_conn and sid:
+                    try:
+                        _lsid = _find_latest_session(sid)
+                        lr = db_conn.execute("SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? AND role NOT IN ('session_meta','system','metadata') ORDER BY timestamp DESC LIMIT 1", (_lsid,)).fetchone()
+                        if lr: _dbg = 'role=%s tc=%s age=%.0f sid=%s' % (lr[0], bool(lr[1]), now-lr[2] if lr[2] else -1, _lsid[:12])
+                        else: _dbg = 'no_msgs sid=%s' % _lsid[:12]
+                    except: _dbg = 'err'
                 results.append({'sessionId': _pfx + sid, 'platform': label, 'updatedAt': updated,
                                 'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
-                                'startedAt': last_ts})
+                                'startedAt': last_ts, 'debug': _dbg})
         except: pass
     if db_conn:
         try:
