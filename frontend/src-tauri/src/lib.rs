@@ -13824,11 +13824,17 @@ if not result["enabled"]:
 # Restart all gateway processes so they load the new plugin
 result["restarted"] = []
 if hermes_bin:
-    # Restart default gateway
+    import time
+    # Kill existing gateway processes first
     try:
-        out = subprocess.run([hermes_bin, 'gateway', 'run', '--replace'],
-                            capture_output=True, text=True, timeout=10,
-                            start_new_session=True)
+        subprocess.run(['pkill', '-f', 'hermes.*gateway'], capture_output=True, timeout=3)
+        time.sleep(1)
+    except: pass
+    # Restart default gateway (Popen so we don't block)
+    try:
+        subprocess.Popen([hermes_bin, 'gateway', 'run'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        start_new_session=True)
         result["restarted"].append("default")
     except: pass
     # Restart named profile gateways
@@ -13836,12 +13842,12 @@ if hermes_bin:
         if pd == hermes_dir: continue
         profile_name = os.path.basename(pd)
         try:
-            subprocess.Popen([hermes_bin, '--profile', profile_name, 'gateway', 'run', '--replace'],
+            subprocess.Popen([hermes_bin, '--profile', profile_name, 'gateway', 'run'],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            start_new_session=True)
             result["restarted"].append(profile_name)
         except: pass
-    import time; time.sleep(2)  # Wait a moment for gateways to start
+    time.sleep(2)  # Wait a moment for gateways to start
 
 print(json.dumps(result))
 "#, plugin_yaml = plugin_yaml.replace("'''", "\\'''"), init_py = init_py.replace("'''", "\\'''"));
