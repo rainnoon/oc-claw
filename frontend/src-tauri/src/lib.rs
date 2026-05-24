@@ -10929,85 +10929,121 @@ async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json
 async fn get_hermes_remote_recent_activity(ssh_host: String, ssh_user: String, session_id: String) -> Result<Vec<serde_json::Value>, String> {
     let sid_escaped = session_id.replace('\'', "");
     let py_script = format!(r#"
-import json, os, sqlite3, sys
+import json, os, sqlite3, sys, time
 raw_sid = '{sid}'
 profile = 'default'
 if ':' in raw_sid:
     profile, raw_sid = raw_sid.split(':', 1)
 if profile == 'default':
     db = os.path.expanduser('~/.hermes/state.db')
+    status_file = os.path.expanduser('~/.hermes/ooclaw-status.json')
 else:
     db = os.path.expanduser('~/.hermes/profiles/' + profile + '/state.db')
-if not os.path.exists(db):
-    print('[]')
-    exit(0)
-conn = sqlite3.connect(db)
-def _resolve_latest_session(s):
-    cur = s
-    # 1) Follow compression split chain (parent -> newest child)
-    for _ in range(20):
-        child = conn.execute(
-            'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
-            (cur,)).fetchone()
-        if not child:
-            break
-        cur = child[0]
-    # 2) Hermes gateway may fork per-thread ids like "<sid>:om_xxx"
-    # that do not always use parent_session_id. Prefer the newest id
-    # matching either the original sid prefix or the chained sid prefix.
-    row = conn.execute(
-        'SELECT id FROM sessions WHERE (id = ? OR id LIKE ? OR id = ? OR id LIKE ?) '
-        'ORDER BY started_at DESC LIMIT 1',
-        (s, s + ':%', cur, cur + ':%')
-    ).fetchone()
-    if row:
-        cur = row[0]
-    return cur
-sid = _resolve_latest_session(raw_sid) if raw_sid else ''
-_q = ('SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
-      'FROM messages WHERE role IN ("user","assistant","tool")')
-if sid:
-    cur = conn.execute(_q + ' AND session_id = ? ORDER BY timestamp DESC LIMIT 30', (sid,))
-    _rows = cur.fetchall()
-else:
-    cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
-    _rows = cur.fetchall()
-rows = []
-cid_map = {{}}
-for r in _rows:
-    role, content, tool_name, tool_calls, tool_call_id, ts = r
-    rows.append((role, content, tool_name, tool_calls, tool_call_id, ts))
-    if role == 'assistant' and tool_calls:
-        try:
-            for tc in json.loads(tool_calls):
-                cid = tc.get('id') or tc.get('call_id','')
-                fname = (tc.get('function') or {{}}).get('name','unknown')
-                if cid: cid_map[cid] = fname
-        except: pass
-conn.close()
+    status_file = os.path.expanduser('~/.hermes/profiles/' + profile + '/ooclaw-status.json')
+
 results = []
-def trunc(s, n=60):
-    return s[:n]+'...' if len(s)>n else s
-for role, content, tool_name, tool_calls, tool_call_id, ts in rows:
-    if role == 'tool':
-        name = tool_name or ''
-        if not name and tool_call_id:
-            name = cid_map.get(tool_call_id, 'tool')
-        if not name: name = 'tool'
-        results.append({{'type':'tool','summary':'\u26a1 '+name,'toolName':name,'timestamp':ts}})
-    elif role == 'assistant':
-        if tool_calls:
-            try:
-                for tc in json.loads(tool_calls):
-                    fname = (tc.get('function') or {{}}).get('name','unknown')
-                    results.append({{'type':'tool','summary':'\u26a1 '+fname,'toolName':fname,'timestamp':ts}})
-            except: pass
-        if content and content.strip():
-            results.append({{'type':'assistant','summary':trunc(content.strip()),'timestamp':ts}})
-    elif role in ('user','human'):
-        if content and content.strip():
-            results.append({{'type':'user','summary':trunc(content.strip()),'timestamp':ts}})
-print(json.dumps(results[:15]))
+now = time.time()
+
+# 1) Read real-time events from ooclaw plugin status file (tool calls in progress)
+if os.path.exists(status_file):
+    try:
+        with open(status_file) as f:
+            all_status = json.load(f)
+        # Find events for this session
+        events = all_status.get(raw_sid, [])
+        for evt in reversed(events):
+            ts = evt.get('timestamp', 0)
+            if (now - ts) > 300:
+                continue  # skip events older than 5 min
+            st = evt.get('claudeStatus', '')
+            tool = evt.get('tool', '')
+            event_name = evt.get('event', '')
+            if st == 'running_tool' and tool:
+                results.append({{'type':'tool','summary':'\u26a1 '+tool,'toolName':tool,'timestamp':ts,'live':True}})
+            elif st == 'processing':
+                results.append({{'type':'thinking','summary':'\U0001f4ad thinking...','timestamp':ts,'live':True}})
+    except: pass
+
+# 2) Supplement with DB history (completed turns)
+if os.path.exists(db):
+    try:
+        conn = sqlite3.connect(db)
+        def _resolve_latest_session(s):
+            cur = s
+            for _ in range(20):
+                child = conn.execute(
+                    'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
+                    (cur,)).fetchone()
+                if not child:
+                    break
+                cur = child[0]
+            row = conn.execute(
+                'SELECT id FROM sessions WHERE (id = ? OR id LIKE ? OR id = ? OR id LIKE ?) '
+                'ORDER BY started_at DESC LIMIT 1',
+                (s, s + ':%', cur, cur + ':%')
+            ).fetchone()
+            if row:
+                cur = row[0]
+            return cur
+        sid = _resolve_latest_session(raw_sid) if raw_sid else ''
+        _q = ('SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
+              'FROM messages WHERE role IN ("user","assistant","tool")')
+        if sid:
+            cur = conn.execute(_q + ' AND session_id = ? ORDER BY timestamp DESC LIMIT 30', (sid,))
+            _rows = cur.fetchall()
+        else:
+            cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
+            _rows = cur.fetchall()
+        cid_map = {{}}
+        for r in _rows:
+            role, content, tool_name, tool_calls, tool_call_id, ts = r
+            if role == 'assistant' and tool_calls:
+                try:
+                    for tc in json.loads(tool_calls):
+                        cid = tc.get('id') or tc.get('call_id','')
+                        fname = (tc.get('function') or {{}}).get('name','unknown')
+                        if cid: cid_map[cid] = fname
+                except: pass
+        def trunc(s, n=60):
+            return s[:n]+'...' if len(s)>n else s
+        for role, content, tool_name, tool_calls, tool_call_id, ts in _rows:
+            if role == 'tool':
+                name = tool_name or ''
+                if not name and tool_call_id:
+                    name = cid_map.get(tool_call_id, 'tool')
+                if not name: name = 'tool'
+                results.append({{'type':'tool','summary':'\u26a1 '+name,'toolName':name,'timestamp':ts}})
+            elif role == 'assistant':
+                if tool_calls:
+                    try:
+                        for tc in json.loads(tool_calls):
+                            fname = (tc.get('function') or {{}}).get('name','unknown')
+                            results.append({{'type':'tool','summary':'\u26a1 '+fname,'toolName':fname,'timestamp':ts}})
+                    except: pass
+                if content and content.strip():
+                    results.append({{'type':'assistant','summary':trunc(content.strip()),'timestamp':ts}})
+            elif role in ('user','human'):
+                if content and content.strip():
+                    results.append({{'type':'user','summary':trunc(content.strip()),'timestamp':ts}})
+        conn.close()
+    except: pass
+
+# Sort by timestamp desc, live events first, limit 15
+results.sort(key=lambda x: (x.get('live', False), x.get('timestamp', 0)), reverse=True)
+# Deduplicate: if a live tool event has same toolName as a DB event within 5s, keep only live
+seen_tools = set()
+deduped = []
+for r in results:
+    if r.get('live') and r.get('toolName'):
+        seen_tools.add(r['toolName'] + ':' + str(int(r.get('timestamp',0) // 5)))
+        deduped.append(r)
+    elif r.get('toolName'):
+        key = r['toolName'] + ':' + str(int(r.get('timestamp',0) // 5))
+        if key not in seen_tools:
+            deduped.append(r)
+    else:
+        deduped.append(r)
+print(json.dumps(deduped[:15]))
 "#, sid = sid_escaped);
     let cmd = format!("python3 -c {}", shell_escape_single(&py_script));
     let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
