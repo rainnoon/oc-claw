@@ -426,8 +426,7 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
                   setNeedsPlugin(false)
                   setTestMsg(testMsg.replace('Plugin ✗', 'Plugin ✓').replace('Plugin ✓ (未启用)', 'Plugin ✓'))
                   const targets = (r.targets || []).length
-                  const restarted = (r.restarted || []).join(', ')
-                  setInstallMsg(`✓ 安装成功 · ${targets} 个 profile · 已重启: ${restarted || '无'}`)
+                  setInstallMsg(`✓ 安装成功 · ${targets} 个 profile · Gateway 重启中，约 1 分钟后生效`)
                 } else {
                   setInstallMsg(`✗ 安装失败: ${r.enable_error || r.error || '未知错误'}`)
                 }

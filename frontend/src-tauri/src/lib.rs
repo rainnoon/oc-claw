@@ -13824,45 +13824,35 @@ if not result["enabled"]:
 # Restart all gateway processes so they load the new plugin
 result["restarted"] = []
 if hermes_bin:
-    import time
-    # Kill existing gateway processes by matching exact command patterns
-    # Use /proc to find real gateway processes (not our SSH python session)
+    # Just kill existing gateways — they will be auto-restarted by systemd/supervisor
+    # or the user can restart manually. We use a separate nohup command so it
+    # doesn't interfere with this SSH session.
     try:
-        my_pid = os.getpid()
-        my_ppid = os.getppid()
-        exclude_pids = {my_pid, my_ppid}
-        for pid_dir in glob.glob('/proc/[0-9]*'):
-            try:
-                pid = int(os.path.basename(pid_dir))
-                if pid in exclude_pids:
-                    continue
-                with open(os.path.join(pid_dir, 'cmdline'), 'rb') as f:
-                    cmdline = f.read().decode('utf-8', errors='ignore')
-                # Match actual hermes gateway processes (null-separated args)
-                if 'hermes' in cmdline and 'gateway' in cmdline and 'python' not in cmdline:
-                    subprocess.run(['kill', str(pid)], capture_output=True, timeout=2)
-            except (PermissionError, FileNotFoundError, ProcessLookupError, ValueError):
-                continue
-        time.sleep(1)
-    except: pass
-    # Restart default gateway (Popen so we don't block)
-    try:
-        subprocess.Popen([hermes_bin, 'gateway', 'run'],
+        restart_script = f'''
+import subprocess, glob, os, time
+hermes_bin = "{hermes_bin}"
+# Kill old gateways
+subprocess.run(["pkill", "-f", "hermes.*gateway"], capture_output=True, timeout=3)
+time.sleep(2)
+# Start default
+subprocess.Popen([hermes_bin, "gateway", "run"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+# Start named profiles
+profiles_root = os.path.expanduser("~/.hermes/profiles")
+if os.path.isdir(profiles_root):
+    for pd in glob.glob(os.path.join(profiles_root, "*")):
+        if os.path.isdir(pd) and os.path.exists(os.path.join(pd, "config.yaml")):
+            pname = os.path.basename(pd)
+            subprocess.Popen([hermes_bin, "--profile", pname, "gateway", "run"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+'''
+        # Write restart script and run it detached (won't block or kill our session)
+        restart_path = '/tmp/_ooclaw_restart_gw.py'
+        with open(restart_path, 'w') as f:
+            f.write(restart_script)
+        subprocess.Popen(['nohup', 'python3', restart_path],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         start_new_session=True)
-        result["restarted"].append("default")
+        result["restarted"].append("scheduled")
     except: pass
-    # Restart named profile gateways
-    for pd in install_targets:
-        if pd == hermes_dir: continue
-        profile_name = os.path.basename(pd)
-        try:
-            subprocess.Popen([hermes_bin, '--profile', profile_name, 'gateway', 'run'],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           start_new_session=True)
-            result["restarted"].append(profile_name)
-        except: pass
-    time.sleep(2)  # Wait a moment for gateways to start
 
 print(json.dumps(result))
 "#, plugin_yaml = plugin_yaml.replace("'''", "\\'''"), init_py = init_py.replace("'''", "\\'''"));
