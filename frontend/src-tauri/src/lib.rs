@@ -13821,6 +13821,28 @@ if not result["enabled"]:
         except Exception as e:
             result["error"] = str(e)
 
+# Restart all gateway processes so they load the new plugin
+result["restarted"] = []
+if hermes_bin:
+    # Restart default gateway
+    try:
+        out = subprocess.run([hermes_bin, 'gateway', 'run', '--replace'],
+                            capture_output=True, text=True, timeout=10,
+                            start_new_session=True)
+        result["restarted"].append("default")
+    except: pass
+    # Restart named profile gateways
+    for pd in install_targets:
+        if pd == hermes_dir: continue
+        profile_name = os.path.basename(pd)
+        try:
+            subprocess.Popen([hermes_bin, '--profile', profile_name, 'gateway', 'run', '--replace'],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           start_new_session=True)
+            result["restarted"].append(profile_name)
+        except: pass
+    import time; time.sleep(2)  # Wait a moment for gateways to start
+
 print(json.dumps(result))
 "#, plugin_yaml = plugin_yaml.replace("'''", "\\'''"), init_py = init_py.replace("'''", "\\'''"));
 
