@@ -13750,51 +13750,53 @@ import json, os, subprocess, glob
 
 hermes_dir = os.path.expanduser('~/.hermes')
 
-# Detect active profile — plugin must go into the profile's plugins dir
-# Hermes uses HERMES_HOME = ~/.hermes/profiles/<name> when a profile is active
-profile_dirs = glob.glob(os.path.join(hermes_dir, 'profiles', '*'))
-# Find the most recently used profile (by config.yaml mtime)
-best_home = hermes_dir
-for pd in profile_dirs:
-    cfg = os.path.join(pd, 'config.yaml')
-    if os.path.exists(cfg):
-        best_home = pd
-        break  # usually only one profile on remote servers
+# Install to ALL profiles + hermes root (for default profile)
+# This ensures every gateway instance gets the plugin.
+install_targets = [hermes_dir]  # hermes root = default profile
+profiles_root = os.path.join(hermes_dir, 'profiles')
+if os.path.isdir(profiles_root):
+    for pd in glob.glob(os.path.join(profiles_root, '*')):
+        if os.path.isdir(pd) and os.path.exists(os.path.join(pd, 'config.yaml')):
+            install_targets.append(pd)
 
-plugin_dir = os.path.join(best_home, 'plugins', 'ooclaw')
-os.makedirs(plugin_dir, exist_ok=True)
-
-# Write plugin.yaml
-with open(os.path.join(plugin_dir, 'plugin.yaml'), 'w') as f:
-    f.write('''{plugin_yaml}''')
-
-# Write __init__.py
-with open(os.path.join(plugin_dir, '__init__.py'), 'w') as f:
-    f.write('''{init_py}''')
-
-# Try to enable via hermes CLI
-result = {{"installed": True, "enabled": False, "method": "none"}}
+result = {{"installed": True, "enabled": False, "method": "none", "targets": []}}
 import shutil
 hermes_bin = shutil.which('hermes')
 if not hermes_bin:
-    # Common locations for hermes installed via uv
     for p in [os.path.expanduser('~/.local/bin/hermes'),
               os.path.expanduser('~/.local/share/uv/tools/hermes-agent/bin/hermes'),
               '/usr/local/bin/hermes']:
         if os.path.exists(p):
             hermes_bin = p
             break
+
+for target_dir in install_targets:
+    plugin_dir = os.path.join(target_dir, 'plugins', 'ooclaw')
+    os.makedirs(plugin_dir, exist_ok=True)
+    with open(os.path.join(plugin_dir, 'plugin.yaml'), 'w') as f:
+        f.write('''{plugin_yaml}''')
+    with open(os.path.join(plugin_dir, '__init__.py'), 'w') as f:
+        f.write('''{init_py}''')
+    result["targets"].append(target_dir)
+
+# Enable via hermes CLI for each profile
 if hermes_bin:
+    # Enable for default
     try:
         out = subprocess.run([hermes_bin, 'plugins', 'enable', 'ooclaw'],
                             capture_output=True, text=True, timeout=5)
         if out.returncode == 0:
             result["enabled"] = True
             result["method"] = "cli"
-        else:
-            result["enable_error"] = out.stderr or out.stdout
-    except Exception as e:
-        result["enable_error"] = str(e)
+    except: pass
+    # Enable for each named profile
+    for pd in install_targets:
+        if pd == hermes_dir: continue
+        profile_name = os.path.basename(pd)
+        try:
+            subprocess.run([hermes_bin, '--profile', profile_name, 'plugins', 'enable', 'ooclaw'],
+                          capture_output=True, text=True, timeout=5)
+        except: pass
 if not result["enabled"]:
     # Fallback: patch config.yaml
     config_path = os.path.join(hermes_dir, 'config.yaml')
