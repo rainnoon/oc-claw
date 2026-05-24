@@ -13363,15 +13363,6 @@ for _pdir in profile_dirs:
     db = os.path.join(_pdir, 'state.db')
     _profile_name = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
     db_conn = None
-    # Check if state.db WAL is recently modified (indicates active writing)
-    _db_recently_written = False
-    for _wal_path in [db + '-wal', db]:
-        try:
-            _mtime = os.path.getmtime(_wal_path)
-            if (now - _mtime) < 30:
-                _db_recently_written = True
-                break
-        except: pass
     if os.path.exists(db):
         try:
             import sqlite3
@@ -13397,71 +13388,19 @@ for _pdir in profile_dirs:
         if row:
             current = row[0]
         return current
-    def _parse_updated_ts(v):
-        if v is None:
-            return None
-        if isinstance(v, (int, float)):
-            return float(v)
-        if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return None
-            # Try numeric string first
-            try:
-                return float(s)
-            except:
-                pass
-            # Try ISO time like 2026-05-24T10:31:12Z
-            try:
-                if s.endswith('Z'):
-                    s = s[:-1] + '+00:00'
-                return datetime.datetime.fromisoformat(s).timestamp()
-            except:
-                return None
-        return None
     def check_active(sid):
-        if not db_conn: return True
-        # Check ooclaw plugin status first — most reliable real-time signal
+        # Only use ooclaw plugin status file — same logic as OpenClaw's JSONL tail.
+        # No DB/WAL heuristics. Plugin must be installed for remote detection to work.
         _prof_status = _ooclaw_status.get(_profile_name, {})
         _sid_events = _prof_status.get(sid, [])
         if _sid_events:
             _last_evt = _sid_events[-1]
             st = _last_evt.get('claudeStatus', '')
-            if st in ('processing', 'running_tool', 'waiting'):
-                return True
-        try:
-            latest_sid = _find_latest_session(sid)
-            row = db_conn.execute('SELECT ended_at, started_at FROM sessions WHERE id=?', (latest_sid,)).fetchone()
-            if not row: return True
-            ended_at, started_at = row
-            if ended_at is not None: return False
-            # If the DB/WAL was written to in the last 30s, Hermes is actively
-            # writing — the session is definitely processing right now.
-            if _db_recently_written: return True
-            # Hermes batches message writes — during active processing, the DB
-            # may not have the latest messages yet.  Use a generous window.
-            last = db_conn.execute(
-                "SELECT role, tool_calls, timestamp FROM messages "
-                "WHERE session_id=? AND role NOT IN ('session_meta','system','metadata') "
-                "ORDER BY timestamp DESC LIMIT 1", (latest_sid,)).fetchone()
-            if not last: return True
-            role, tool_calls, ts = last
-            age = now - ts if ts else 9999
-            # If the last user message was sent recently, Hermes is likely
-            # still processing (messages are flushed after the full turn).
-            if role in ('user', 'human'): return True
-            if role == 'tool': return True
-            if role == 'assistant':
-                # tool_calls means a tool is pending/running
-                if bool(tool_calls): return True
-                # Final text response: Hermes flushes all messages at once
-                # after a turn completes.  A short age means the turn JUST
-                # finished — not currently processing.  But we still treat
-                # it as active for a brief window so the UI doesn't flicker.
-                return age < 30
-            return age < 30
-        except: pass
-        return True
+            # processing/running_tool/waiting = active, anything else = inactive
+            return st in ('processing', 'running_tool', 'waiting')
+        # No plugin status for this session — check if plugin has ANY recent event
+        # for this profile. If not, assume inactive (plugin not installed or session idle).
+        return False
     _pfx = '' if _profile_name == 'default' else _profile_name + ':'
     if os.path.exists(sj):
         try:
@@ -13472,15 +13411,7 @@ for _pdir in profile_dirs:
                 plat = v.get('platform','')
                 if plat in ('cron',): continue
                 updated = v.get('updated_at','')
-                active = check_active(sid) if sid else True
-                # Gateway often updates sessions.json before message rows are flushed.
-                # If DB says inactive but updated_at is very recent, treat as active.
-                # Hermes gateway updates sessions.json at the START of each turn,
-                # and complex tasks can take several minutes.  Use a generous window.
-                if not active:
-                    uts = _parse_updated_ts(updated)
-                    if uts and (now - uts) < 600:
-                        active = True
+                active = check_active(sid) if sid else False
                 label = plat
                 if _profile_name != 'default': label = _profile_name + ('/' + plat if plat else '')
                 last_ts = now
@@ -13508,8 +13439,7 @@ for _pdir in profile_dirs:
                 if plat_db in ('cron',): continue
                 seen.add(_pfx + sid)
                 latest_sid = _find_latest_session(sid)
-                active = r[4] is None
-                if active: active = check_active(sid)
+                active = check_active(sid)
                 label = plat_db
                 if _profile_name != 'default': label = _profile_name + ('/' + plat_db if plat_db else '')
                 db_last_ts = r[3]
