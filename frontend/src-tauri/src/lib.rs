@@ -10929,14 +10929,20 @@ if not os.path.exists(db):
     exit(0)
 conn = sqlite3.connect(db)
 sid = '{sid}'
+def _follow_chain(s):
+    cur = s
+    for _ in range(20):
+        child = conn.execute('SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1', (cur,)).fetchone()
+        if not child: break
+        cur = child[0]
+    return cur
+if sid:
+    sid = _follow_chain(sid)
 _q = ('SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
       'FROM messages WHERE role IN ("user","assistant","tool")')
 if sid:
     cur = conn.execute(_q + ' AND session_id = ? ORDER BY timestamp DESC LIMIT 30', (sid,))
     _rows = cur.fetchall()
-    if not _rows:
-        cur = conn.execute(_q + ' AND session_id LIKE ? ORDER BY timestamp DESC LIMIT 30', ('%'+sid+'%',))
-        _rows = cur.fetchall()
     if not _rows:
         cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
         _rows = cur.fetchall()
