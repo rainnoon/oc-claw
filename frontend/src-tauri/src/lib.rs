@@ -12798,13 +12798,38 @@ def _status_file_path():
     # Default profile uses hermes_home directly
     return os.path.join(hermes_home, "ooclaw-status.json")
 
+_MAX_EVENTS_PER_SESSION = 10
+_MAX_SESSIONS = 20
+
 def _write_status(payload):
-    \"\"\"Write status to a local file for remote SSH polling.\"\"\"
+    \"\"\"Append event to status file, keeping last N events per session.\"\"\"
     try:
         status_path = _status_file_path()
+        session_id = payload.get("sessionId", "unknown")
+        # Read existing data
+        data = {{}}
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {{}}
+            except: data = {{}}
+        # Append to this session's event list
+        if session_id not in data:
+            data[session_id] = []
+        data[session_id].append(payload)
+        # Trim to max events per session
+        if len(data[session_id]) > _MAX_EVENTS_PER_SESSION:
+            data[session_id] = data[session_id][-_MAX_EVENTS_PER_SESSION:]
+        # Trim stale sessions (keep most recent N by latest timestamp)
+        if len(data) > _MAX_SESSIONS:
+            by_ts = sorted(data.items(), key=lambda kv: (kv[1][-1].get("timestamp", 0) if kv[1] else 0), reverse=True)
+            data = dict(by_ts[:_MAX_SESSIONS])
+        # Atomic write
         tmp_path = status_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+            json.dump(data, f, ensure_ascii=False)
         os.replace(tmp_path, status_path)
     except Exception:
         pass
@@ -13312,7 +13337,7 @@ seen = set()
 results = []
 now = time.time()
 # Read ooclaw plugin status files for real-time activity info
-_ooclaw_status = {}  # profile_name -> status dict
+_ooclaw_status = {}  # profile_name -> {session_id: [events]}
 for _pdir in profile_dirs:
     _pname = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
     _sf = os.path.join(_pdir, 'ooclaw-status.json')
@@ -13322,9 +13347,16 @@ for _pdir in profile_dirs:
         if os.path.exists(_sf):
             with open(_sf) as _f:
                 _st = json.load(_f)
-            # Only trust if timestamp is recent (within 60s)
-            if _st.get('timestamp') and (now - _st['timestamp']) < 60:
-                _ooclaw_status[_pname] = _st
+            if isinstance(_st, dict):
+                # Filter: only keep sessions with recent events (within 60s)
+                _filtered = {}
+                for _sid, _evts in _st.items():
+                    if isinstance(_evts, list) and _evts:
+                        _last_ts = _evts[-1].get('timestamp', 0)
+                        if (now - _last_ts) < 60:
+                            _filtered[_sid] = _evts
+                if _filtered:
+                    _ooclaw_status[_pname] = _filtered
     except: pass
 for _pdir in profile_dirs:
     sj = os.path.join(_pdir, 'sessions', 'sessions.json')
@@ -13390,9 +13422,11 @@ for _pdir in profile_dirs:
     def check_active(sid):
         if not db_conn: return True
         # Check ooclaw plugin status first — most reliable real-time signal
-        _ost = _ooclaw_status.get(_profile_name)
-        if _ost and _ost.get('sessionId') == sid:
-            st = _ost.get('claudeStatus', '')
+        _prof_status = _ooclaw_status.get(_profile_name, {})
+        _sid_events = _prof_status.get(sid, [])
+        if _sid_events:
+            _last_evt = _sid_events[-1]
+            st = _last_evt.get('claudeStatus', '')
             if st in ('processing', 'running_tool', 'waiting'):
                 return True
         try:
@@ -13459,7 +13493,7 @@ for _pdir in profile_dirs:
                 results.append({'sessionId': _pfx + sid, 'platform': label, 'updatedAt': updated,
                                 'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
                                 'startedAt': last_ts,
-                                'ooclaw': _ooclaw_status.get(_profile_name) if _ooclaw_status.get(_profile_name, {}).get('sessionId') == sid else None})
+                                'ooclaw': _ooclaw_status.get(_profile_name, {}).get(sid)})
         except: pass
     if db_conn:
         try:
