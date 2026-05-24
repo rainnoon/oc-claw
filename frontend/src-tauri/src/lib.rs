@@ -13268,7 +13268,7 @@ print(json.dumps(rows))
 #[tauri::command]
 async fn get_hermes_remote_sessions(ssh_host: String, ssh_user: String) -> Result<Vec<serde_json::Value>, String> {
     let py_script = r#"
-import json, os, time, glob
+import json, os, time, glob, datetime
 hermes_home = os.path.expanduser('~/.hermes')
 # Collect all profile paths: default + named profiles
 profile_dirs = [hermes_home]
@@ -13311,6 +13311,28 @@ for _pdir in profile_dirs:
         if row:
             current = row[0]
         return current
+    def _parse_updated_ts(v):
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            # Try numeric string first
+            try:
+                return float(s)
+            except:
+                pass
+            # Try ISO time like 2026-05-24T10:31:12Z
+            try:
+                if s.endswith('Z'):
+                    s = s[:-1] + '+00:00'
+                return datetime.datetime.fromisoformat(s).timestamp()
+            except:
+                return None
+        return None
     def check_active(sid):
         if not db_conn: return True
         try:
@@ -13344,6 +13366,12 @@ for _pdir in profile_dirs:
                 if plat in ('cron',): continue
                 updated = v.get('updated_at','')
                 active = check_active(sid) if sid else True
+                # Gateway often updates sessions.json before message rows are flushed.
+                # If DB says inactive but updated_at is very recent, treat as active.
+                if not active:
+                    uts = _parse_updated_ts(updated)
+                    if uts and (now - uts) < 45:
+                        active = True
                 label = plat
                 if _profile_name != 'default': label = _profile_name + ('/' + plat if plat else '')
                 last_ts = now
