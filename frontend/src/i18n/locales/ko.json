@@ -148,7 +148,7 @@
     "geminiSoundDesc": "Gemini 작업 완료 시 소리 재생",
     "viewInGemini": "Gemini로 이동",
     "enableHermes": "Hermes Agent 활성화",
-    "enableHermesDesc": "플러그인으로 로컬 Hermes Agent 세션 모니터링",
+    "enableHermesDesc": "원격 연결은 테스트 후 플러그인 설치 필요. 새 Agent 추가 시 재설치 필요",
     "hermesSound": "Hermes 완료 소리",
     "hermesSoundDesc": "Hermes 작업 완료 시 소리 재생",
     "viewInHermes": "Hermes로 이동",

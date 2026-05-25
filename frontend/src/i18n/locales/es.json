@@ -148,7 +148,7 @@
     "geminiSoundDesc": "Reproducir sonido cuando Gemini termina una tarea",
     "viewInGemini": "Ir a Gemini",
     "enableHermes": "Activar Hermes Agent",
-    "enableHermesDesc": "Monitorear sesiones locales de Hermes Agent mediante Plugin",
+    "enableHermesDesc": "Remoto: probar conexión e instalar plugin. Reinstalar tras agregar nuevos Agents",
     "hermesSound": "Sonido de finalización de Hermes",
     "hermesSoundDesc": "Reproducir sonido cuando Hermes termina una tarea",
     "viewInHermes": "Ir a Hermes",

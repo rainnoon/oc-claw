@@ -119,13 +119,17 @@ function HermesDetailView({ stats, isActive, channel, sshConn, sessionId }: { st
   const [activities, setActivities] = useState<HermesActivity[]>([])
 
   useEffect(() => {
-    const cmd = sshConn
-      ? invoke('get_hermes_remote_recent_activity', { sshHost: sshConn.host, sshUser: sshConn.user, sessionId: sessionId || '' })
-      : invoke('get_hermes_recent_activity', { sessionId: sessionId || '' })
-    cmd.then((items: any) => {
-      if (!items?.length) return
-      setActivities(items.slice(0, 3))
-    }).catch(() => {})
+    const fetchActivity = () => {
+      const cmd = sshConn
+        ? invoke('get_hermes_remote_recent_activity', { sshHost: sshConn.host, sshUser: sshConn.user, sessionId: sessionId || '' })
+        : invoke('get_hermes_recent_activity', { sessionId: sessionId || '' })
+      cmd.then((items: any) => {
+        if (items?.length) setActivities(items.slice(0, 3))
+      }).catch(() => {})
+    }
+    fetchActivity()
+    const t = setInterval(fetchActivity, 5000)
+    return () => clearInterval(t)
   }, [sshConn?.host, sshConn?.user, sessionId])
 
   const fmtTime = (ts: number) => {
@@ -231,8 +235,18 @@ export function ClaudeStatsView({ source = 'cc', isActive, channel, sshConn, her
 
   useEffect(() => {
     setStats(null)
-    invoke('get_claude_stats', { source }).then((s: any) => setStats(s)).catch(() => {})
-  }, [source])
+    const fetchStats = () => {
+      const cmd = (source === 'hermes' && sshConn)
+        ? invoke('get_hermes_remote_stats', { sshHost: sshConn.host, sshUser: sshConn.user })
+        : invoke('get_claude_stats', { source })
+      cmd.then((s: any) => setStats(s)).catch(() => {})
+    }
+    fetchStats()
+    if (source === 'hermes') {
+      const t = setInterval(fetchStats, 10000)
+      return () => clearInterval(t)
+    }
+  }, [source, sshConn?.host, sshConn?.user])
 
   if (!stats) {
     return (

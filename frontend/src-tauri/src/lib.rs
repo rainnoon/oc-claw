@@ -86,23 +86,23 @@ fn unix_now() -> u64 {
 }
 
 fn ssh_backoff_remaining(host_key: &str) -> Option<u64> {
-    let map = ssh_backoff_map().lock().unwrap();
+    let map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     let state = map.get(host_key)?;
     if state.fail_count == 0 { return None; }
-    let cooldown = std::cmp::min(15u64 * 2u64.pow(state.fail_count.saturating_sub(1)), 300);
+    let cooldown = std::cmp::min(10u64 * 2u64.pow(state.fail_count.saturating_sub(1)), 60);
     let elapsed = unix_now().saturating_sub(state.fail_epoch);
     if elapsed < cooldown { Some(cooldown - elapsed) } else { None }
 }
 
 fn ssh_backoff_record_failure(host_key: &str) {
-    let mut map = ssh_backoff_map().lock().unwrap();
+    let mut map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     let state = map.entry(host_key.to_string()).or_insert(SshBackoffState { fail_count: 0, fail_epoch: 0 });
     state.fail_count += 1;
     state.fail_epoch = unix_now();
 }
 
 fn ssh_backoff_reset(host_key: &str) {
-    let mut map = ssh_backoff_map().lock().unwrap();
+    let mut map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     map.remove(host_key);
 }
 
@@ -159,7 +159,7 @@ mod win_ssh_mux {
     }
 
     fn session_lock(host_key: &str) -> Arc<TokioMutex<Option<MuxChild>>> {
-        let mut map = mux_map().lock().unwrap();
+        let mut map = mux_map().lock().unwrap_or_else(|e| e.into_inner());
         map.entry(host_key.to_string())
             .or_insert_with(|| Arc::new(TokioMutex::new(None)))
             .clone()
@@ -321,7 +321,7 @@ mod win_ssh_mux {
     /// Kill all persistent subprocesses.
     pub async fn kill_all() {
         let keys: Vec<String> = {
-            mux_map().lock().unwrap().keys().cloned().collect()
+            mux_map().lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
         };
         for key in keys {
             let lock = session_lock(&key);
@@ -828,6 +828,7 @@ fn ssh_control_path(ssh_user: &str, ssh_host: &str) -> String {
 async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
     let host_key = format!("{}@{}", ssh_user, ssh_host);
     if let Some(remaining) = ssh_backoff_remaining(&host_key) {
+        eprintln!("[ssh] {} backing off, retry in {}s", host_key, remaining);
         return Err(format!("SSH connection to {} backing off, retry in {}s", host_key, remaining));
     }
 
@@ -893,7 +894,7 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             ssh_backoff_record_failure(&host_key);
-            let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
+            let count = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner()).get(&host_key).map(|s| s.fail_count).unwrap_or(0);
             let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
             log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
             return Err(format!("SSH master failed [exit {}]: {}", code, stderr));
@@ -917,7 +918,7 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         // prevents hitting server-side MaxStartups limits.
         if let Err(e) = win_ssh_mux::ensure(ssh_user, ssh_host).await {
             ssh_backoff_record_failure(&host_key);
-            let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
+            let count = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner()).get(&host_key).map(|s| s.fail_count).unwrap_or(0);
             log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
             return Err(format!("SSH connection failed: {}", e));
         }
@@ -940,7 +941,7 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
                 let expanded = path.replace("~", &home_dir_string());
                 if std::path::Path::new(&expanded).exists() {
                     log::info!("[ssh] {} will use key: {}", host_key, expanded);
-                    ssh_key_map().lock().unwrap().insert(host_key.clone(), expanded);
+                    ssh_key_map().lock().unwrap_or_else(|e| e.into_inner()).insert(host_key.clone(), expanded);
                     break;
                 }
             }
@@ -1104,7 +1105,7 @@ fn exit_app(app: tauri::AppHandle) {
 #[tauri::command]
 fn get_ssh_key_info(ssh_host: String, ssh_user: String) -> Option<String> {
     let key = format!("{}@{}", ssh_user, ssh_host);
-    ssh_key_map().lock().unwrap().get(&key).cloned()
+    ssh_key_map().lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
 }
 
 /// Reset backoff, gracefully close the existing SSH master process, and
@@ -1120,7 +1121,7 @@ async fn reset_ssh(ssh_host: String, ssh_user: String) {
     // from piling up and conflicting with the new master.
     let _ = close_ssh_master(&ssh_host, &ssh_user).await;
     // Clear cached key info since we're starting fresh
-    ssh_key_map().lock().unwrap().remove(&host_key);
+    ssh_key_map().lock().unwrap_or_else(|e| e.into_inner()).remove(&host_key);
     log::info!("[reset_ssh] cleared backoff, killed master, and reset for {}", host_key);
 }
 
@@ -1147,7 +1148,7 @@ async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result
         #[cfg(windows)]
         { win_ssh_mux::kill_all().await; }
         // Clear all backoff entries
-        ssh_backoff_map().lock().unwrap().clear();
+        ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner()).clear();
         return Ok(());
     }
     close_ssh_master(&sh, &su).await
@@ -7572,15 +7573,22 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
          WHERE session_id = ?1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1"
     ).map_err(|e| format!("prepare user msg: {}", e))?;
 
+    // Fetch last message timestamp to determine real activity time
+    let mut last_msg_stmt = conn.prepare(
+        "SELECT MAX(timestamp) FROM messages \
+         WHERE session_id = ?1 AND role NOT IN ('session_meta', 'system', 'metadata')"
+    ).map_err(|e| format!("prepare last msg ts: {}", e))?;
+
     for row in rows {
         let (id, source, _model, started_at, ended_at, _msg_count, _input_tok, _output_tok) =
             row.map_err(|e| format!("row: {}", e))?;
 
-        let updated_at_ms = if let Some(end) = ended_at {
-            if end > 0.0 { (end * 1000.0) as u64 } else { (started_at * 1000.0) as u64 }
-        } else {
-            (started_at * 1000.0) as u64
-        };
+        // Use the last message timestamp as the true "updated_at" for sorting/status.
+        // Hermes gateway sessions never have ended_at set, and started_at can be hours old.
+        let last_msg_ts: Option<f64> = last_msg_stmt
+            .query_row(rusqlite::params![&id], |r| r.get(0)).ok().flatten();
+        let best_ts = last_msg_ts.unwrap_or(started_at);
+        let updated_at_ms = (best_ts * 1000.0) as u64;
 
         let is_active = ended_at.is_none() || ended_at == Some(0.0);
         let status = if is_active && (now_ms - updated_at_ms) < 300_000 {
@@ -10921,59 +10929,121 @@ async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json
 async fn get_hermes_remote_recent_activity(ssh_host: String, ssh_user: String, session_id: String) -> Result<Vec<serde_json::Value>, String> {
     let sid_escaped = session_id.replace('\'', "");
     let py_script = format!(r#"
-import json, os, sqlite3, sys
-db = os.path.expanduser('~/.hermes/state.db')
-if not os.path.exists(db):
-    print('[]')
-    exit(0)
-conn = sqlite3.connect(db)
-sid = '{sid}'
-if sid:
-    cur = conn.execute(
-        'SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
-        'FROM messages WHERE role IN ("user","assistant","tool") AND session_id = ? '
-        'ORDER BY timestamp DESC LIMIT 30', (sid,))
+import json, os, sqlite3, sys, time
+raw_sid = '{sid}'
+profile = 'default'
+if ':' in raw_sid:
+    profile, raw_sid = raw_sid.split(':', 1)
+if profile == 'default':
+    db = os.path.expanduser('~/.hermes/state.db')
+    status_file = os.path.expanduser('~/.hermes/ooclaw-status.json')
 else:
-    cur = conn.execute(
-        'SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
-        'FROM messages WHERE role IN ("user","assistant","tool") '
-        'ORDER BY timestamp DESC LIMIT 30')
-rows = []
-cid_map = {{}}
-for r in cur.fetchall():
-    role, content, tool_name, tool_calls, tool_call_id, ts = r
-    rows.append((role, content, tool_name, tool_calls, tool_call_id, ts))
-    if role == 'assistant' and tool_calls:
-        try:
-            for tc in json.loads(tool_calls):
-                cid = tc.get('id') or tc.get('call_id','')
-                fname = (tc.get('function') or {{}}).get('name','unknown')
-                if cid: cid_map[cid] = fname
-        except: pass
-conn.close()
+    db = os.path.expanduser('~/.hermes/profiles/' + profile + '/state.db')
+    status_file = os.path.expanduser('~/.hermes/profiles/' + profile + '/ooclaw-status.json')
+
 results = []
-def trunc(s, n=60):
-    return s[:n]+'...' if len(s)>n else s
-for role, content, tool_name, tool_calls, tool_call_id, ts in rows:
-    if role == 'tool':
-        name = tool_name or ''
-        if not name and tool_call_id:
-            name = cid_map.get(tool_call_id, 'tool')
-        if not name: name = 'tool'
-        results.append({{'type':'tool','summary':'\u26a1 '+name,'toolName':name,'timestamp':ts}})
-    elif role == 'assistant':
-        if tool_calls:
-            try:
-                for tc in json.loads(tool_calls):
-                    fname = (tc.get('function') or {{}}).get('name','unknown')
-                    results.append({{'type':'tool','summary':'\u26a1 '+fname,'toolName':fname,'timestamp':ts}})
-            except: pass
-        if content and content.strip():
-            results.append({{'type':'assistant','summary':trunc(content.strip()),'timestamp':ts}})
-    elif role in ('user','human'):
-        if content and content.strip():
-            results.append({{'type':'user','summary':trunc(content.strip()),'timestamp':ts}})
-print(json.dumps(results[:15]))
+now = time.time()
+
+# 1) Read real-time events from ooclaw plugin status file (tool calls in progress)
+if os.path.exists(status_file):
+    try:
+        with open(status_file) as f:
+            all_status = json.load(f)
+        # Find events for this session
+        events = all_status.get(raw_sid, [])
+        for evt in reversed(events):
+            ts = evt.get('timestamp', 0)
+            if (now - ts) > 300:
+                continue  # skip events older than 5 min
+            st = evt.get('claudeStatus', '')
+            tool = evt.get('tool', '')
+            event_name = evt.get('event', '')
+            if st == 'running_tool' and tool:
+                results.append({{'type':'tool','summary':'\u26a1 '+tool,'toolName':tool,'timestamp':ts,'live':True}})
+            elif st == 'processing':
+                results.append({{'type':'thinking','summary':'\U0001f4ad thinking...','timestamp':ts,'live':True}})
+    except: pass
+
+# 2) Supplement with DB history (completed turns)
+if os.path.exists(db):
+    try:
+        conn = sqlite3.connect(db)
+        def _resolve_latest_session(s):
+            cur = s
+            for _ in range(20):
+                child = conn.execute(
+                    'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
+                    (cur,)).fetchone()
+                if not child:
+                    break
+                cur = child[0]
+            row = conn.execute(
+                'SELECT id FROM sessions WHERE (id = ? OR id LIKE ? OR id = ? OR id LIKE ?) '
+                'ORDER BY started_at DESC LIMIT 1',
+                (s, s + ':%', cur, cur + ':%')
+            ).fetchone()
+            if row:
+                cur = row[0]
+            return cur
+        sid = _resolve_latest_session(raw_sid) if raw_sid else ''
+        _q = ('SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
+              'FROM messages WHERE role IN ("user","assistant","tool")')
+        if sid:
+            cur = conn.execute(_q + ' AND session_id = ? ORDER BY timestamp DESC LIMIT 30', (sid,))
+            _rows = cur.fetchall()
+        else:
+            cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
+            _rows = cur.fetchall()
+        cid_map = {{}}
+        for r in _rows:
+            role, content, tool_name, tool_calls, tool_call_id, ts = r
+            if role == 'assistant' and tool_calls:
+                try:
+                    for tc in json.loads(tool_calls):
+                        cid = tc.get('id') or tc.get('call_id','')
+                        fname = (tc.get('function') or {{}}).get('name','unknown')
+                        if cid: cid_map[cid] = fname
+                except: pass
+        def trunc(s, n=60):
+            return s[:n]+'...' if len(s)>n else s
+        for role, content, tool_name, tool_calls, tool_call_id, ts in _rows:
+            if role == 'tool':
+                name = tool_name or ''
+                if not name and tool_call_id:
+                    name = cid_map.get(tool_call_id, 'tool')
+                if not name: name = 'tool'
+                results.append({{'type':'tool','summary':'\u26a1 '+name,'toolName':name,'timestamp':ts}})
+            elif role == 'assistant':
+                if tool_calls:
+                    try:
+                        for tc in json.loads(tool_calls):
+                            fname = (tc.get('function') or {{}}).get('name','unknown')
+                            results.append({{'type':'tool','summary':'\u26a1 '+fname,'toolName':fname,'timestamp':ts}})
+                    except: pass
+                if content and content.strip():
+                    results.append({{'type':'assistant','summary':trunc(content.strip()),'timestamp':ts}})
+            elif role in ('user','human'):
+                if content and content.strip():
+                    results.append({{'type':'user','summary':trunc(content.strip()),'timestamp':ts}})
+        conn.close()
+    except: pass
+
+# Sort by timestamp desc, live events first, limit 15
+results.sort(key=lambda x: (x.get('live', False), x.get('timestamp', 0)), reverse=True)
+# Deduplicate: if a live tool event has same toolName as a DB event within 5s, keep only live
+seen_tools = set()
+deduped = []
+for r in results:
+    if r.get('live') and r.get('toolName'):
+        seen_tools.add(r['toolName'] + ':' + str(int(r.get('timestamp',0) // 5)))
+        deduped.append(r)
+    elif r.get('toolName'):
+        key = r['toolName'] + ':' + str(int(r.get('timestamp',0) // 5))
+        if key not in seen_tools:
+            deduped.append(r)
+    else:
+        deduped.append(r)
+print(json.dumps(deduped[:15]))
 "#, sid = sid_escaped);
     let cmd = format!("python3 -c {}", shell_escape_single(&py_script));
     let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
@@ -12736,8 +12806,9 @@ def _send(payload):
     let init_py = format!(
         r##"# ooclaw plugin for Hermes Agent - forwards events to oc-claw.
 from __future__ import annotations
-import json, os, socket
+import json, os, socket, time
 from typing import Any, Dict, Tuple
+from pathlib import Path
 
 {connect_code}
 
@@ -12753,6 +12824,51 @@ HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
     "pre_approval_request": ("waiting", "PermissionRequest"),
     "post_approval_response": ("processing", "PostToolUse"),
 }}
+
+def _status_file_path():
+    \"\"\"Find the ooclaw status file path under the active profile or hermes home.\"\"\"
+    hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
+    profile = os.environ.get("HERMES_PROFILE", "")
+    if profile:
+        return os.path.join(hermes_home, "profiles", profile, "ooclaw-status.json")
+    # Default profile uses hermes_home directly
+    return os.path.join(hermes_home, "ooclaw-status.json")
+
+_MAX_EVENTS_PER_SESSION = 10
+_MAX_SESSIONS = 20
+
+def _write_status(payload):
+    \"\"\"Append event to status file, keeping last N events per session.\"\"\"
+    try:
+        status_path = _status_file_path()
+        session_id = payload.get("sessionId", "unknown")
+        # Read existing data
+        data = {{}}
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {{}}
+            except: data = {{}}
+        # Append to this session's event list
+        if session_id not in data:
+            data[session_id] = []
+        data[session_id].append(payload)
+        # Trim to max events per session
+        if len(data[session_id]) > _MAX_EVENTS_PER_SESSION:
+            data[session_id] = data[session_id][-_MAX_EVENTS_PER_SESSION:]
+        # Trim stale sessions (keep most recent N by latest timestamp)
+        if len(data) > _MAX_SESSIONS:
+            by_ts = sorted(data.items(), key=lambda kv: (kv[1][-1].get("timestamp", 0) if kv[1] else 0), reverse=True)
+            data = dict(by_ts[:_MAX_SESSIONS])
+        # Atomic write
+        tmp_path = status_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, status_path)
+    except Exception:
+        pass
 
 def _handle(event_name, **kwargs):
     mapping = HOOK_TO_EVENT.get(event_name)
@@ -12785,6 +12901,7 @@ def _handle(event_name, **kwargs):
         "source": "hermes",
         "pid": os.getpid(),
         "platform": platform,
+        "timestamp": time.time(),
     }}
     if tool_name:
         payload["tool"] = tool_name
@@ -12799,6 +12916,7 @@ def _handle(event_name, **kwargs):
         if resp and isinstance(resp, str):
             payload["lastResponse"] = resp[:2000]
     _send(payload)
+    _write_status(payload)
 
 def _make_cb(event_name):
     def cb(**kwargs):
@@ -13241,86 +13359,137 @@ print(json.dumps(rows))
 #[tauri::command]
 async fn get_hermes_remote_sessions(ssh_host: String, ssh_user: String) -> Result<Vec<serde_json::Value>, String> {
     let py_script = r#"
-import json, os, time
-sj = os.path.expanduser('~/.hermes/sessions/sessions.json')
-db = os.path.expanduser('~/.hermes/state.db')
+import json, os, time, glob, datetime
+hermes_home = os.path.expanduser('~/.hermes')
+# Collect all profile paths: default + named profiles
+profile_dirs = [hermes_home]
+profiles_root = os.path.join(hermes_home, 'profiles')
+if os.path.isdir(profiles_root):
+    for name in os.listdir(profiles_root):
+        p = os.path.join(profiles_root, name)
+        if os.path.isdir(p):
+            profile_dirs.append(p)
 seen = set()
 results = []
 now = time.time()
-# Helper: check if session is actually active via DB
-db_conn = None
-if os.path.exists(db):
+# Read ooclaw plugin status files for real-time activity info
+_ooclaw_status = {}  # profile_name -> {session_id: [events]}
+for _pdir in profile_dirs:
+    _pname = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
+    _sf = os.path.join(_pdir, 'ooclaw-status.json')
+    if not os.path.exists(_sf):
+        _sf = os.path.join(hermes_home, 'ooclaw-status.json') if _pname == 'default' else _sf
     try:
-        import sqlite3
-        db_conn = sqlite3.connect(db)
+        if os.path.exists(_sf):
+            with open(_sf) as _f:
+                _st = json.load(_f)
+            if isinstance(_st, dict):
+                # Keep all sessions — active state is determined by last event's
+                # claudeStatus, not by time. Same approach as OpenClaw's JSONL tail.
+                _filtered = {}
+                for _sid, _evts in _st.items():
+                    if isinstance(_evts, list) and _evts:
+                        _filtered[_sid] = _evts
+                if _filtered:
+                    _ooclaw_status[_pname] = _filtered
     except: pass
-def check_active(sid):
-    if not db_conn: return True
-    try:
-        row = db_conn.execute('SELECT ended_at FROM sessions WHERE id=?', (sid,)).fetchone()
+for _pdir in profile_dirs:
+    sj = os.path.join(_pdir, 'sessions', 'sessions.json')
+    db = os.path.join(_pdir, 'state.db')
+    _profile_name = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
+    db_conn = None
+    if os.path.exists(db):
+        try:
+            import sqlite3
+            db_conn = sqlite3.connect(db)
+        except: pass
+    def _find_latest_session(sid):
+        """Resolve newest session id for this logical thread."""
+        current = sid
+        # 1) Follow compression split chain
+        for _ in range(20):
+            child = db_conn.execute(
+                'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
+                (current,)).fetchone()
+            if not child:
+                break
+            current = child[0]
+        # 2) Also match thread-forked ids like "<sid>:om_xxx"
+        row = db_conn.execute(
+            'SELECT id FROM sessions WHERE (id = ? OR id LIKE ? OR id = ? OR id LIKE ?) '
+            'ORDER BY started_at DESC LIMIT 1',
+            (sid, sid + ':%', current, current + ':%')
+        ).fetchone()
         if row:
-            ended = row[0]
-            if ended is not None and ended != 0 and ended != '' and ended != 'None':
-                return False
-        last_ts = db_conn.execute('SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
-        if last_ts:
-            if isinstance(last_ts, (int,float)) and (now - last_ts) > 120:
-                return False
-        else:
-            started = db_conn.execute('SELECT started_at FROM sessions WHERE id=?', (sid,)).fetchone()
-            if started and started[0] and isinstance(started[0], (int,float)) and (now - started[0]) > 300:
-                return False
-    except: pass
-    return True
-# Active gateway sessions from sessions.json
-if os.path.exists(sj):
-    try:
-        data = json.load(open(sj))
-        for key, v in data.items():
-            sid = v.get('session_id','')
-            if sid: seen.add(sid)
-            plat = v.get('platform','')
-            if plat in ('cli','terminal','','cron'): continue
-            updated = v.get('updated_at','')
-            active = check_active(sid) if sid else True
-            results.append({'sessionId': sid, 'platform': plat, 'updatedAt': updated,
-                            'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
-                            'startedAt': now})
-    except: pass
-# Recent sessions from state.db (last 2h)
-if db_conn:
-    try:
-        cutoff = now - 7200
-        cur = db_conn.execute(
-            'SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens '
-            'FROM sessions WHERE started_at > ? ORDER BY started_at DESC LIMIT 20', (cutoff,))
-        for r in cur.fetchall():
-            sid = r[0]
-            if sid in seen: continue
-            plat_db = r[1] or ''
-            if plat_db in ('cli','terminal','','cron'): continue
-            seen.add(sid)
-            ended = r[4]
-            active = ended is None or ended == 0 or ended == '' or ended == 'None'
-            if active:
+            current = row[0]
+        return current
+    def check_active(sid):
+        # Only use ooclaw plugin status file — same logic as OpenClaw's JSONL tail.
+        # No DB/WAL heuristics. Plugin must be installed for remote detection to work.
+        _prof_status = _ooclaw_status.get(_profile_name, {})
+        _sid_events = _prof_status.get(sid, [])
+        if _sid_events:
+            _last_evt = _sid_events[-1]
+            st = _last_evt.get('claudeStatus', '')
+            # processing/running_tool/waiting = active, anything else = inactive
+            return st in ('processing', 'running_tool', 'waiting')
+        # No plugin status for this session — check if plugin has ANY recent event
+        # for this profile. If not, assume inactive (plugin not installed or session idle).
+        return False
+    _pfx = '' if _profile_name == 'default' else _profile_name + ':'
+    if os.path.exists(sj):
+        try:
+            data = json.load(open(sj))
+            for key, v in data.items():
+                sid = v.get('session_id','')
+                if sid: seen.add(_pfx + sid)
+                plat = v.get('platform','')
+                if plat in ('cron',): continue
+                updated = v.get('updated_at','')
+                active = check_active(sid) if sid else False
+                label = plat
+                if _profile_name != 'default': label = _profile_name + ('/' + plat if plat else '')
+                last_ts = now
+                if db_conn and sid:
+                    try:
+                        _lsid2 = _find_latest_session(sid)
+                        lts = db_conn.execute("SELECT MAX(timestamp) FROM messages WHERE session_id=? AND role NOT IN ('session_meta','system','metadata')", (_lsid2,)).fetchone()[0]
+                        if lts: last_ts = lts
+                    except: pass
+                results.append({'sessionId': _pfx + sid, 'platform': label, 'updatedAt': updated,
+                                'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
+                                'startedAt': last_ts,
+                                'ooclaw': _ooclaw_status.get(_profile_name, {}).get(sid)})
+        except: pass
+    if db_conn:
+        try:
+            cutoff = now - 7200
+            cur = db_conn.execute(
+                'SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens '
+                'FROM sessions WHERE started_at > ? AND parent_session_id IS NULL ORDER BY started_at DESC LIMIT 20', (cutoff,))
+            for r in cur.fetchall():
+                sid = r[0]
+                if (_pfx + sid) in seen: continue
+                plat_db = r[1] or ''
+                if plat_db in ('cron',): continue
+                seen.add(_pfx + sid)
+                latest_sid = _find_latest_session(sid)
+                active = check_active(sid)
+                label = plat_db
+                if _profile_name != 'default': label = _profile_name + ('/' + plat_db if plat_db else '')
+                db_last_ts = r[3]
                 try:
-                    last_ts = db_conn.execute(
-                        'SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
-                    if last_ts and isinstance(last_ts, (int,float)) and (now - last_ts) > 120:
-                        active = False
-                    elif not last_ts:
-                        sa = r[3]
-                        if sa and isinstance(sa, (int,float)) and (now - sa) > 300:
-                            active = False
+                    lts = db_conn.execute("SELECT MAX(timestamp) FROM messages WHERE session_id=? AND role NOT IN ('session_meta','system','metadata')", (latest_sid,)).fetchone()[0]
+                    if lts: db_last_ts = lts
                 except: pass
-            results.append({'sessionId': sid, 'platform': r[1] or '', 'model': r[2] or '',
-                            'startedAt': r[3], 'messageCount': r[5] or 0,
-                            'inputTokens': r[6] or 0, 'outputTokens': r[7] or 0,
-                            'active': active, 'source': 'hermes'})
-    except: pass
-if db_conn:
-    try: db_conn.close()
-    except: pass
+                results.append({'sessionId': _pfx + sid, 'platform': label, 'model': r[2] or '',
+                                'startedAt': db_last_ts, 'messageCount': r[5] or 0,
+                                'inputTokens': r[6] or 0, 'outputTokens': r[7] or 0,
+                                'active': active, 'source': 'hermes'})
+        except: pass
+    if db_conn:
+        try: db_conn.close()
+        except: pass
 print(json.dumps(results))
 "#;
     let cmd = format!("python3 -c {}", shell_escape_single(py_script));
@@ -13336,7 +13505,7 @@ print(json.dumps(results))
 #[tauri::command]
 async fn test_hermes_ssh(ssh_host: String, ssh_user: String) -> Result<serde_json::Value, String> {
     let py_script = r#"
-import json, os, subprocess
+import json, os, subprocess, glob
 checks = {}
 hermes_dir = os.path.expanduser('~/.hermes')
 checks['hermes_installed'] = os.path.isdir(hermes_dir)
@@ -13349,6 +13518,49 @@ try:
     checks['gateway_running'] = len(out.split()) > 0
     checks['gateway_pids'] = out.split()
 except: checks['gateway_running'] = False
+# Check ooclaw plugin status — check all profile dirs
+checks['plugin_installed'] = False
+checks['plugin_enabled'] = False
+_check_dirs = [hermes_dir] + glob.glob(os.path.join(hermes_dir, 'profiles', '*'))
+for _cd in _check_dirs:
+    _pd = os.path.join(_cd, 'plugins', 'ooclaw')
+    if os.path.exists(os.path.join(_pd, '__init__.py')):
+        checks['plugin_installed'] = True
+        # Check if enabled via hermes CLI (look for enabled marker or config reference)
+        _cfg = os.path.join(_cd, 'config.yaml')
+        if os.path.exists(_cfg):
+            try:
+                with open(_cfg) as f:
+                    content = f.read()
+                if 'ooclaw' in content:
+                    checks['plugin_enabled'] = True
+            except: pass
+        # Also check plugins state file
+        _state = os.path.join(_cd, 'plugins', '.enabled')
+        if os.path.exists(_state):
+            try:
+                with open(_state) as f:
+                    if 'ooclaw' in f.read():
+                        checks['plugin_enabled'] = True
+            except: pass
+        break
+# Check profiles
+profiles = ['default']
+profiles_root = os.path.join(hermes_dir, 'profiles')
+if os.path.isdir(profiles_root):
+    for name in os.listdir(profiles_root):
+        if os.path.isdir(os.path.join(profiles_root, name)):
+            profiles.append(name)
+checks['profiles'] = profiles
+# Check ooclaw-status.json presence per profile
+status_files = {}
+for p in profiles:
+    if p == 'default':
+        sf = os.path.join(hermes_dir, 'ooclaw-status.json')
+    else:
+        sf = os.path.join(profiles_root, p, 'ooclaw-status.json')
+    status_files[p] = os.path.exists(sf)
+checks['status_files'] = status_files
 # Check session count in state.db
 if checks['state_db']:
     try:
@@ -13368,6 +13580,288 @@ print(json.dumps(checks))
     let trimmed = output.trim();
     let result: serde_json::Value = serde_json::from_str(trimmed)
         .map_err(|e| format!("parse hermes ssh test: {}", e))?;
+    Ok(result)
+}
+
+/// Install the ooclaw plugin on a remote Hermes instance via SSH.
+/// Pushes the plugin files and enables it in config.
+#[tauri::command]
+async fn install_hermes_remote_plugin(ssh_host: String, ssh_user: String) -> Result<serde_json::Value, String> {
+    // Generate the same plugin code as install_hermes_hooks but for remote
+    let plugin_yaml = r#"name: ooclaw
+version: 0.2.0
+description: "Forward Hermes Agent lifecycle events to oc-claw (local socket + status file)."
+hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_finalize
+  - on_session_reset
+  - pre_approval_request
+  - post_approval_response
+"#;
+
+    // Unix socket connect code for remote (Linux servers)
+    let connect_code = r#"SOCKET_PATH = "/tmp/ooclaw-hermes.sock"
+
+def _send(payload):
+    import os as _os
+    if not _os.path.exists(SOCKET_PATH):
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(SOCKET_PATH)
+        s.sendall(json.dumps(payload).encode("utf-8"))
+        s.shutdown(socket.SHUT_WR)
+        s.close()
+    except Exception:
+        pass"#;
+
+    let init_py = format!(r##"# ooclaw plugin for Hermes Agent - forwards events to oc-claw.
+from __future__ import annotations
+import json, os, socket, time
+from typing import Any, Dict, Tuple
+from pathlib import Path
+
+{connect_code}
+
+HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
+    "on_session_start": ("waiting_for_input", "SessionStart"),
+    "pre_llm_call": ("processing", "UserPromptSubmit"),
+    "post_llm_call": ("waiting_for_input", "Stop"),
+    "pre_tool_call": ("running_tool", "PreToolUse"),
+    "post_tool_call": ("processing", "PostToolUse"),
+    "on_session_end": ("waiting_for_input", "Stop"),
+    "on_session_finalize": ("ended", "SessionEnd"),
+    "on_session_reset": ("waiting_for_input", "SessionStart"),
+    "pre_approval_request": ("waiting", "PermissionRequest"),
+    "post_approval_response": ("processing", "PostToolUse"),
+}}
+
+def _status_file_path():
+    \"\"\"Find the ooclaw status file path under the active profile or hermes home.\"\"\"
+    hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
+    profile = os.environ.get("HERMES_PROFILE", "")
+    if profile:
+        return os.path.join(hermes_home, "profiles", profile, "ooclaw-status.json")
+    return os.path.join(hermes_home, "ooclaw-status.json")
+
+_MAX_EVENTS_PER_SESSION = 10
+_MAX_SESSIONS = 20
+
+def _write_status(payload):
+    \"\"\"Append event to status file, keeping last N events per session.\"\"\"
+    try:
+        status_path = _status_file_path()
+        session_id = payload.get("sessionId", "unknown")
+        data = {{}}
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {{}}
+            except: data = {{}}
+        if session_id not in data:
+            data[session_id] = []
+        data[session_id].append(payload)
+        if len(data[session_id]) > _MAX_EVENTS_PER_SESSION:
+            data[session_id] = data[session_id][-_MAX_EVENTS_PER_SESSION:]
+        if len(data) > _MAX_SESSIONS:
+            by_ts = sorted(data.items(), key=lambda kv: (kv[1][-1].get("timestamp", 0) if kv[1] else 0), reverse=True)
+            data = dict(by_ts[:_MAX_SESSIONS])
+        tmp_path = status_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, status_path)
+    except Exception:
+        pass
+
+def _handle(event_name, **kwargs):
+    mapping = HOOK_TO_EVENT.get(event_name)
+    if not mapping:
+        return
+    status, cc_event = mapping
+    if event_name == "post_tool_call":
+        result = kwargs.get("result")
+        if isinstance(result, dict) and (result.get("error") or
+            (isinstance(result.get("exit_code"), int) and result["exit_code"] != 0)):
+            status, cc_event = "processing", "PostToolUse"
+    session_id = kwargs.get("session_id", "") or kwargs.get("conversation_id", "")
+    if not session_id:
+        return
+    tool_name = ""
+    if event_name in ("pre_tool_call", "post_tool_call", "pre_approval_request"):
+        tool_name = kwargs.get("tool_name", "") or kwargs.get("tool", "") or ""
+    platform = kwargs.get("platform", "") or ""
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = os.path.expanduser("~/.hermes")
+    if not cwd:
+        cwd = os.path.expanduser("~/.hermes")
+    payload = {{
+        "sessionId": session_id,
+        "cwd": cwd,
+        "event": cc_event,
+        "claudeStatus": status,
+        "source": "hermes",
+        "pid": os.getpid(),
+        "platform": platform,
+        "timestamp": time.time(),
+    }}
+    if tool_name:
+        payload["tool"] = tool_name
+    if event_name == "pre_llm_call":
+        prompt = kwargs.get("prompt", "") or kwargs.get("message", "")
+        if prompt:
+            payload["userPrompt"] = prompt[:500]
+    elif event_name == "post_llm_call":
+        resp = kwargs.get("response", "") or kwargs.get("result", "")
+        if isinstance(resp, dict):
+            resp = resp.get("content", "") or resp.get("text", "")
+        if resp and isinstance(resp, str):
+            payload["lastResponse"] = resp[:2000]
+    _send(payload)
+    _write_status(payload)
+
+def _make_cb(event_name):
+    def cb(**kwargs):
+        try:
+            _handle(event_name, **kwargs)
+        except Exception:
+            pass
+        return None
+    cb.__name__ = "ooclaw_" + event_name
+    return cb
+
+def register(ctx):
+    for hook_name in HOOK_TO_EVENT:
+        ctx.register_hook(hook_name, _make_cb(hook_name))
+"##, connect_code = connect_code);
+
+    // Build a Python script that writes the plugin files and enables it
+    let install_script = format!(r#"
+import json, os, subprocess, glob
+
+hermes_dir = os.path.expanduser('~/.hermes')
+
+# Install to ALL profiles + hermes root (for default profile)
+# This ensures every gateway instance gets the plugin.
+install_targets = [hermes_dir]  # hermes root = default profile
+profiles_root = os.path.join(hermes_dir, 'profiles')
+if os.path.isdir(profiles_root):
+    for pd in glob.glob(os.path.join(profiles_root, '*')):
+        if os.path.isdir(pd) and os.path.exists(os.path.join(pd, 'config.yaml')):
+            install_targets.append(pd)
+
+result = {{"installed": True, "enabled": False, "method": "none", "targets": []}}
+import shutil
+hermes_bin = shutil.which('hermes')
+if not hermes_bin:
+    for p in [os.path.expanduser('~/.local/bin/hermes'),
+              os.path.expanduser('~/.local/share/uv/tools/hermes-agent/bin/hermes'),
+              '/usr/local/bin/hermes']:
+        if os.path.exists(p):
+            hermes_bin = p
+            break
+
+for target_dir in install_targets:
+    plugin_dir = os.path.join(target_dir, 'plugins', 'ooclaw')
+    os.makedirs(plugin_dir, exist_ok=True)
+    with open(os.path.join(plugin_dir, 'plugin.yaml'), 'w') as f:
+        f.write('''{plugin_yaml}''')
+    with open(os.path.join(plugin_dir, '__init__.py'), 'w') as f:
+        f.write('''{init_py}''')
+    result["targets"].append(target_dir)
+
+# Enable via hermes CLI for each profile
+if hermes_bin:
+    # Enable for default
+    try:
+        out = subprocess.run([hermes_bin, 'plugins', 'enable', 'ooclaw'],
+                            capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            result["enabled"] = True
+            result["method"] = "cli"
+    except: pass
+    # Enable for each named profile
+    for pd in install_targets:
+        if pd == hermes_dir: continue
+        profile_name = os.path.basename(pd)
+        try:
+            subprocess.run([hermes_bin, '--profile', profile_name, 'plugins', 'enable', 'ooclaw'],
+                          capture_output=True, text=True, timeout=5)
+        except: pass
+if not result["enabled"]:
+    # Fallback: patch config.yaml
+    config_path = os.path.join(hermes_dir, 'config.yaml')
+    if os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                content = f.read()
+            if 'ooclaw' not in content:
+                if 'plugins:' in content:
+                    content = content.replace('enabled: []', 'enabled:\n  - ooclaw')
+                    if 'enabled: []' not in content:
+                        content = content.replace('enabled:', 'enabled:\n  - ooclaw', 1)
+                else:
+                    content += '\nplugins:\n  enabled:\n  - ooclaw\n  disabled: []\n'
+                with open(config_path, 'w') as f:
+                    f.write(content)
+                result["enabled"] = True
+                result["method"] = "config_patch"
+            else:
+                result["enabled"] = True
+                result["method"] = "already_enabled"
+        except Exception as e:
+            result["error"] = str(e)
+
+# Restart all gateway processes so they load the new plugin
+result["restarted"] = []
+if hermes_bin:
+    # Just kill existing gateways — they will be auto-restarted by systemd/supervisor
+    # or the user can restart manually. We use a separate nohup command so it
+    # doesn't interfere with this SSH session.
+    try:
+        restart_script = '''
+import subprocess, glob, os, sys, time
+hermes_bin = sys.argv[1]
+# Kill old gateways
+subprocess.run(["pkill", "-f", "hermes.*gateway"], capture_output=True, timeout=3)
+time.sleep(2)
+# Start default
+subprocess.Popen([hermes_bin, "gateway", "run"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+# Start named profiles
+profiles_root = os.path.expanduser("~/.hermes/profiles")
+if os.path.isdir(profiles_root):
+    for pd in glob.glob(os.path.join(profiles_root, "*")):
+        if os.path.isdir(pd) and os.path.exists(os.path.join(pd, "config.yaml")):
+            pname = os.path.basename(pd)
+            subprocess.Popen([hermes_bin, "--profile", pname, "gateway", "run"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+'''
+        # Write restart script and run it detached (won't block or kill our session)
+        restart_path = '/tmp/_ooclaw_restart_gw.py'
+        with open(restart_path, 'w') as f:
+            f.write(restart_script)
+        subprocess.Popen(['nohup', 'python3', restart_path, hermes_bin],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        start_new_session=True)
+        result["restarted"].append("scheduled")
+    except: pass
+
+print(json.dumps(result))
+"#, plugin_yaml = plugin_yaml.replace("'''", "\\'''"), init_py = init_py.replace("'''", "\\'''"));
+
+    let cmd = format!("python3 -c {}", shell_escape_single(&install_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+    let result: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse remote plugin install: {} (output: {})", e, &trimmed[..trimmed.len().min(300)]))?;
     Ok(result)
 }
 
@@ -14853,7 +15347,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())

@@ -167,7 +167,7 @@
     "geminiSoundDesc": "Gemini 任务完成时播放提示音",
     "viewInGemini": "前往 Gemini",
     "enableHermes": "启用 Hermes Agent",
-    "enableHermesDesc": "通过插件监控本地 Hermes Agent 会话",
+    "enableHermesDesc": "远程连接需测试后安装插件，新增 Agent 后需重新安装",
     "hermesSound": "Hermes 完成提示音",
     "hermesSoundDesc": "Hermes 任务完成时播放提示音",
     "viewInHermes": "前往 Hermes",

@@ -2240,7 +2240,9 @@ export default function Mini() {
                 })
               }
             }
-          } catch {}
+          } catch (e) {
+            console.warn('[hermes-remote] poll error:', e)
+          }
         }
 
         setClaudeSessions(sessions)
@@ -5659,8 +5661,24 @@ export default function Mini() {
                 >
                   <ClaudeStatsView
                     source={claudeStatsSource}
-                    isActive={claudeStatsSource === 'hermes' ? claudeSessions.some(s => s.source === 'hermes' && (s.status === 'processing' || s.status === 'tool_running')) : undefined}
-                    channel={claudeStatsSource === 'hermes' ? (claudeSessions.find(s => s.source === 'hermes')?.platform || undefined) : undefined}
+                    isActive={claudeStatsSource === 'hermes' ? (() => {
+                      const sid = claudeStatsSessionId
+                      if (sid && claudeStatsSsh) {
+                        const fullSid = `ssh:${claudeStatsSsh.host}:${sid}`
+                        const s = claudeSessions.find(s => s.sessionId === fullSid)
+                        return s ? s.status === 'processing' || s.status === 'tool_running' : false
+                      }
+                      const s = claudeSessions.find(s => s.source === 'hermes' && s.sessionId === sid)
+                      return s ? s.status === 'processing' || s.status === 'tool_running' : false
+                    })() : undefined}
+                    channel={claudeStatsSource === 'hermes' ? (() => {
+                      const sid = claudeStatsSessionId
+                      if (sid && claudeStatsSsh) {
+                        const fullSid = `ssh:${claudeStatsSsh.host}:${sid}`
+                        return claudeSessions.find(s => s.sessionId === fullSid)?.platform || undefined
+                      }
+                      return claudeSessions.find(s => s.source === 'hermes' && s.sessionId === sid)?.platform || undefined
+                    })() : undefined}
                     sshConn={claudeStatsSsh ?? undefined}
                     hermesSessionId={claudeStatsSessionId ?? undefined}
                   />

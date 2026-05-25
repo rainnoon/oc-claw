@@ -148,7 +148,7 @@
     "geminiSoundDesc": "Geminiのタスク完了時にサウンドを再生",
     "viewInGemini": "Gemini に移動",
     "enableHermes": "Hermes Agent を有効にする",
-    "enableHermesDesc": "プラグインでローカルの Hermes Agent セッションを監視",
+    "enableHermesDesc": "リモート接続はテスト後にプラグインをインストール。新しい Agent 追加後は再インストールが必要",
     "hermesSound": "Hermes 完了サウンド",
     "hermesSoundDesc": "Hermes のタスク完了時にサウンドを再生",
     "viewInHermes": "Hermes に移動",
