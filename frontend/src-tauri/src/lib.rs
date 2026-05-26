@@ -7480,6 +7480,7 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     }
     for s in &mut list {
         if s.source == "cursor" {
+            s.is_active_tab = cursor_is_active;
             continue;
         }
         if s.is_active_tab {
