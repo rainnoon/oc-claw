@@ -4752,7 +4752,7 @@ export default function Mini() {
                                         </span>
                                       )}
                                       {subtitle && <span className="min-w-0 max-w-[25%] truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
-                                      {s.lastAssistantMsg && <span className="min-w-0 truncate text-[11px] text-white/40">· {s.lastAssistantMsg}</span>}
+                                      {s.lastAssistantMsg && <span className="min-w-0 max-w-[30%] truncate text-[11px] text-white/40">· {s.lastAssistantMsg}</span>}
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0 ml-auto">
                                       {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300 whitespace-nowrap">{formatChannelLabel(s.channel)}</span>}
@@ -4948,7 +4948,7 @@ export default function Mini() {
                                           />
                                         ) : (
                                           <span
-                                            className={`min-w-0 max-w-[42%] truncate text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                            className={`min-w-0 max-w-[55%] truncate text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
                                             onClick={(e) => {
                                               // Keep title area reserved for rename interaction.
                                               // Clicking title should not trigger jump.
@@ -4963,7 +4963,7 @@ export default function Mini() {
                                           </span>
                                         )}
                                         {subtitle && <span className="min-w-0 max-w-[25%] truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
-                                        {cs.lastResponse && <span className="min-w-0 truncate text-[11px] text-white/40">· {cs.lastResponse}</span>}
+                                        {cs.lastResponse && <span className="min-w-0 max-w-[30%] truncate text-[11px] text-white/40">· {cs.lastResponse}</span>}
                                       </div>
                                       <div className="flex items-center gap-2 shrink-0 ml-auto">
                                         <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal whitespace-nowrap ${sourceBadgeClass}`}>{sourceLabel}</span>
