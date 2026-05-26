@@ -12878,6 +12878,10 @@ from pathlib import Path
 
 {connect_code}
 
+# Track the last session_id so we can detect context-compaction rollovers
+# and emit a synthetic SessionEnd for the old session.
+_last_session_id: str = ""
+
 HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
     "on_session_start": ("waiting_for_input", "SessionStart"),
     "pre_llm_call": ("processing", "UserPromptSubmit"),
@@ -12892,7 +12896,7 @@ HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
 }}
 
 def _status_file_path():
-    \"\"\"Find the ooclaw status file path under the active profile or hermes home.\"\"\"
+    """Find the ooclaw status file path under the active profile or hermes home."""
     hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
     profile = os.environ.get("HERMES_PROFILE", "")
     if profile:
@@ -12904,7 +12908,7 @@ _MAX_EVENTS_PER_SESSION = 10
 _MAX_SESSIONS = 20
 
 def _write_status(payload):
-    \"\"\"Append event to status file, keeping last N events per session.\"\"\"
+    """Append event to status file, keeping last N events per session."""
     try:
         status_path = _status_file_path()
         session_id = payload.get("sessionId", "unknown")
@@ -12916,7 +12920,8 @@ def _write_status(payload):
                     data = json.load(f)
                 if not isinstance(data, dict):
                     data = {{}}
-            except: data = {{}}
+            except Exception:
+                data = {{}}
         # Append to this session's event list
         if session_id not in data:
             data[session_id] = []
@@ -12937,6 +12942,7 @@ def _write_status(payload):
         pass
 
 def _handle(event_name, **kwargs):
+    global _last_session_id
     mapping = HOOK_TO_EVENT.get(event_name)
     if not mapping:
         return
@@ -12959,6 +12965,25 @@ def _handle(event_name, **kwargs):
         cwd = os.path.expanduser("~/.hermes")
     if not cwd:
         cwd = os.path.expanduser("~/.hermes")
+
+    # Detect context-compaction session rollover: if session_id changed from
+    # a previous value (same process), emit a synthetic SessionEnd for the old
+    # session so oc-claw stops showing it as active.
+    if _last_session_id and _last_session_id != session_id:
+        end_payload = {{
+            "sessionId": _last_session_id,
+            "cwd": cwd,
+            "event": "SessionEnd",
+            "claudeStatus": "ended",
+            "source": "hermes",
+            "pid": os.getpid(),
+            "platform": platform,
+            "timestamp": time.time(),
+        }}
+        _send(end_payload)
+        _write_status(end_payload)
+    _last_session_id = session_id
+
     payload = {{
         "sessionId": session_id,
         "cwd": cwd,
@@ -13701,6 +13726,10 @@ from pathlib import Path
 
 {connect_code}
 
+# Track the last session_id so we can detect context-compaction rollovers
+# and emit a synthetic SessionEnd for the old session.
+_last_session_id: str = ""
+
 HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
     "on_session_start": ("waiting_for_input", "SessionStart"),
     "pre_llm_call": ("processing", "UserPromptSubmit"),
@@ -13715,7 +13744,7 @@ HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
 }}
 
 def _status_file_path():
-    \"\"\"Find the ooclaw status file path under the active profile or hermes home.\"\"\"
+    """Find the ooclaw status file path under the active profile or hermes home."""
     hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
     profile = os.environ.get("HERMES_PROFILE", "")
     if profile:
@@ -13726,7 +13755,7 @@ _MAX_EVENTS_PER_SESSION = 10
 _MAX_SESSIONS = 20
 
 def _write_status(payload):
-    \"\"\"Append event to status file, keeping last N events per session.\"\"\"
+    """Append event to status file, keeping last N events per session."""
     try:
         status_path = _status_file_path()
         session_id = payload.get("sessionId", "unknown")
@@ -13737,7 +13766,8 @@ def _write_status(payload):
                     data = json.load(f)
                 if not isinstance(data, dict):
                     data = {{}}
-            except: data = {{}}
+            except Exception:
+                data = {{}}
         if session_id not in data:
             data[session_id] = []
         data[session_id].append(payload)
@@ -13754,6 +13784,7 @@ def _write_status(payload):
         pass
 
 def _handle(event_name, **kwargs):
+    global _last_session_id
     mapping = HOOK_TO_EVENT.get(event_name)
     if not mapping:
         return
@@ -13776,6 +13807,25 @@ def _handle(event_name, **kwargs):
         cwd = os.path.expanduser("~/.hermes")
     if not cwd:
         cwd = os.path.expanduser("~/.hermes")
+
+    # Detect context-compaction session rollover: if session_id changed from
+    # a previous value (same process), emit a synthetic SessionEnd for the old
+    # session so oc-claw stops showing it as active.
+    if _last_session_id and _last_session_id != session_id:
+        end_payload = {{
+            "sessionId": _last_session_id,
+            "cwd": cwd,
+            "event": "SessionEnd",
+            "claudeStatus": "ended",
+            "source": "hermes",
+            "pid": os.getpid(),
+            "platform": platform,
+            "timestamp": time.time(),
+        }}
+        _send(end_payload)
+        _write_status(end_payload)
+    _last_session_id = session_id
+
     payload = {{
         "sessionId": session_id,
         "cwd": cwd,
