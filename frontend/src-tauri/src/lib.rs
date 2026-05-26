@@ -12085,35 +12085,7 @@ fn process_claude_event(
             was_processing = matches!(prev_status.as_str(), "processing" | "tool_running" | "compacting");
             was_compacting = prev_status == "compacting";
 
-            // Hermes context-compaction creates a new session_id without sending
-            // Stop for the old one.  When we see activity on a new hermes session
-            // (same PID), auto-stop any stale siblings so the light turns off.
-            if matches!(status.as_str(), "processing" | "tool_running" | "compacting") {
-                let incoming_source = source_override
-                    .unwrap_or_else(|| event.get("source").and_then(|v| v.as_str()).unwrap_or("cc"));
-                if incoming_source == "hermes" {
-                    if let Some(pid_val) = event.get("pid").and_then(|v| v.as_u64()) {
-                        let pid_u32 = pid_val as u32;
-                        let stale_ids: Vec<String> = sessions.iter()
-                            .filter(|(k, s)| {
-                                *k != &session_id
-                                    && s.source == "hermes"
-                                    && s.pid == Some(pid_u32)
-                                    && matches!(s.status.as_str(), "processing" | "tool_running" | "compacting")
-                            })
-                            .map(|(k, _)| k.clone())
-                            .collect();
-                        for stale_id in &stale_ids {
-                            if let Some(stale) = sessions.get_mut(stale_id) {
-                                log::info!("[claude_event] auto-stopping stale hermes sibling session={} (new active={})",
-                                    &stale_id[..stale_id.len().min(8)], &session_id[..session_id.len().min(8)]);
-                                stale.status = "stopped".to_string();
-                                stale.is_processing = false;
-                            }
-                        }
-                    }
-                }
-            }
+
 
             if hook_event == "SessionEnd" {
                 let prev = sessions.get(&session_id);
