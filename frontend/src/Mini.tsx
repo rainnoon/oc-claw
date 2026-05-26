@@ -4741,7 +4741,7 @@ export default function Mini() {
                                         />
                                       ) : (
                                         <span
-                                          className={`min-w-0 max-w-[40%] truncate text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                          className={`shrink-0 text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
                                           onClick={(e) => e.stopPropagation()}
                                           onDoubleClick={(e) => {
                                             e.stopPropagation()
@@ -4751,7 +4751,7 @@ export default function Mini() {
                                           {sessionNicknames[`oc:${s.agentId}:${s.key}`] || title}
                                         </span>
                                       )}
-                                      {subtitle && <span className="min-w-0 truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
+                                      {subtitle && <span className="min-w-0 max-w-[25%] truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
                                       {s.lastAssistantMsg && <span className="min-w-0 truncate text-[11px] text-white/40">· {s.lastAssistantMsg}</span>}
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0 ml-auto">
