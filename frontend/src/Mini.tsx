@@ -2245,6 +2245,18 @@ export default function Mini() {
           }
         }
 
+        // If the completion popup's session disappeared from the poll results,
+        // clear it so the UI doesn't fall back to the full session list.
+        const cid = completionSessionIdRef.current
+        if (cid && !sessions.find((s: any) => s.sessionId === cid && s.lastResponse && s.status === 'stopped')) {
+          completionSessionIdRef.current = null
+          _setCompletionSessionId(null)
+          setEffListCollapsed(false)
+          if (hoverExpandedRef.current) {
+            hoverExpandedRef.current = false
+            collapseFnRef.current?.()
+          }
+        }
         setClaudeSessions(sessions)
       } catch {
         /* ignore */
@@ -2448,10 +2460,12 @@ export default function Mini() {
   const [completionSessionId, _setCompletionSessionId] = useState<string | null>(null)
   const completionSessionIdRef = useRef<string | null>(null)
   const [effListCollapsed, setEffListCollapsed] = useState(false)
+  const collapseFnRef = useRef<(() => void) | null>(null)
   const setCompletionSessionId = useCallback((id: string | null) => {
     completionSessionIdRef.current = id
     _setCompletionSessionId(id)
     if (id) setEffListCollapsed(true)
+    if (!id) setEffListCollapsed(false)
     if (autoCloseTimerRef.current) {
       clearTimeout(autoCloseTimerRef.current)
       autoCloseTimerRef.current = null
@@ -2460,7 +2474,12 @@ export default function Mini() {
       autoCloseTimerRef.current = setTimeout(() => {
         completionSessionIdRef.current = null
         _setCompletionSessionId(null)
+        setEffListCollapsed(false)
         autoCloseTimerRef.current = null
+        if (hoverExpandedRef.current) {
+          hoverExpandedRef.current = false
+          collapseFnRef.current?.()
+        }
       }, 5000)
     }
   }, [])
@@ -3247,6 +3266,7 @@ export default function Mini() {
       }, 300)
     }, delay)
   }, [fetchAgents, restoreCollapsedMascotPosition, debugToTerminal, isSettingsPickerBlockingClose])
+  collapseFnRef.current = collapse
 
   // ── Efficiency-mode notch hover tracking (native cursor polling) ──
   // On macOS the mini window sits in the menu-bar / notch area where the
