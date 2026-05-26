@@ -486,7 +486,7 @@ export default function Mini() {
   // currently fold both flows into `enableClaudeCode`, so this defaults to
   // mirror that flag everywhere except Windows.
   const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
-  const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
+  const [enableCodex, setEnableCodex] = useState(true)
   const [enableCursor, setEnableCursor] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
@@ -2022,7 +2022,7 @@ export default function Mini() {
       const ccDesktopEnabled = typeof ccDesktop === 'boolean' ? ccDesktop : true
       setEnableClaudeDesktop(ccDesktopEnabled)
       const cod = await store.get('enable_codex')
-      const codEnabled = isWindowsPlatform ? false : cod !== false
+      const codEnabled = cod !== false
       setEnableCodex(codEnabled)
       // Hook script is shared between CC CLI and CC Desktop, so install when
       // any of the Claude listeners are on.
@@ -2031,11 +2031,6 @@ export default function Mini() {
       const curEnabled = cur !== false
       setEnableCursor(curEnabled)
       if (curEnabled) invoke('install_cursor_hooks').catch(() => {})
-      if (isWindowsPlatform) {
-        // Codex is not yet supported on Windows; keep it forced off.
-        await store.set('enable_codex', false)
-        await store.save()
-      }
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
       const codsnd = await store.get('codex_sound_enabled')
@@ -3103,7 +3098,7 @@ export default function Mini() {
           const ccDesktop = await store.get('enable_claude_desktop')
           setEnableClaudeDesktop(ccDesktop !== false)
           const cod = await store.get('enable_codex')
-          setEnableCodex(isWindowsPlatform ? false : cod !== false)
+          setEnableCodex(cod !== false)
           const cur = await store.get('enable_cursor')
           setEnableCursor(cur !== false)
         } catch {}
@@ -3401,7 +3396,7 @@ export default function Mini() {
         const ccDesktop = await store.get('enable_claude_desktop')
         setEnableClaudeDesktop(ccDesktop !== false)
         const cod = await store.get('enable_codex')
-        setEnableCodex(isWindowsPlatform ? false : cod !== false)
+        setEnableCodex(cod !== false)
         const cur = await store.get('enable_cursor')
         setEnableCursor(cur !== false)
         fetchAgents()
