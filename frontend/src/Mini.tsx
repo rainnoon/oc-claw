@@ -2031,7 +2031,7 @@ export default function Mini() {
       const herm = await store.get('enable_hermes')
       const hermEnabled = herm !== false
       setEnableHermes(hermEnabled)
-      if (hermEnabled) invoke('install_hermes_hooks').catch(() => {})
+      // Hermes plugin install is user-triggered only (restarts gateway)
       const hermConns = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
       if (hermConns) setHermesConns(hermConns)
       if (isWindowsPlatform) {

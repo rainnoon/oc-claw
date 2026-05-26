@@ -7498,10 +7498,30 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
             }
         }
     }
-    // Supplement with recent Hermes sessions from state.db so historical
-    // sessions appear even if oc-claw was started after the Hermes session.
-    // Also backfill user_prompt for live Hermes sessions that lack it.
-    // Skip sessions the user has explicitly dismissed.
+    // Load ooclaw plugin status to filter hermes sessions.
+    // Only hermes sessions present in ooclaw-status.json are shown.
+    let hermes_dir = dirs::home_dir().map(|h| h.join(".hermes"));
+    let mut ooclaw_known_sids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(ref hd) = hermes_dir {
+        for (sid, _) in load_ooclaw_status(hd) {
+            ooclaw_known_sids.insert(sid);
+        }
+        let pd = hd.join("profiles");
+        if pd.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&pd) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        for (sid, _) in load_ooclaw_status(&entry.path()) {
+                            ooclaw_known_sids.insert(sid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Remove live hermes sessions not in ooclaw-status.json
+    list.retain(|s| s.source != "hermes" || ooclaw_known_sids.contains(&s.session_id));
+
     let dismissed = state.dismissed.lock().map(|d| d.clone()).unwrap_or_default();
     let live_hermes_ids: std::collections::HashSet<String> = list.iter()
         .filter(|s| s.source == "hermes")
@@ -7514,6 +7534,9 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
             }
             if live_hermes_ids.contains(&dbs.session_id) {
                 if let Some(live) = list.iter_mut().find(|s| s.source == "hermes" && s.session_id == dbs.session_id) {
+                    // Update active status from plugin (same source of truth as db_sessions)
+                    live.status = dbs.status.clone();
+                    live.is_processing = dbs.is_processing;
                     if live.user_prompt.is_none() || live.user_prompt.as_deref() == Some("") {
                         if let Some(ref prompt) = dbs.user_prompt {
                             live.user_prompt = Some(prompt.clone());
@@ -7533,118 +7556,165 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     Ok(list)
 }
 
-/// Load recent Hermes sessions (last 2h) from ~/.hermes/state.db.
+/// Read ooclaw-status.json from a Hermes profile directory.
+/// Returns a map of session_id -> last claudeStatus string.
+fn load_ooclaw_status(hermes_dir: &std::path::Path) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    let status_path = hermes_dir.join("ooclaw-status.json");
+    if let Ok(data) = std::fs::read_to_string(&status_path) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+            if let Some(obj) = parsed.as_object() {
+                for (sid, events) in obj {
+                    if let Some(arr) = events.as_array() {
+                        if let Some(last) = arr.last() {
+                            if let Some(st) = last.get("claudeStatus").and_then(|v| v.as_str()) {
+                                result.insert(sid.clone(), st.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Check if a session is active based on ooclaw plugin status.
+/// Same logic as remote check_active: processing/running_tool/waiting = active.
+fn is_hermes_active_by_plugin(status_map: &HashMap<String, String>, session_id: &str) -> Option<bool> {
+    status_map.get(session_id).map(|st| {
+        matches!(st.as_str(), "processing" | "running_tool" | "waiting")
+    })
+}
+
+/// Read userPrompt and lastResponse for a specific session from ooclaw-status.json.
+/// Searches default profile and named profiles.
+/// Returns (Option<userPrompt>, Option<lastResponse>).
+fn load_ooclaw_session_detail(hermes_dir: &std::path::Path, session_id: &str) -> Option<(Option<String>, Option<String>)> {
+    let mut dirs_to_check = vec![hermes_dir.to_path_buf()];
+    let profiles_dir = hermes_dir.join("profiles");
+    if profiles_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    dirs_to_check.push(entry.path());
+                }
+            }
+        }
+    }
+
+    for dir in &dirs_to_check {
+        let status_path = dir.join("ooclaw-status.json");
+        if let Ok(data) = std::fs::read_to_string(&status_path) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(events) = parsed.get(session_id).and_then(|v| v.as_array()) {
+                    if let Some(last) = events.last() {
+                        let up = last.get("userPrompt").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let lr = last.get("lastResponse").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        return Some((up, lr));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Load recent Hermes sessions from ooclaw-status.json (plugin required).
+/// Only sessions present in ooclaw-status.json are shown. If the plugin
+/// is not installed (no JSON file), no Hermes sessions are displayed.
+/// Session metadata (userPrompt, lastResponse) is enriched from state.db.
 fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
-    let db_path = home.join(".hermes").join("state.db");
-    if !db_path.exists() {
+    let hermes_dir = home.join(".hermes");
+
+    // Load ooclaw plugin status — this is the single source of truth.
+    // No JSON → no sessions shown.
+    let mut plugin_status: HashMap<String, String> = HashMap::new();
+    plugin_status.extend(load_ooclaw_status(&hermes_dir));
+    let profiles_dir = hermes_dir.join("profiles");
+    if profiles_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    plugin_status.extend(load_ooclaw_status(&entry.path()));
+                }
+            }
+        }
+    }
+    if plugin_status.is_empty() {
         return Ok(vec![]);
     }
 
-    let conn = rusqlite::Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ).map_err(|e| format!("open hermes state.db: {}", e))?;
-
-    let cutoff = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as f64 - 7200.0;
-
-    let mut stmt = conn.prepare(
-        "SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens, parent_session_id \
-         FROM sessions WHERE started_at > ?1 ORDER BY started_at DESC LIMIT 20"
-    ).map_err(|e| format!("prepare: {}", e))?;
-
-    let rows = stmt.query_map(rusqlite::params![cutoff], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1).unwrap_or_default(),
-            row.get::<_, String>(2).unwrap_or_default(),
-            row.get::<_, f64>(3).unwrap_or(0.0),
-            row.get::<_, Option<f64>>(4).unwrap_or(None),
-            row.get::<_, i64>(5).unwrap_or(0),
-            row.get::<_, i64>(6).unwrap_or(0),
-            row.get::<_, i64>(7).unwrap_or(0),
-            row.get::<_, Option<String>>(8).unwrap_or(None),
-        ))
-    }).map_err(|e| format!("query: {}", e))?;
-
-    let mut sessions = Vec::new();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
 
-    let mut user_stmt = conn.prepare(
-        "SELECT substr(content, 1, 200) FROM messages \
-         WHERE session_id = ?1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1"
-    ).map_err(|e| format!("prepare user msg: {}", e))?;
+    // Open state.db for enrichment (userPrompt, lastResponse, timestamps)
+    let db_path = hermes_dir.join("state.db");
+    let conn = if db_path.exists() {
+        rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ).ok()
+    } else {
+        None
+    };
 
-    let mut asst_stmt = conn.prepare(
-        "SELECT substr(content, 1, 200) FROM messages \
-         WHERE session_id = ?1 AND role = 'assistant' ORDER BY timestamp DESC LIMIT 1"
-    ).map_err(|e| format!("prepare asst msg: {}", e))?;
+    let mut sessions = Vec::new();
 
-    // Fetch last message timestamp to determine real activity time
-    let mut last_msg_stmt = conn.prepare(
-        "SELECT MAX(timestamp) FROM messages \
-         WHERE session_id = ?1 AND role NOT IN ('session_meta', 'system', 'metadata')"
-    ).map_err(|e| format!("prepare last msg ts: {}", e))?;
+    for (sid, claude_status) in &plugin_status {
+        let is_active = matches!(claude_status.as_str(), "processing" | "running_tool" | "waiting");
+        let status = if is_active { "processing".to_string() } else { "stopped".to_string() };
 
-    // Collect parent_session_ids so we can hide sessions that are parents of newer ones
-    let mut parent_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-    struct SessionRow {
-        id: String,
-        source: String,
-        started_at: f64,
-        ended_at: Option<f64>,
-        parent_session_id: Option<String>,
-    }
-    let mut session_rows = Vec::new();
-    for row in rows {
-        let (id, source, _model, started_at, ended_at, _msg_count, _input_tok, _output_tok, parent_session_id) =
-            row.map_err(|e| format!("row: {}", e))?;
-        if let Some(ref pid) = parent_session_id {
-            parent_ids.insert(pid.clone());
+        let mut user_prompt: Option<String> = None;
+        let mut asst_response: Option<String> = None;
+        let mut updated_at_ms = now_ms;
+        let mut platform = String::new();
+
+        // Read userPrompt/lastResponse from plugin status
+        if let Some((up, lr)) = load_ooclaw_session_detail(&hermes_dir, sid) {
+            user_prompt = up;
+            asst_response = lr;
         }
-        session_rows.push(SessionRow { id, source, started_at, ended_at, parent_session_id });
-    }
 
-    for r in &session_rows {
-        // Skip sessions that are parents of newer compaction-derived sessions
-        if parent_ids.contains(&r.id) {
+        // Enrich from state.db
+        if let Some(ref db) = conn {
+            if let Ok(src) = db.query_row(
+                "SELECT source FROM sessions WHERE id = ?1", rusqlite::params![sid], |r| r.get::<_, String>(0)
+            ) {
+                platform = src;
+            }
+            if let Ok(Some(ts)) = db.query_row(
+                "SELECT MAX(timestamp) FROM messages WHERE session_id = ?1 AND role NOT IN ('session_meta','system','metadata')",
+                rusqlite::params![sid], |r| r.get::<_, Option<f64>>(0)
+            ) {
+                updated_at_ms = (ts * 1000.0) as u64;
+            }
+            if user_prompt.is_none() {
+                if let Ok(p) = db.query_row(
+                    "SELECT substr(content, 1, 200) FROM messages WHERE session_id = ?1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1",
+                    rusqlite::params![sid], |r| r.get::<_, String>(0)
+                ) {
+                    user_prompt = Some(p);
+                }
+            }
+            if asst_response.is_none() {
+                if let Ok(r) = db.query_row(
+                    "SELECT substr(content, 1, 200) FROM messages WHERE session_id = ?1 AND role = 'assistant' ORDER BY timestamp DESC LIMIT 1",
+                    rusqlite::params![sid], |r| r.get::<_, String>(0)
+                ) {
+                    asst_response = Some(r);
+                }
+            }
+        }
+
+        // Skip CLI sessions
+        if platform == "cli" || platform == "terminal" {
             continue;
         }
-        let id = &r.id;
-        let source = &r.source;
-        let started_at = r.started_at;
-        let ended_at = r.ended_at;
-
-        // Use the last message timestamp as the true "updated_at" for sorting/status.
-        // Hermes gateway sessions never have ended_at set, and started_at can be hours old.
-        let last_msg_ts: Option<f64> = last_msg_stmt
-            .query_row(rusqlite::params![&id], |r| r.get(0)).ok().flatten();
-        let best_ts = last_msg_ts.unwrap_or(started_at);
-        let updated_at_ms = (best_ts * 1000.0) as u64;
-
-        let is_active = ended_at.is_none() || ended_at == Some(0.0);
-        let status = if is_active && (now_ms - updated_at_ms) < 300_000 {
-            "processing".to_string()
-        } else {
-            "stopped".to_string()
-        };
-
-        let platform = source.clone();
-
-        // Only show Gateway sessions (feishu, slack, etc.), skip CLI sessions
-        if platform == "cli" || platform == "terminal" || platform.is_empty() {
-            continue;
-        }
-
-        let user_prompt: Option<String> = user_stmt
-            .query_row(rusqlite::params![&id], |r| r.get(0)).ok();
-        let asst_response: Option<String> = asst_stmt
-            .query_row(rusqlite::params![&id], |r| r.get(0)).ok();
 
         sessions.push(ClaudeSession {
-            session_id: id.clone(),
+            session_id: sid.clone(),
             status,
             source: "hermes".to_string(),
             cwd: "~/.hermes".to_string(),
@@ -7653,7 +7723,7 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
             user_prompt,
             interactive: false,
             updated_at: updated_at_ms,
-            is_processing: is_active && (now_ms - updated_at_ms) < 300_000,
+            is_processing: is_active,
             pid: None,
             pending_agents: 0,
             permission_suggestions: None,
@@ -12815,13 +12885,9 @@ async fn install_hermes_hooks() -> Result<(), String> {
         return Ok(());
     }
 
-    let plugin_dir = hermes_dir.join("plugins").join("ooclaw");
-    std::fs::create_dir_all(&plugin_dir).map_err(|e| e.to_string())?;
-
     let plugin_yaml = r#"name: ooclaw
-version: 0.1.0
-description: "Forward Hermes Agent events to oc-claw desktop pet."
-author: "oc-claw"
+version: 0.2.0
+description: "Forward Hermes Agent lifecycle events to oc-claw (local socket + status file)."
 hooks:
   - on_session_start
   - pre_llm_call
@@ -12834,7 +12900,20 @@ hooks:
   - pre_approval_request
   - post_approval_response
 "#;
-    std::fs::write(plugin_dir.join("plugin.yaml"), plugin_yaml).map_err(|e| e.to_string())?;
+
+    // Install plugin to all profiles (same as remote)
+    let mut install_dirs = vec![hermes_dir.clone()];
+    let profiles_dir = hermes_dir.join("profiles");
+    if profiles_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() && p.join("config.yaml").exists() {
+                    install_dirs.push(p);
+                }
+            }
+        }
+    }
 
     // The Python plugin is written as a static string with a placeholder for
     // the connection target (Unix socket path or TCP port).
@@ -13026,50 +13105,70 @@ def register(ctx):
         ctx.register_hook(hook_name, _make_cb(hook_name))
 "##, connect_code = connect_code);
 
-    std::fs::write(plugin_dir.join("__init__.py"), init_py).map_err(|e| e.to_string())?;
-    log::info!("[hermes_hooks] installed plugin to {:?}", plugin_dir);
-
-    // Hermes plugins are opt-in. Run `hermes plugins enable ooclaw` to
-    // register the plugin so it loads on the next session.  If the CLI
-    // is not on PATH we fall back to patching config.yaml directly.
     let hermes_bin = which_hermes();
-    if let Some(bin) = hermes_bin {
-        let out = std::process::Command::new(&bin)
+
+    // Install plugin + gateway hook to all profiles (same as remote)
+    for target_dir in &install_dirs {
+        let pd = target_dir.join("plugins").join("ooclaw");
+        let _ = std::fs::create_dir_all(&pd);
+        let _ = std::fs::write(pd.join("plugin.yaml"), plugin_yaml);
+        let _ = std::fs::write(pd.join("__init__.py"), &init_py);
+        // Clear pycache
+        let pc = pd.join("__pycache__");
+        if pc.exists() { let _ = std::fs::remove_dir_all(&pc); }
+        log::info!("[hermes_hooks] installed plugin to {:?}", pd);
+
+        // Gateway hook
+        let hd = target_dir.join("hooks").join("ooclaw");
+        let _ = std::fs::create_dir_all(&hd);
+        let hpc = hd.join("__pycache__");
+        if hpc.exists() { let _ = std::fs::remove_dir_all(&hpc); }
+    }
+
+    // Enable plugin via CLI for each profile
+    if let Some(ref bin) = hermes_bin {
+        let out = std::process::Command::new(bin)
             .args(["plugins", "enable", "ooclaw"])
             .output();
         match out {
             Ok(o) => log::info!("[hermes_hooks] plugins enable: {}", String::from_utf8_lossy(&o.stdout)),
             Err(e) => log::warn!("[hermes_hooks] plugins enable failed: {}", e),
         }
+        for target_dir in &install_dirs {
+            if target_dir == &hermes_dir { continue; }
+            if let Some(profile_name) = target_dir.file_name().and_then(|n| n.to_str()) {
+                let _ = std::process::Command::new(bin)
+                    .args(["--profile", profile_name, "plugins", "enable", "ooclaw"])
+                    .output();
+            }
+        }
     } else {
-        // Fallback: patch config.yaml plugins.enabled list directly
-        let config_path = hermes_dir.join("config.yaml");
-        if config_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if !content.contains("ooclaw") {
-                    let patched = if content.contains("plugins:") {
-                        content.replace(
-                            "plugins:\n  enabled: []",
-                            "plugins:\n  enabled:\n  - ooclaw",
-                        ).replace(
-                            "plugins:\n  enabled:",
-                            "plugins:\n  enabled:\n  - ooclaw",
-                        )
-                    } else {
-                        format!("{}\nplugins:\n  enabled:\n  - ooclaw\n  disabled: []\n", content.trim_end())
-                    };
-                    let _ = std::fs::write(&config_path, patched);
-                    log::info!("[hermes_hooks] patched config.yaml to enable ooclaw plugin");
+        // Fallback: patch config.yaml for each profile
+        for target_dir in &install_dirs {
+            let config_path = target_dir.join("config.yaml");
+            if config_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    if !content.contains("ooclaw") {
+                        let patched = if content.contains("plugins:") {
+                            content.replace(
+                                "plugins:\n  enabled: []",
+                                "plugins:\n  enabled:\n  - ooclaw",
+                            ).replace(
+                                "plugins:\n  enabled:",
+                                "plugins:\n  enabled:\n  - ooclaw",
+                            )
+                        } else {
+                            format!("{}\nplugins:\n  enabled:\n  - ooclaw\n  disabled: []\n", content.trim_end())
+                        };
+                        let _ = std::fs::write(&config_path, patched);
+                        log::info!("[hermes_hooks] patched config.yaml to enable ooclaw plugin");
+                    }
                 }
             }
         }
     }
 
     // ── Gateway hook (for Feishu / Telegram / Slack / etc.) ──
-    // Gateway uses a separate hook system under ~/.hermes/hooks/<name>/
-    let hooks_dir = hermes_dir.join("hooks").join("ooclaw");
-    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
-
     let hook_yaml = r#"name: ooclaw
 description: Forward Hermes gateway events to oc-claw desktop pet
 events:
@@ -13079,7 +13178,6 @@ events:
   - session:end
   - session:reset
 "#;
-    std::fs::write(hooks_dir.join("HOOK.yaml"), hook_yaml).map_err(|e| e.to_string())?;
 
     #[cfg(unix)]
     let gw_connect_code = r#"SOCKET_PATH = "/tmp/ooclaw-hermes.sock"
@@ -13117,9 +13215,9 @@ def _send_to_ooclaw(payload):
     let handler_py = format!(
         r##""""
 Gateway hook handler for oc-claw integration.
-Forwards Hermes gateway lifecycle events to oc-claw via socket.
+Forwards Hermes gateway lifecycle events to oc-claw via socket + status file.
 """
-import json, os, socket, sys, datetime
+import json, os, socket, sys, datetime, time
 
 LOG_DIR = os.path.expanduser("~/.hermes/logs")
 LOG_FILE = os.path.join(LOG_DIR, "ooclaw-hook.log")
@@ -13131,6 +13229,44 @@ def _log(msg):
         f.write(f"[{{ts}}] {{msg}}\n")
 
 {gw_connect_code}
+
+def _status_file_path():
+    hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
+    profile = os.environ.get("HERMES_PROFILE", "")
+    if profile:
+        return os.path.join(hermes_home, "profiles", profile, "ooclaw-status.json")
+    return os.path.join(hermes_home, "ooclaw-status.json")
+
+_MAX_EVENTS_PER_SESSION = 10
+_MAX_SESSIONS = 20
+
+def _write_status(payload):
+    try:
+        status_path = _status_file_path()
+        session_id = payload.get("sessionId", "unknown")
+        data = {{}}
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {{}}
+            except Exception:
+                data = {{}}
+        if session_id not in data:
+            data[session_id] = []
+        data[session_id].append(payload)
+        if len(data[session_id]) > _MAX_EVENTS_PER_SESSION:
+            data[session_id] = data[session_id][-_MAX_EVENTS_PER_SESSION:]
+        if len(data) > _MAX_SESSIONS:
+            by_ts = sorted(data.items(), key=lambda kv: (kv[1][-1].get("timestamp", 0) if kv[1] else 0), reverse=True)
+            data = dict(by_ts[:_MAX_SESSIONS])
+        tmp_path = status_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, status_path)
+    except Exception:
+        pass
 
 EVENT_MAP = {{
     "session:start": ("SessionStart", "waiting_for_input"),
@@ -13160,6 +13296,7 @@ def handle(event_type, context):
         "source": "hermes",
         "pid": os.getpid(),
         "platform": platform or "gateway",
+        "timestamp": time.time(),
     }}
     if event_type == "agent:start":
         msg = context.get("message", "")
@@ -13171,10 +13308,48 @@ def handle(event_type, context):
             payload["lastResponse"] = resp[:2000]
     _log(f"payload: {{json.dumps(payload)}}")
     _send_to_ooclaw(payload)
+    _write_status(payload)
 "##, gw_connect_code = gw_connect_code);
 
-    std::fs::write(hooks_dir.join("handler.py"), handler_py).map_err(|e| e.to_string())?;
-    log::info!("[hermes_hooks] installed gateway hook to {:?}", hooks_dir);
+    // Write gateway hook to default + all profiles
+    for target_dir in &install_dirs {
+        let hd = target_dir.join("hooks").join("ooclaw");
+        let _ = std::fs::create_dir_all(&hd);
+        let _ = std::fs::write(hd.join("HOOK.yaml"), &hook_yaml);
+        let _ = std::fs::write(hd.join("handler.py"), &handler_py);
+        let hpc = hd.join("__pycache__");
+        if hpc.exists() { let _ = std::fs::remove_dir_all(&hpc); }
+        log::info!("[hermes_hooks] installed gateway hook to {:?}", hd);
+    }
+
+    // Restart local gateway (all profiles, same as remote)
+    if let Some(bin) = hermes_bin {
+        let profile_names: Vec<String> = install_dirs.iter()
+            .filter(|d| *d != &hermes_dir)
+            .filter_map(|d| d.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()))
+            .collect();
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("pkill")
+                .args(["-f", "hermes.*gateway"])
+                .output();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            // Start default profile gateway
+            let _ = std::process::Command::new(&bin)
+                .args(["gateway", "run"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            // Start named profile gateways
+            for pname in &profile_names {
+                let _ = std::process::Command::new(&bin)
+                    .args(["--profile", pname, "gateway", "run"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+            log::info!("[hermes_hooks] restarted local gateway (default + {} profiles)", profile_names.len());
+        });
+    }
 
     Ok(())
 }
@@ -13465,8 +13640,10 @@ if os.path.isdir(profiles_root):
 seen = set()
 results = []
 now = time.time()
-# Read ooclaw plugin status files for real-time activity info
+# Read ooclaw plugin status files — single source of truth.
+# No ooclaw-status.json → no sessions shown (plugin not installed).
 _ooclaw_status = {}  # profile_name -> {session_id: [events]}
+_all_known_sids = set()  # all session ids known to ooclaw plugin
 for _pdir in profile_dirs:
     _pname = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
     _sf = os.path.join(_pdir, 'ooclaw-status.json')
@@ -13477,15 +13654,18 @@ for _pdir in profile_dirs:
             with open(_sf) as _f:
                 _st = json.load(_f)
             if isinstance(_st, dict):
-                # Keep all sessions — active state is determined by last event's
-                # claudeStatus, not by time. Same approach as OpenClaw's JSONL tail.
                 _filtered = {}
                 for _sid, _evts in _st.items():
                     if isinstance(_evts, list) and _evts:
                         _filtered[_sid] = _evts
+                        _all_known_sids.add(_sid)
                 if _filtered:
                     _ooclaw_status[_pname] = _filtered
     except: pass
+# No plugin data at all → return empty
+if not _all_known_sids:
+    print(json.dumps([]))
+    import sys; sys.exit(0)
 for _pdir in profile_dirs:
     sj = os.path.join(_pdir, 'sessions', 'sessions.json')
     db = os.path.join(_pdir, 'state.db')
@@ -13499,7 +13679,6 @@ for _pdir in profile_dirs:
     def _find_latest_session(sid):
         """Resolve newest session id for this logical thread."""
         current = sid
-        # 1) Follow compression split chain
         for _ in range(20):
             child = db_conn.execute(
                 'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
@@ -13507,7 +13686,6 @@ for _pdir in profile_dirs:
             if not child:
                 break
             current = child[0]
-        # 2) Also match thread-forked ids like "<sid>:om_xxx"
         row = db_conn.execute(
             'SELECT id FROM sessions WHERE (id = ? OR id LIKE ? OR id = ? OR id LIKE ?) '
             'ORDER BY started_at DESC LIMIT 1',
@@ -13517,17 +13695,12 @@ for _pdir in profile_dirs:
             current = row[0]
         return current
     def check_active(sid):
-        # Only use ooclaw plugin status file — same logic as OpenClaw's JSONL tail.
-        # No DB/WAL heuristics. Plugin must be installed for remote detection to work.
         _prof_status = _ooclaw_status.get(_profile_name, {})
         _sid_events = _prof_status.get(sid, [])
         if _sid_events:
             _last_evt = _sid_events[-1]
             st = _last_evt.get('claudeStatus', '')
-            # processing/running_tool/waiting = active, anything else = inactive
             return st in ('processing', 'running_tool', 'waiting')
-        # No plugin status for this session — check if plugin has ANY recent event
-        # for this profile. If not, assume inactive (plugin not installed or session idle).
         return False
     _pfx = '' if _profile_name == 'default' else _profile_name + ':'
     if os.path.exists(sj):
@@ -13536,6 +13709,8 @@ for _pdir in profile_dirs:
             for key, v in data.items():
                 sid = v.get('session_id','')
                 if sid: seen.add(_pfx + sid)
+                # Only show sessions known to ooclaw plugin
+                if sid not in _all_known_sids: continue
                 plat = v.get('platform','')
                 if plat in ('cron',): continue
                 updated = v.get('updated_at','')
@@ -13563,6 +13738,8 @@ for _pdir in profile_dirs:
             for r in cur.fetchall():
                 sid = r[0]
                 if (_pfx + sid) in seen: continue
+                # Only show sessions known to ooclaw plugin
+                if sid not in _all_known_sids: continue
                 plat_db = r[1] or ''
                 if plat_db in ('cron',): continue
                 seen.add(_pfx + sid)
@@ -15156,10 +15333,8 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(install_gemini_hooks()) {
                 log::warn!("Failed to install Gemini hooks on startup: {}", e);
             }
-            // Install Hermes Agent plugin on startup (idempotent, skips if ~/.hermes/ missing)
-            if let Err(e) = tauri::async_runtime::block_on(install_hermes_hooks()) {
-                log::warn!("Failed to install Hermes hooks on startup: {}", e);
-            }
+            // Hermes plugin is NOT auto-installed on startup because it restarts
+            // the gateway. User must manually install via Settings UI.
 
             // One log file per app run, named with a startup timestamp so we
             // never lose the previous session's logs to rotation. Goes to the
