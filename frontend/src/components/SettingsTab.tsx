@@ -414,7 +414,7 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
             ⚠️ 需要安装监控插件才能检测 Agent 工作状态。点击下方按钮一键安装（会自动重启 Gateway）。
           </div>
         )}
-        {testResult === 'success' && (
+        {testResult === 'success' && conn.type === 'remote' && (
           <button
             disabled={installingPlugin}
             onClick={async () => {
