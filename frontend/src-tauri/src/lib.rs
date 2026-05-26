@@ -7550,7 +7550,7 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as f64 - 7200.0;
 
     let mut stmt = conn.prepare(
-        "SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens \
+        "SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens, parent_session_id \
          FROM sessions WHERE started_at > ?1 ORDER BY started_at DESC LIMIT 20"
     ).map_err(|e| format!("prepare: {}", e))?;
 
@@ -7564,6 +7564,7 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
             row.get::<_, i64>(5).unwrap_or(0),
             row.get::<_, i64>(6).unwrap_or(0),
             row.get::<_, i64>(7).unwrap_or(0),
+            row.get::<_, Option<String>>(8).unwrap_or(None),
         ))
     }).map_err(|e| format!("query: {}", e))?;
 
@@ -7587,9 +7588,34 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
          WHERE session_id = ?1 AND role NOT IN ('session_meta', 'system', 'metadata')"
     ).map_err(|e| format!("prepare last msg ts: {}", e))?;
 
+    // Collect parent_session_ids so we can hide sessions that are parents of newer ones
+    let mut parent_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    struct SessionRow {
+        id: String,
+        source: String,
+        started_at: f64,
+        ended_at: Option<f64>,
+        parent_session_id: Option<String>,
+    }
+    let mut session_rows = Vec::new();
     for row in rows {
-        let (id, source, _model, started_at, ended_at, _msg_count, _input_tok, _output_tok) =
+        let (id, source, _model, started_at, ended_at, _msg_count, _input_tok, _output_tok, parent_session_id) =
             row.map_err(|e| format!("row: {}", e))?;
+        if let Some(ref pid) = parent_session_id {
+            parent_ids.insert(pid.clone());
+        }
+        session_rows.push(SessionRow { id, source, started_at, ended_at, parent_session_id });
+    }
+
+    for r in &session_rows {
+        // Skip sessions that are parents of newer compaction-derived sessions
+        if parent_ids.contains(&r.id) {
+            continue;
+        }
+        let id = &r.id;
+        let source = &r.source;
+        let started_at = r.started_at;
+        let ended_at = r.ended_at;
 
         // Use the last message timestamp as the true "updated_at" for sorting/status.
         // Hermes gateway sessions never have ended_at set, and started_at can be hours old.
@@ -7618,7 +7644,7 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
             .query_row(rusqlite::params![&id], |r| r.get(0)).ok();
 
         sessions.push(ClaudeSession {
-            session_id: id,
+            session_id: id.clone(),
             status,
             source: "hermes".to_string(),
             cwd: "~/.hermes".to_string(),
