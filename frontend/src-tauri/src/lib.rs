@@ -7556,8 +7556,39 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     Ok(list)
 }
 
+/// Internal Hermes framework tools (skill management, memory management).
+/// These run during a turn as housekeeping and don't represent user-visible work,
+/// so they're hidden from recent activity and ignored for active-state detection.
+/// Matches singular and plural forms: skill_*, skills_*, memory_*, memories_*.
+fn is_internal_tool(tool: &str) -> bool {
+    tool.starts_with("skill") || tool.starts_with("memor")
+}
+
+/// Find the latest Stop and UserPromptSubmit timestamps for a session.
+/// Stop event = end of an assistant turn; UserPromptSubmit = start of a turn.
+/// Used as a safety net: any event after the most recent Stop is housekeeping.
+fn session_turn_boundary(events: &[serde_json::Value]) -> (f64, f64) {
+    let mut last_stop_ts = 0.0_f64;
+    let mut last_user_ts = 0.0_f64;
+    for e in events {
+        let ts = e.get("timestamp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let ev = e.get("event").and_then(|v| v.as_str()).unwrap_or("");
+        if ev == "Stop" && ts > last_stop_ts { last_stop_ts = ts; }
+        if ev == "UserPromptSubmit" && ts > last_user_ts { last_user_ts = ts; }
+    }
+    (last_stop_ts, last_user_ts)
+}
+
 /// Read ooclaw-status.json from a Hermes profile directory.
-/// Returns a map of session_id -> last claudeStatus string.
+/// Returns a map of session_id -> effective claudeStatus.
+///
+/// A session is considered completed (status = waiting_for_input) when EITHER:
+///   1. Last Stop event is newer than last UserPromptSubmit (turn officially ended), OR
+///   2. The last non-internal event reports a non-active status
+///
+/// Internal-tool events (skill_view, skill_manage, skills_list, memory_*, etc.)
+/// are skipped when picking the last status, so framework housekeeping during a
+/// turn doesn't keep the UI stuck in "working".
 fn load_ooclaw_status(hermes_dir: &std::path::Path) -> HashMap<String, String> {
     let mut result = HashMap::new();
     let status_path = hermes_dir.join("ooclaw-status.json");
@@ -7566,11 +7597,31 @@ fn load_ooclaw_status(hermes_dir: &std::path::Path) -> HashMap<String, String> {
             if let Some(obj) = parsed.as_object() {
                 for (sid, events) in obj {
                     if let Some(arr) = events.as_array() {
-                        if let Some(last) = arr.last() {
-                            if let Some(st) = last.get("claudeStatus").and_then(|v| v.as_str()) {
-                                result.insert(sid.clone(), st.to_string());
-                            }
-                        }
+                        // Only treat as a user-facing session if it has at least one
+                        // UserPromptSubmit or SessionStart event.
+                        let is_user_facing = arr.iter().any(|e| {
+                            e.get("event").and_then(|v| v.as_str())
+                                .map(|s| s == "UserPromptSubmit" || s == "SessionStart")
+                                .unwrap_or(false)
+                        });
+                        if !is_user_facing { continue; }
+                        let (stop_ts, user_ts) = session_turn_boundary(arr);
+                        let status = if stop_ts > 0.0 && stop_ts > user_ts {
+                            // Safety net: turn officially ended via Stop event.
+                            "waiting_for_input".to_string()
+                        } else {
+                            // Pick the latest non-internal event's status.
+                            let last_non_internal = arr.iter().rev().find(|e| {
+                                let tool = e.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                                !is_internal_tool(tool)
+                            }).or_else(|| arr.last());
+                            last_non_internal
+                                .and_then(|e| e.get("claudeStatus"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string()
+                        };
+                        result.insert(sid.clone(), status);
                     }
                 }
             }
@@ -10877,16 +10928,101 @@ async fn get_hermes_sessions_summary() -> Result<Vec<serde_json::Value>, String>
 #[tauri::command]
 async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json::Value>, String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
-    let db_path = home.join(".hermes").join("state.db");
+    let hermes_dir = home.join(".hermes");
+    let db_path = hermes_dir.join("state.db");
+
+    // 1) Read real-time events from ooclaw plugin status file (in-progress tool calls)
+    // Drop any events that happen after the last Stop of a completed turn — those
+    // are housekeeping (skill_view/skills_list/memory_view) and the visible task
+    // is already done. Use the Hermes Stop event as the authoritative boundary.
+    let mut live_results: Vec<serde_json::Value> = Vec::new();
+    let mut cutoff_ts: Option<f64> = None;  // upper bound (inclusive) when session is done
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+    if !session_id.is_empty() {
+        let mut status_paths = vec![hermes_dir.join("ooclaw-status.json")];
+        let pd = hermes_dir.join("profiles");
+        if pd.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&pd) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        status_paths.push(entry.path().join("ooclaw-status.json"));
+                    }
+                }
+            }
+        }
+        for sp in &status_paths {
+            if let Ok(data) = std::fs::read_to_string(sp) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                    if let Some(events) = parsed.get(&session_id).and_then(|v| v.as_array()) {
+                        let (stop_ts, user_ts) = session_turn_boundary(events);
+                        let session_done = stop_ts > 0.0 && stop_ts > user_ts;
+                        if session_done { cutoff_ts = Some(stop_ts); }
+                        for evt in events.iter().rev() {
+                            let ts = evt.get("timestamp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            if ts <= 0.0 || (now_ts - ts) > 300.0 { continue; }
+                            // Drop housekeeping events emitted after the turn ended (Stop boundary).
+                            if let Some(c) = cutoff_ts { if ts > c { continue; } }
+                            let st = evt.get("claudeStatus").and_then(|v| v.as_str()).unwrap_or("");
+                            let tool = evt.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                            // Hide internal framework tools (skill_*/skills_*/memor_*).
+                            if is_internal_tool(tool) { continue; }
+                            if !tool.is_empty() && (st == "running_tool" || st == "processing") {
+                                live_results.push(serde_json::json!({
+                                    "type": "tool", "summary": format!("⚡ {}", tool),
+                                    "toolName": tool, "timestamp": ts, "live": true
+                                }));
+                            } else if st == "processing" {
+                                live_results.push(serde_json::json!({
+                                    "type": "thinking", "summary": "💭 thinking...",
+                                    "timestamp": ts, "live": true
+                                }));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     if !db_path.exists() {
-        return Ok(vec![]);
+        return Ok(live_results);
     }
     let conn = rusqlite::Connection::open_with_flags(
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ).map_err(|e| format!("open state.db: {}", e))?;
 
-    let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if session_id.is_empty() {
+    // Resolve session ids: main session + all descendant (subagent) sessions
+    // so that recent activity includes tool calls from delegate_task children.
+    let session_ids: Vec<String> = if session_id.is_empty() {
+        vec![]
+    } else {
+        let mut ids = vec![session_id.clone()];
+        let mut frontier = vec![session_id.clone()];
+        for _ in 0..5 {  // depth limit
+            if frontier.is_empty() { break; }
+            let placeholders = frontier.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+            let q = format!("SELECT id FROM sessions WHERE parent_session_id IN ({})", placeholders);
+            let frontier_refs: Vec<&dyn rusqlite::types::ToSql> = frontier.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+            let mut next_frontier = Vec::new();
+            if let Ok(mut stmt) = conn.prepare(&q) {
+                if let Ok(rows) = stmt.query_map(frontier_refs.as_slice(), |r| r.get::<_, String>(0)) {
+                    for row in rows.flatten() {
+                        if !ids.contains(&row) {
+                            ids.push(row.clone());
+                            next_frontier.push(row);
+                        }
+                    }
+                }
+            }
+            frontier = next_frontier;
+        }
+        ids
+    };
+
+    let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if session_ids.is_empty() {
         (
             "SELECT role, substr(content, 1, 200), tool_name, tool_calls, tool_call_id, timestamp \
              FROM messages WHERE role IN ('user', 'assistant', 'tool') \
@@ -10894,12 +11030,15 @@ async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json
             vec![],
         )
     } else {
-        (
+        let placeholders = session_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+        let sql_str = format!(
             "SELECT role, substr(content, 1, 200), tool_name, tool_calls, tool_call_id, timestamp \
-             FROM messages WHERE role IN ('user', 'assistant', 'tool') AND session_id = ?1 \
-             ORDER BY timestamp DESC LIMIT 60".to_string(),
-            vec![Box::new(session_id.clone())],
-        )
+             FROM messages WHERE role IN ('user', 'assistant', 'tool') AND session_id IN ({}) \
+             ORDER BY timestamp DESC LIMIT 60", placeholders);
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> = session_ids.iter()
+            .map(|s| Box::new(s.clone()) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
+        (sql_str, params)
     };
 
     let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {}", e))?;
@@ -10961,6 +11100,8 @@ async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json
 
     let mut results = Vec::new();
     for r in &raw_rows {
+        // Drop DB rows that happened after the turn's Stop (housekeeping).
+        if let Some(c) = cutoff_ts { if r.ts > c { continue; } }
         if r.role == "tool" {
             // Resolve tool name: from tool_name field, or from call_id -> fn_name map
             let name = r.tool_name.as_deref().unwrap_or("");
@@ -10972,6 +11113,7 @@ async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json
             } else {
                 name
             };
+            if is_internal_tool(resolved_name) { continue; }
             results.push(serde_json::json!({
                 "type": "tool",
                 "summary": format!("⚡ {}", resolved_name),
@@ -10990,6 +11132,7 @@ async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json
                             .and_then(|f| f.get("name"))
                             .and_then(|n| n.as_str())
                             .unwrap_or("unknown");
+                        if is_internal_tool(fn_name) { continue; }
                         results.push(serde_json::json!({
                             "type": "tool",
                             "summary": format!("⚡ {}", fn_name),
@@ -11024,7 +11167,10 @@ async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json
             }));
         }
     }
-    Ok(results)
+    // Merge live ooclaw events (newer, in-progress) in front of DB results
+    let mut merged = live_results;
+    merged.extend(results);
+    Ok(merged)
 }
 
 /// Return recent activity from a remote Hermes instance via SSH.
@@ -11046,22 +11192,43 @@ else:
 
 results = []
 now = time.time()
+cutoff_ts = None  # drop events after last Stop when session is completed
+
+def _turn_boundary(evts):
+    s = 0.0
+    u = 0.0
+    for _e in evts:
+        _ts = _e.get('timestamp', 0) or 0
+        _ev = _e.get('event', '')
+        if _ev == 'Stop' and _ts > s: s = _ts
+        if _ev == 'UserPromptSubmit' and _ts > u: u = _ts
+    return s, u
+
+def _is_internal(t):
+    # Hermes framework housekeeping (skill_*/skills_*/memor_*)
+    return t.startswith('skill') or t.startswith('memor')
 
 # 1) Read real-time events from ooclaw plugin status file (tool calls in progress)
 if os.path.exists(status_file):
     try:
         with open(status_file) as f:
             all_status = json.load(f)
-        # Find events for this session
         events = all_status.get(raw_sid, [])
+        if events:
+            _stop_ts, _user_ts = _turn_boundary(events)
+            if _stop_ts > 0 and _stop_ts > _user_ts:
+                cutoff_ts = _stop_ts
         for evt in reversed(events):
             ts = evt.get('timestamp', 0)
             if (now - ts) > 300:
-                continue  # skip events older than 5 min
+                continue
+            if cutoff_ts is not None and ts > cutoff_ts:
+                continue
             st = evt.get('claudeStatus', '')
             tool = evt.get('tool', '')
-            event_name = evt.get('event', '')
-            if st == 'running_tool' and tool:
+            if _is_internal(tool):
+                continue
+            if tool and st in ('running_tool', 'processing'):
                 results.append({{'type':'tool','summary':'\u26a1 '+tool,'toolName':tool,'timestamp':ts,'live':True}})
             elif st == 'processing':
                 results.append({{'type':'thinking','summary':'\U0001f4ad thinking...','timestamp':ts,'live':True}})
@@ -11089,10 +11256,28 @@ if os.path.exists(db):
                 cur = row[0]
             return cur
         sid = _resolve_latest_session(raw_sid) if raw_sid else ''
+        # Collect main session + all descendant (subagent) sessions
+        all_sids = []
+        if sid:
+            all_sids = [sid]
+            frontier = [sid]
+            for _ in range(5):
+                if not frontier: break
+                placeholders = ','.join('?' * len(frontier))
+                rows = conn.execute(
+                    'SELECT id FROM sessions WHERE parent_session_id IN (' + placeholders + ')',
+                    frontier).fetchall()
+                new_frontier = []
+                for (cid,) in rows:
+                    if cid not in all_sids:
+                        all_sids.append(cid)
+                        new_frontier.append(cid)
+                frontier = new_frontier
         _q = ('SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
               'FROM messages WHERE role IN ("user","assistant","tool")')
-        if sid:
-            cur = conn.execute(_q + ' AND session_id = ? ORDER BY timestamp DESC LIMIT 30', (sid,))
+        if all_sids:
+            placeholders = ','.join('?' * len(all_sids))
+            cur = conn.execute(_q + ' AND session_id IN (' + placeholders + ') ORDER BY timestamp DESC LIMIT 30', all_sids)
             _rows = cur.fetchall()
         else:
             cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
@@ -11110,17 +11295,22 @@ if os.path.exists(db):
         def trunc(s, n=60):
             return s[:n]+'...' if len(s)>n else s
         for role, content, tool_name, tool_calls, tool_call_id, ts in _rows:
+            # Drop DB rows past the turn's Stop event (housekeeping).
+            if cutoff_ts is not None and ts > cutoff_ts:
+                continue
             if role == 'tool':
                 name = tool_name or ''
                 if not name and tool_call_id:
                     name = cid_map.get(tool_call_id, 'tool')
                 if not name: name = 'tool'
+                if _is_internal(name): continue
                 results.append({{'type':'tool','summary':'\u26a1 '+name,'toolName':name,'timestamp':ts}})
             elif role == 'assistant':
                 if tool_calls:
                     try:
                         for tc in json.loads(tool_calls):
                             fname = (tc.get('function') or {{}}).get('name','unknown')
+                            if _is_internal(fname): continue
                             results.append({{'type':'tool','summary':'\u26a1 '+fname,'toolName':fname,'timestamp':ts}})
                     except: pass
                 if content and content.strip():
@@ -13657,11 +13847,29 @@ for _pdir in profile_dirs:
                 _filtered = {}
                 for _sid, _evts in _st.items():
                     if isinstance(_evts, list) and _evts:
+                        # Skip sub-agent sessions
+                        _has_user = any(_e.get('event') in ('UserPromptSubmit', 'SessionStart') for _e in _evts)
+                        if not _has_user: continue
                         _filtered[_sid] = _evts
                         _all_known_sids.add(_sid)
                 if _filtered:
                     _ooclaw_status[_pname] = _filtered
     except: pass
+
+def _turn_boundary(evts):
+    """Return (last Stop ts, last UserPromptSubmit ts)."""
+    _stop_ts = 0.0
+    _user_ts = 0.0
+    for _e in evts:
+        _ts = _e.get('timestamp', 0) or 0
+        _ev = _e.get('event', '')
+        if _ev == 'Stop' and _ts > _stop_ts: _stop_ts = _ts
+        if _ev == 'UserPromptSubmit' and _ts > _user_ts: _user_ts = _ts
+    return _stop_ts, _user_ts
+
+def _is_internal_tool(t):
+    """Hermes framework housekeeping tools (skill/memory management)."""
+    return t.startswith('skill') or t.startswith('memor')
 # No plugin data at all → return empty
 if not _all_known_sids:
     print(json.dumps([]))
@@ -13697,11 +13905,22 @@ for _pdir in profile_dirs:
     def check_active(sid):
         _prof_status = _ooclaw_status.get(_profile_name, {})
         _sid_events = _prof_status.get(sid, [])
-        if _sid_events:
+        if not _sid_events:
+            return False
+        # Safety net: completed when last Stop is newer than last UserPromptSubmit.
+        _stop_ts, _user_ts = _turn_boundary(_sid_events)
+        if _stop_ts > 0 and _stop_ts > _user_ts:
+            return False
+        # Pick last non-internal event's status (skip skill_*/memor_* housekeeping).
+        _last_evt = None
+        for _e in reversed(_sid_events):
+            if not _is_internal_tool(_e.get('tool', '')):
+                _last_evt = _e
+                break
+        if _last_evt is None:
             _last_evt = _sid_events[-1]
-            st = _last_evt.get('claudeStatus', '')
-            return st in ('processing', 'running_tool', 'waiting')
-        return False
+        st = _last_evt.get('claudeStatus', '')
+        return st in ('processing', 'running_tool', 'waiting')
     _pfx = '' if _profile_name == 'default' else _profile_name + ':'
     if os.path.exists(sj):
         try:
