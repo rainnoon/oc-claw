@@ -89,7 +89,8 @@ fn ssh_backoff_remaining(host_key: &str) -> Option<u64> {
     let map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     let state = map.get(host_key)?;
     if state.fail_count == 0 { return None; }
-    let cooldown = std::cmp::min(10u64 * 2u64.pow(state.fail_count.saturating_sub(1)), 60);
+    let exp = std::cmp::min(state.fail_count.saturating_sub(1), 6);
+    let cooldown = std::cmp::min(10u64.saturating_mul(2u64.pow(exp)), 60);
     let elapsed = unix_now().saturating_sub(state.fail_epoch);
     if elapsed < cooldown { Some(cooldown - elapsed) } else { None }
 }
@@ -97,7 +98,7 @@ fn ssh_backoff_remaining(host_key: &str) -> Option<u64> {
 fn ssh_backoff_record_failure(host_key: &str) {
     let mut map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     let state = map.entry(host_key.to_string()).or_insert(SshBackoffState { fail_count: 0, fail_epoch: 0 });
-    state.fail_count += 1;
+    state.fail_count = state.fail_count.saturating_add(1).min(20);
     state.fail_epoch = unix_now();
 }
 
