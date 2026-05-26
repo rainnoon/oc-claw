@@ -7569,11 +7569,15 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
 
-    // Prepare statements for fetching last user/assistant message per session
     let mut user_stmt = conn.prepare(
         "SELECT substr(content, 1, 200) FROM messages \
          WHERE session_id = ?1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1"
     ).map_err(|e| format!("prepare user msg: {}", e))?;
+
+    let mut asst_stmt = conn.prepare(
+        "SELECT substr(content, 1, 200) FROM messages \
+         WHERE session_id = ?1 AND role = 'assistant' ORDER BY timestamp DESC LIMIT 1"
+    ).map_err(|e| format!("prepare asst msg: {}", e))?;
 
     // Fetch last message timestamp to determine real activity time
     let mut last_msg_stmt = conn.prepare(
@@ -7608,9 +7612,8 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
 
         let user_prompt: Option<String> = user_stmt
             .query_row(rusqlite::params![&id], |r| r.get(0)).ok();
-        // last_response intentionally set to None for DB-loaded sessions:
-        // it is only used for real-time completion notifications, and
-        // historical sessions should never trigger the auto-expand popup.
+        let asst_response: Option<String> = asst_stmt
+            .query_row(rusqlite::params![&id], |r| r.get(0)).ok();
 
         sessions.push(ClaudeSession {
             session_id: id,
@@ -7626,7 +7629,7 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
             pid: None,
             pending_agents: 0,
             permission_suggestions: None,
-            last_response: None,
+            last_response: asst_response,
             is_active_tab: false,
             terminal_id: None,
             host_terminal: None,

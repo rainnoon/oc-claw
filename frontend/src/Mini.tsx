@@ -4962,10 +4962,11 @@ export default function Mini() {
                                             {projectName}
                                           </span>
                                         )}
-                                        {subtitle && <span className="min-w-0 flex-1 truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
+                                        {subtitle && <span className="min-w-0 max-w-[25%] truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
+                                        {cs.lastResponse && <span className="min-w-0 truncate text-[11px] text-white/40">· {cs.lastResponse}</span>}
                                       </div>
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal ${sourceBadgeClass}`}>{sourceLabel}</span>
+                                      <div className="flex items-center gap-2 shrink-0 ml-auto">
+                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal whitespace-nowrap ${sourceBadgeClass}`}>{sourceLabel}</span>
                                         <div className="w-8 flex items-center justify-center">
                                           <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
                                           <button
