@@ -2173,6 +2173,15 @@ export default function Mini() {
             newCompletions.push(s)
           }
         }
+        // Decide whether to pop the completion popup, but DO NOT commit
+        // setCompletionSessionId yet. We need to batch it with
+        // setClaudeSessions(sessions) below so the panel's first frame
+        // already has both the new session list and the new filter state.
+        // Otherwise React renders once with new completionSessionId + stale
+        // claudeSessions (lastResponse not yet present) → user sees the
+        // full session list (image 2) flash before it collapses to the
+        // single completed session (image 1).
+        let completionCandidate: any = null
         if (newCompletions.length > 0) {
           let shouldExpand = autoExpandOnTaskRef.current &&
             !updateModalOpenRef.current &&
@@ -2189,10 +2198,7 @@ export default function Mini() {
           if (shouldExpand) {
             const candidate = newCompletions.find(s => !s.isActiveTab) || newCompletions[0]
             if (candidate && !candidate.isActiveTab) {
-              shownCompletionsRef.current.add(candidate.sessionId)
-              hoverExpandedRef.current = true
-              setCompletionSessionId(candidate.sessionId)
-              expandFnRef.current?.()
+              completionCandidate = candidate
             }
           }
         }
@@ -2268,7 +2274,16 @@ export default function Mini() {
             collapseFnRef.current?.()
           }
         }
+        // Commit sessions + completion popup state in the same sync block so
+        // React batches them: the panel's first render after expand already
+        // has the filtered single-session view, no full-list flash.
         setClaudeSessions(sessions)
+        if (completionCandidate) {
+          shownCompletionsRef.current.add(completionCandidate.sessionId)
+          hoverExpandedRef.current = true
+          setCompletionSessionId(completionCandidate.sessionId)
+          expandFnRef.current?.()
+        }
       } catch {
         /* ignore */
       }
@@ -3190,7 +3205,13 @@ export default function Mini() {
     debugToTerminal('close', 'collapse proceed')
     collapsingRef.current = true
     hoverExpandedRef.current = false
-    setCompletionSessionId(null)
+    // Intentionally DO NOT clear completionSessionId / effListCollapsed here.
+    // While the panel fades out (opacity 1 → 0 over panelChromeTransition),
+    // the content is still mounted. Clearing the popup state mid-fade would
+    // re-render the panel back to the full session list under the fading
+    // overlay — visible as a "list flash" before the panel actually goes
+    // away. We reset both inside the setTimeout below, after setExpanded
+    // unmounts the panel content.
     if (hoverCloseTimerRef.current) {
       clearTimeout(hoverCloseTimerRef.current)
       hoverCloseTimerRef.current = null
@@ -3244,6 +3265,11 @@ export default function Mini() {
       setExpanded(false)
       expandedRef.current = false
       expandedWindowModeRef.current = null
+      // Now that the expanded panel is unmounted, it's safe to clear the
+      // completion popup state (which also resets effListCollapsed → false).
+      // Doing it earlier would cause the fading panel to flash the full
+      // session list before going away.
+      setCompletionSessionId(null)
       // Hide the entire document during the resize→reposition pair below.
       // `set_mini_expanded(expanded:false)` first parks the window at the
       // default collapsed slot (right-near-notch); only the follow-up
@@ -5237,12 +5263,18 @@ export default function Mini() {
                                           className="flex items-center justify-between px-3 py-2 border-b border-[#2a2a2e] cursor-pointer hover:bg-[#222226] transition-colors"
                                           onClick={(e) => {
                                             e.stopPropagation()
-                                            setCompletionSessionId(null)
+                                            // Fire the jump first so focus shifts to the target app
+                                            // immediately, then close the mini panel directly.
+                                            // Going through collapse() (instead of just clearing
+                                            // completionSessionId) avoids the flash where the panel
+                                            // stays open re-rendered with the full session list
+                                            // until focus blur eventually triggers a close.
                                             if (cs.source === 'cursor') {
                                               invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
                                             } else {
                                               invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
                                             }
+                                            collapseFnRef.current?.()
                                           }}
                                         >
                                           <span className="text-[12px] text-slate-300 truncate">
