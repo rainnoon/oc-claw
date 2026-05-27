@@ -499,7 +499,7 @@ export default function Mini() {
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
   const [geminiSoundEnabled, setGeminiSoundEnabled] = useState(true)
-  const [hermesSoundEnabled, setHermesSoundEnabled] = useState(true)
+  const [hermesSoundEnabled, setHermesSoundEnabled] = useState(false)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
@@ -2228,9 +2228,13 @@ export default function Mini() {
               const label = `${conn.user}@${conn.host}`
               for (const rs of r.value) {
                 if (!rs.active && !rs.updatedAt && !rs.startedAt) continue
+                const userPrompt = rs.userPrompt || (rs.messageCount ? `${rs.messageCount} msgs` : '')
+                // Prefer explicit status from remote (distinguishes waiting from stopped),
+                // fall back to active flag for older remote scripts.
+                const remoteStatus: string = rs.status || (rs.active ? 'processing' : 'stopped')
                 sessions.push({
                   sessionId: `ssh:${conn.host}:${rs.sessionId}`,
-                  status: rs.active ? 'processing' : 'stopped',
+                  status: remoteStatus,
                   source: 'hermes',
                   platform: rs.platform || '',
                   cwd: '',
@@ -2238,7 +2242,11 @@ export default function Mini() {
                   model: rs.model || '',
                   hostTerminal: label,
                   updatedAt: rs.startedAt ? new Date(rs.startedAt * 1000).toISOString() : rs.updatedAt || '',
-                  user_prompt: rs.messageCount ? `${rs.messageCount} msgs` : '',
+                  // Set both shapes: backend Rust uses camelCase via serde rename,
+                  // but a few frontend sites still read snake_case for fallback titles.
+                  userPrompt,
+                  user_prompt: userPrompt,
+                  lastResponse: rs.lastResponse || '',
                   isActiveTab: false,
                 })
               }
@@ -2465,6 +2473,27 @@ export default function Mini() {
   const [effListCollapsed, setEffListCollapsed] = useState(false)
   const collapseFnRef = useRef<(() => void) | null>(null)
   const shownCompletionsRef = useRef(new Set<string>())
+  // Sessions whose permission/clarify popup the user dismissed via "稍后处理".
+  // The session itself stays in the waiting state, but we hide the action
+  // buttons until it leaves waiting and re-enters (next request).
+  const [dismissedWaitingIds, setDismissedWaitingIds] = useState<Set<string>>(new Set())
+  // Clear dismissals once the session is no longer waiting, so the next
+  // permission/clarify cycle re-shows the buttons.
+  useEffect(() => {
+    if (dismissedWaitingIds.size === 0) return
+    const stillWaiting = new Set(
+      claudeSessions.filter((s: any) => s.status === 'waiting').map((s: any) => s.sessionId)
+    )
+    let changed = false
+    const next = new Set(dismissedWaitingIds)
+    for (const id of dismissedWaitingIds) {
+      if (!stillWaiting.has(id)) {
+        next.delete(id)
+        changed = true
+      }
+    }
+    if (changed) setDismissedWaitingIds(next)
+  }, [claudeSessions, dismissedWaitingIds])
   const setCompletionSessionId = useCallback((id: string | null) => {
     completionSessionIdRef.current = id
     _setCompletionSessionId(id)
@@ -4777,7 +4806,7 @@ export default function Mini() {
                               } else {
                                 const cs = item.data
                                 const isHermesSrc = cs.source === 'hermes'
-                                const defaultProjectName = cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : (isHermesSrc ? (cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
+                                const defaultProjectName = cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : (isHermesSrc ? (cs.userPrompt || cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
                                 const projectName = sessionNicknames[cs.sessionId] || defaultProjectName
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
@@ -4991,7 +5020,7 @@ export default function Mini() {
                                        此面板。包含四个操作按钮：拒绝、允许一次、
                                        全部允许、自动批准。
                                        用途：让用户无需切换到终端即可快速处理权限请求。 */}
-                                    {isWaiting && cs.source !== 'cursor' && (
+                                    {isWaiting && cs.source !== 'cursor' && !dismissedWaitingIds.has(cs.sessionId) && (
                                       <div className="mt-2 flex flex-col" style={{ maxHeight: panelMaxHeight - 140 }}>
                                         {cs.tool && (
                                           <div className="flex items-center gap-1.5 mb-2">
@@ -5132,6 +5161,13 @@ export default function Mini() {
                                                     data-no-drag
                                                     onClick={(e) => {
                                                       e.stopPropagation()
+                                                      // Hide buttons for this session's current waiting cycle.
+                                                      // Cleared automatically when session leaves waiting state.
+                                                      setDismissedWaitingIds((prev) => {
+                                                        const next = new Set(prev)
+                                                        next.add(cs.sessionId)
+                                                        return next
+                                                      })
                                                       hoverExpandedRef.current = false
                                                       collapse()
                                                     }}
@@ -5566,7 +5602,7 @@ export default function Mini() {
                                 )
                               } else {
                                 const cs = item.data
-                                const projectName = cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : (cs.source === 'hermes' ? (cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
+                                const projectName = cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : (cs.source === 'hermes' ? (cs.userPrompt || cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
                                 const statusText = cs.tool
