@@ -368,6 +368,24 @@ export default function Mini() {
   const lastConnSnapshotRef = useRef<string>('')
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dismissedSessionsRef = useRef<Map<string, number>>(new Map())
+  // Stable Hermes title numbering: map each hermes sessionId to a sequence
+  // number assigned on first sight, so a session keeps the same `#N` even as
+  // the list re-sorts by active/updatedAt across 2s polls.
+  const hermesSeqMapRef = useRef<Map<string, number>>(new Map())
+  const hermesSeqNextRef = useRef(1)
+  const getHermesSeq = useCallback((sessionId: string) => {
+    const existing = hermesSeqMapRef.current.get(sessionId)
+    if (existing !== undefined) return existing
+    const seq = hermesSeqNextRef.current++
+    hermesSeqMapRef.current.set(sessionId, seq)
+    return seq
+  }, [])
+  // Frontend dismissal for remote (ssh:) Hermes sessions. The backend dismissed
+  // set only covers sessions that flow through get_claude_sessions; remote
+  // sessions are merged in on the frontend, so they need their own filter.
+  // Value is the wall-clock ms at dismiss time; a session revives if newer
+  // activity arrives after that.
+  const remoteDismissedRef = useRef<Map<string, number>>(new Map())
 
   // Agent detail
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
@@ -2234,12 +2252,25 @@ export default function Mini() {
               const label = `${conn.user}@${conn.host}`
               for (const rs of r.value) {
                 if (!rs.active && !rs.updatedAt && !rs.startedAt) continue
+                // Respect frontend dismissal for remote sessions (backend
+                // dismissed never sees these). Revive only when newer activity
+                // arrives after the dismiss time.
+                const sshSid = `ssh:${conn.host}:${rs.sessionId}`
+                const remoteDismissedAt = remoteDismissedRef.current.get(sshSid)
+                if (remoteDismissedAt !== undefined) {
+                  const rsMs = rs.updatedAt ? Date.parse(rs.updatedAt) : (rs.startedAt ? rs.startedAt * 1000 : 0)
+                  if (rsMs > remoteDismissedAt) {
+                    remoteDismissedRef.current.delete(sshSid)
+                  } else {
+                    continue
+                  }
+                }
                 const userPrompt = rs.userPrompt || (rs.messageCount ? `${rs.messageCount} msgs` : '')
                 // Prefer explicit status from remote (distinguishes waiting from stopped),
                 // fall back to active flag for older remote scripts.
                 const remoteStatus: string = rs.status || (rs.active ? 'processing' : 'stopped')
                 sessions.push({
-                  sessionId: `ssh:${conn.host}:${rs.sessionId}`,
+                  sessionId: sshSid,
                   status: remoteStatus,
                   source: 'hermes',
                   platform: rs.platform || '',
@@ -4449,7 +4480,15 @@ export default function Mini() {
             transform: 'translateX(-50%)',
             transformOrigin: 'top center',
             zoom: uiScale !== 1 ? uiScale : undefined,
-            width: panelW,
+            // On Windows high-DPI / >100% scaling, the native window's CSS
+            // viewport width doesn't reliably equal the fixed panelW (Tauri vs
+            // WebView2 DPI mapping mismatch), leaving a grey gap on the right.
+            // Fill the actual viewport instead (compensating for `zoom`, since
+            // vw is relative to the window, not the zoomed element). macOS and
+            // the collapsed state keep the fixed panelW.
+            width: isWindowsPlatform && showPanel
+              ? (uiScale !== 1 ? `calc(100vw / ${uiScale})` : '100vw')
+              : panelW,
             height: 'auto',
             maxHeight: inDetailPage ? detailPageMaxHeight : panelMaxHeight,
             overflowY: 'hidden',
@@ -4656,8 +4695,6 @@ export default function Mini() {
                             }
 
                             const agentSeqCount: Record<string, number> = {}
-                            // Per-identity sequence for Hermes titles, mirroring agentSeqCount.
-                            const hermesSeqCount: Record<string, number> = {}
                             const formatTimeAgo = (ts: number) => {
                               if (!ts) return ''
                               const diff = Date.now() - ts
@@ -4872,10 +4909,7 @@ export default function Mini() {
                                 const isHermesSrc = cs.source === 'hermes'
                                 // Hermes title mirrors OpenClaw: a stable identity + sequence,
                                 // never the question (which only goes to the subtitle below).
-                                const hermesTitle = (() => {
-                                  const seq = (hermesSeqCount['hermes'] = (hermesSeqCount['hermes'] || 0) + 1)
-                                  return `Hermes #${seq}`
-                                })()
+                                const hermesTitle = `Hermes #${getHermesSeq(cs.sessionId)}`
                                 const defaultProjectName = isHermesSrc ? hermesTitle : (cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : 'unknown')
                                 const projectName = sessionNicknames[cs.sessionId] || defaultProjectName
                                 const isActive = item.active
@@ -5073,6 +5107,9 @@ export default function Mini() {
                                             onClick={(e) => {
                                               e.stopPropagation()
                                               invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {})
+                                              // Remote (ssh:) sessions bypass the backend dismissed
+                                              // filter, so also record the dismissal on the frontend.
+                                              if (cs.sessionId.startsWith('ssh:')) remoteDismissedRef.current.set(cs.sessionId, Date.now())
                                               setClaudeSessions((prev) => prev.filter((s) => s.sessionId !== cs.sessionId))
                                             }}
                                             className="hidden group-hover:flex items-center justify-center text-slate-600 hover:text-rose-500 transition-colors outline-none"
@@ -5634,8 +5671,6 @@ export default function Mini() {
                             const merged = [...unified, ...claudeUnified].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
 
                             const agentSeqCount: Record<string, number> = {}
-                            // Per-identity sequence for Hermes titles, mirroring agentSeqCount.
-                            const hermesSeqCount: Record<string, number> = {}
                             return merged.map((item, index) => {
                               if (item.type === 'oc') {
                                 const s = item.data
@@ -5687,10 +5722,7 @@ export default function Mini() {
                                 const cs = item.data
                                 // Hermes title mirrors OpenClaw: stable identity + sequence,
                                 // never the question (the question is appended separately below).
-                                const hermesTitle = (() => {
-                                  const seq = (hermesSeqCount['hermes'] = (hermesSeqCount['hermes'] || 0) + 1)
-                                  return `Hermes #${seq}`
-                                })()
+                                const hermesTitle = `Hermes #${getHermesSeq(cs.sessionId)}`
                                 const projectName = cs.source === 'hermes' ? hermesTitle : (cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : 'unknown')
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
@@ -5739,6 +5771,9 @@ export default function Mini() {
                                       onClick={(e) => {
                                         e.stopPropagation()
                                         invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {})
+                                        // Remote (ssh:) sessions bypass the backend dismissed
+                                        // filter, so also record the dismissal on the frontend.
+                                        if (cs.sessionId.startsWith('ssh:')) remoteDismissedRef.current.set(cs.sessionId, Date.now())
                                         setClaudeSessions((prev) => prev.filter((s) => s.sessionId !== cs.sessionId))
                                       }}
                                       className="shrink-0 text-slate-600 hover:text-rose-500 transition-colors outline-none"
