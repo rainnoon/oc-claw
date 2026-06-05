@@ -3704,7 +3704,18 @@ export default function Mini() {
         focusExpandTimerRef.current = null
         if (collapsingRef.current || moveModeRef.current || mascotDragActiveRef.current) return
         if (largeMascotRef.current) return
-        expand()
+        // The mini window is always-on-top, so Windows hands it focus when any
+        // other window is minimized. Only auto-expand when the cursor is
+        // actually over the mascot — i.e. a real click — not an incidental
+        // focus grab from minimizing another app.
+        invoke('cursor_over_mini_window')
+          .then((over) => {
+            if (!over) return
+            if (collapsingRef.current || moveModeRef.current || mascotDragActiveRef.current) return
+            if (largeMascotRef.current) return
+            expand()
+          })
+          .catch(() => {})
       }, 80)
     }
     window.addEventListener('focus', onFocus)

@@ -3800,6 +3800,40 @@ async fn set_efficiency_hover_tracking(app: tauri::AppHandle, active: bool) -> R
     Ok(())
 }
 
+/// Whether the OS mouse cursor is currently within the mini window's bounds.
+///
+/// The mini window is always-on-top, so Windows hands it focus whenever
+/// another window is minimized. The frontend's focus→auto-expand path uses
+/// this to tell a genuine mascot click (cursor over the window) apart from an
+/// incidental focus grab (cursor over the other window's minimize button),
+/// preventing the panel from popping up when the user minimizes any app.
+#[tauri::command]
+fn cursor_over_mini_window(app: tauri::AppHandle) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        use windows::Win32::Foundation::POINT;
+        if let Some(win) = app.get_webview_window("mini") {
+            if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                let mut pt = POINT::default();
+                let ok = unsafe { GetCursorPos(&mut pt).is_ok() };
+                if ok {
+                    return pt.x >= pos.x
+                        && pt.x <= pos.x + size.width as i32
+                        && pt.y >= pos.y
+                        && pt.y <= pos.y + size.height as i32;
+                }
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        true
+    }
+}
+
 /// Background polling loop for efficiency-mode hover.
 /// Checks the cursor position against two regions:
 ///  - **Collapsed**: a wide strip around the notch (notch_off*2 + 200 px,
@@ -7357,7 +7391,35 @@ fn get_frontmost_app_name() -> String {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows equivalent: resolve the foreground window's owning process and
+/// return its exe file stem (e.g. "Cursor" from "...\Cursor.exe", "oc-claw",
+/// "Code"). The shared matchers (`is_cursor_frontmost_app`, etc.) compare
+/// against these stems, so completion popups can be suppressed while the
+/// relevant app is focused.
+#[cfg(target_os = "windows")]
+fn get_frontmost_app_name() -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0 == std::ptr::null_mut() {
+            return String::new();
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == 0 {
+            return String::new();
+        }
+        match get_process_exe_path(pid) {
+            Some(path) => std::path::Path::new(&path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            None => String::new(),
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn get_frontmost_app_name() -> String { String::new() }
 
 fn is_cursor_frontmost_app(name: &str) -> bool {
@@ -7463,11 +7525,25 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     // Mark sessions' active tab:
     // - Ghostty: match by terminal ID
     // - CC running inside Cursor's integrated terminal: check if Cursor is frontmost
-    // - Cursor IDE sessions: set at Stop time in process_claude_event
+    // - Cursor IDE sessions: prefer the per-window focus state reported by the
+    //   bound extension port (`/window-meta` → `focused`); fall back to the
+    //   coarse "is any Cursor frontmost" check when no port is bound
     // - Codex standalone app: check if Codex/Code is frontmost
     let frontmost = get_frontmost_app_name();
     let cursor_is_active = is_cursor_frontmost_app(&frontmost);
     let codex_is_active = is_codex_frontmost_app(&frontmost);
+    // While the user is interacting with our own panel, Cursor's window loses
+    // OS focus. Treat the panel being frontmost as "still on Cursor" so a
+    // completed session isn't (re)surfaced just because the user clicked oc-claw.
+    let panel_is_frontmost = frontmost == "oc-claw";
+    // Cache `/window-meta` focus lookups so multiple sessions sharing one
+    // Cursor window only hit the extension once per poll.
+    let mut cursor_focus_cache: std::collections::HashMap<u16, bool> = std::collections::HashMap::new();
+    let mut cursor_window_focused = |port: u16| -> bool {
+        *cursor_focus_cache
+            .entry(port)
+            .or_insert_with(|| get_cursor_window_meta(port).map(|m| m.focused).unwrap_or(false))
+    };
     let is_ghostty = |s: &ClaudeSession| -> bool {
         matches!(s.host_terminal.as_deref(), Some("Ghostty" | "ghostty"))
     };
@@ -7480,7 +7556,10 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     }
     for s in &mut list {
         if s.source == "cursor" {
-            s.is_active_tab = cursor_is_active;
+            s.is_active_tab = match s.cursor_port {
+                Some(port) => cursor_window_focused(port) || panel_is_frontmost,
+                None => cursor_is_active,
+            };
             continue;
         }
         if s.is_active_tab {
@@ -16060,7 +16139,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())
