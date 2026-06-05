@@ -23,6 +23,11 @@
   },
 
   "mini": {
+    "geminiDone": "Gemini 작업이 완료되었습니다. 클릭하여 보기.",
+    "geminiDoneNoJump": "Gemini 작업이 완료되었습니다.",
+    "goToTerminal": "터미널에서 승인해 주세요",
+    "cursorDone": "Cursor 작업이 완료되었습니다. 클릭하여 보기.",
+    "codeDone": "Code 작업이 완료되었습니다. 클릭하여 보기.",
     "unassigned": "미배정",
     "pairing": "페어링",
     "settings": "설정",
@@ -149,6 +154,9 @@
     "viewInGemini": "Gemini로 이동",
     "enableHermes": "Hermes Agent 활성화",
     "enableHermesDesc": "원격 연결은 테스트 후 플러그인 설치 필요. 새 Agent 추가 시 재설치 필요",
+    "pluginRestartWarn": "설치/업데이트하면 Hermes Gateway가 재시작되어 진행 중인 세션이 중단될 수 있습니다(약 1분). 계속하시겠습니까?",
+    "pluginRestartWarnRemote": "설치/업데이트하면 원격 Hermes Gateway가 재시작되어 진행 중인 세션이 중단될 수 있습니다(약 1분). 계속하시겠습니까?",
+    "confirmInstall": "설치 확인",
     "hermesSound": "Hermes 완료 소리",
     "hermesSoundDesc": "Hermes 작업 완료 시 소리 재생",
     "viewInHermes": "Hermes로 이동",
@@ -332,6 +340,10 @@
 
   "claudeStats": {
     "title": "Claude Code 통계",
+    "titleCodex": "Codex 통계",
+    "titleCursor": "Cursor 통계",
+    "titleGemini": "Gemini CLI 통계",
+    "titleHermes": "Hermes Agent 통계",
     "last14Days": "최근 14일",
     "totalTokens": "총 토큰",
     "sessionsCount": "세션",

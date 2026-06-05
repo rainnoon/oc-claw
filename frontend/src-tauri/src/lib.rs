@@ -664,7 +664,7 @@ async fn invoke_tool(url: &str, token: &str, tool: &str, args: serde_json::Value
     if !status.is_success() {
         return Err(format!("remote API error ({}): {}", status, text));
     }
-    serde_json::from_str(&text).map_err(|e| format!("parse remote response: {} body: {}", e, &text[..text.len().min(200)]))
+    serde_json::from_str(&text).map_err(|e| format!("parse remote response: {} body: {}", e, truncate_chars(&text, 200)))
 }
 
 /// Extract sessions array from remote API response, handling both formats:
@@ -14009,7 +14009,7 @@ print(json.dumps(rows))
     }
 
     let rows: Vec<serde_json::Value> = serde_json::from_str(trimmed)
-        .map_err(|e| format!("parse hermes remote stats: {} (output: {})", e, &trimmed[..trimmed.len().min(200)]))?;
+        .map_err(|e| format!("parse hermes remote stats: {} (output: {})", e, truncate_chars(trimmed, 200)))?;
 
     let now = chrono::Local::now();
     let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
@@ -14733,13 +14733,20 @@ print(json.dumps(result))
     let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
     let trimmed = output.trim();
     let result: serde_json::Value = serde_json::from_str(trimmed)
-        .map_err(|e| format!("parse remote plugin install: {} (output: {})", e, &trimmed[..trimmed.len().min(300)]))?;
+        .map_err(|e| format!("parse remote plugin install: {} (output: {})", e, truncate_chars(trimmed, 300)))?;
     Ok(result)
 }
 
 /// Escape a string for use inside single quotes in a shell command.
 fn shell_escape_single(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Truncate a string to at most `max_chars` characters for diagnostics.
+/// Uses char boundaries (not byte indices) so multibyte text (e.g. Chinese)
+/// in error messages never panics on a non-boundary slice.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
 }
 
 // ─── Cursor Integration ───────────────────────────────────────────────

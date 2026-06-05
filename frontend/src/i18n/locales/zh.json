@@ -37,6 +37,11 @@
   },
 
   "mini": {
+    "geminiDone": "Gemini 已完成工作，点击查看。",
+    "geminiDoneNoJump": "Gemini 已完成工作。",
+    "goToTerminal": "请在终端中确认",
+    "cursorDone": "Cursor 已完成工作，点击查看。",
+    "codeDone": "Code 已完成工作，点击查看。",
     "unassigned": "未分配",
     "pairing": "配对",
     "settings": "设置",
@@ -168,6 +173,9 @@
     "viewInGemini": "前往 Gemini",
     "enableHermes": "启用 Hermes Agent",
     "enableHermesDesc": "远程连接需测试后安装插件，新增 Agent 后需重新安装",
+    "pluginRestartWarn": "安装/更新会重启 Hermes Gateway，正在进行的会话可能中断（约 1 分钟）。确认继续？",
+    "pluginRestartWarnRemote": "安装/更新会重启远程 Hermes Gateway，正在进行的会话可能中断（约 1 分钟）。确认继续？",
+    "confirmInstall": "确认安装",
     "hermesSound": "Hermes 完成提示音",
     "hermesSoundDesc": "Hermes 任务完成时播放提示音",
     "viewInHermes": "前往 Hermes",

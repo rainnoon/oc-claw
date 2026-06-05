@@ -243,6 +243,9 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
   const [showGuide, setShowGuide] = useState(false)
   const [needsPlugin, setNeedsPlugin] = useState(false)
   const [installingPlugin, setInstallingPlugin] = useState(false)
+  // Require an explicit confirmation before installing/updating the plugin,
+  // because it restarts the Hermes gateway and can interrupt running sessions.
+  const [confirmingInstall, setConfirmingInstall] = useState(false)
   const [installMsg, setInstallMsg] = useState('')
   const [pluginChecked, setPluginChecked] = useState(false)
   const cancelledRef = useRef(false)
@@ -460,24 +463,48 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
           <span className={`text-xs flex items-center gap-1 ${needsPlugin ? 'text-amber-400' : 'text-emerald-400'}`}>
             {needsPlugin ? '⚠ 插件未安装' : '✓ 插件已安装'}
           </span>
-          <button
-            disabled={installingPlugin}
-            onClick={async () => {
-              setInstallingPlugin(true)
-              setInstallMsg('')
-              try {
-                await invoke('install_hermes_hooks')
-                setNeedsPlugin(false)
-                setInstallMsg('✓ 安装成功 · Gateway 重启中，约 1 分钟后生效')
-              } catch (e: any) {
-                setInstallMsg(`✗ ${String(e)}`)
-              }
-              setInstallingPlugin(false)
-            }}
-            className={`px-3 py-1 border rounded-lg text-xs font-medium transition-colors ${needsPlugin ? 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/30 text-amber-400' : 'bg-cyan-500/20 hover:bg-cyan-500/30 border-cyan-500/30 text-cyan-400'}`}
-          >
-            {installingPlugin ? '安装中...' : needsPlugin ? '安装插件' : '更新插件'}
-          </button>
+          {confirmingInstall ? (
+            <>
+              <span className="text-xs text-amber-400">{t('settings.pluginRestartWarn', '安装/更新会重启 Hermes Gateway，正在进行的会话可能中断（约 1 分钟）。确认继续？')}</span>
+              <button
+                disabled={installingPlugin}
+                onClick={async () => {
+                  setConfirmingInstall(false)
+                  setInstallingPlugin(true)
+                  setInstallMsg('')
+                  try {
+                    await invoke('install_hermes_hooks')
+                    setNeedsPlugin(false)
+                    setInstallMsg('✓ 安装成功 · Gateway 重启中，约 1 分钟后生效')
+                  } catch (e: any) {
+                    setInstallMsg(`✗ ${String(e)}`)
+                  }
+                  setInstallingPlugin(false)
+                }}
+                className="px-3 py-1 border rounded-lg text-xs font-medium transition-colors bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/30 text-amber-400"
+              >
+                {installingPlugin ? '安装中...' : t('settings.confirmInstall', '确认安装')}
+              </button>
+              <button
+                disabled={installingPlugin}
+                onClick={() => setConfirmingInstall(false)}
+                className="px-3 py-1 border rounded-lg text-xs font-medium transition-colors bg-white/5 hover:bg-white/10 border-white/10 text-white/60"
+              >
+                {t('common.cancel', '取消')}
+              </button>
+            </>
+          ) : (
+            <button
+              disabled={installingPlugin}
+              onClick={() => {
+                setInstallMsg('')
+                setConfirmingInstall(true)
+              }}
+              className={`px-3 py-1 border rounded-lg text-xs font-medium transition-colors ${needsPlugin ? 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/30 text-amber-400' : 'bg-cyan-500/20 hover:bg-cyan-500/30 border-cyan-500/30 text-cyan-400'}`}
+            >
+              {needsPlugin ? '安装插件' : '更新插件'}
+            </button>
+          )}
           {installMsg && (
             <span className={`text-xs ${installMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>
               {installMsg}
@@ -490,30 +517,54 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
           <span className={`text-xs flex items-center gap-1 ${needsPlugin ? 'text-amber-400' : 'text-emerald-400'}`}>
             {needsPlugin ? '⚠ 插件未安装' : '✓ 插件已安装'}
           </span>
-          <button
-            disabled={installingPlugin}
-            onClick={async () => {
-              setInstallingPlugin(true)
-              setInstallMsg('')
-              try {
-                const r: any = await invoke('install_hermes_remote_plugin', { sshHost: conn.host, sshUser: conn.user })
-                if (r.installed && r.enabled) {
-                  setNeedsPlugin(false)
-                  setTestMsg(testMsg.replace('Plugin ✗', 'Plugin ✓').replace('Plugin ✓ (未启用)', 'Plugin ✓'))
-                  const targets = (r.targets || []).length
-                  setInstallMsg(`✓ 安装成功 · ${targets} 个 profile · Gateway 重启中，约 1 分钟后生效`)
-                } else {
-                  setInstallMsg(`✗ 安装失败: ${r.enable_error || r.error || '未知错误'}`)
-                }
-              } catch (e: any) {
-                setInstallMsg(`✗ ${String(e)}`)
-              }
-              setInstallingPlugin(false)
-            }}
-            className={`px-3 py-1 border rounded-lg text-xs font-medium transition-colors ${needsPlugin ? 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/30 text-amber-400' : 'bg-cyan-500/20 hover:bg-cyan-500/30 border-cyan-500/30 text-cyan-400'}`}
-          >
-            {installingPlugin ? '安装中...' : needsPlugin ? '安装插件' : '更新插件'}
-          </button>
+          {confirmingInstall ? (
+            <>
+              <span className="text-xs text-amber-400">{t('settings.pluginRestartWarnRemote', '安装/更新会重启远程 Hermes Gateway，正在进行的会话可能中断（约 1 分钟）。确认继续？')}</span>
+              <button
+                disabled={installingPlugin}
+                onClick={async () => {
+                  setConfirmingInstall(false)
+                  setInstallingPlugin(true)
+                  setInstallMsg('')
+                  try {
+                    const r: any = await invoke('install_hermes_remote_plugin', { sshHost: conn.host, sshUser: conn.user })
+                    if (r.installed && r.enabled) {
+                      setNeedsPlugin(false)
+                      setTestMsg(testMsg.replace('Plugin ✗', 'Plugin ✓').replace('Plugin ✓ (未启用)', 'Plugin ✓'))
+                      const targets = (r.targets || []).length
+                      setInstallMsg(`✓ 安装成功 · ${targets} 个 profile · Gateway 重启中，约 1 分钟后生效`)
+                    } else {
+                      setInstallMsg(`✗ 安装失败: ${r.enable_error || r.error || '未知错误'}`)
+                    }
+                  } catch (e: any) {
+                    setInstallMsg(`✗ ${String(e)}`)
+                  }
+                  setInstallingPlugin(false)
+                }}
+                className="px-3 py-1 border rounded-lg text-xs font-medium transition-colors bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/30 text-amber-400"
+              >
+                {installingPlugin ? '安装中...' : t('settings.confirmInstall', '确认安装')}
+              </button>
+              <button
+                disabled={installingPlugin}
+                onClick={() => setConfirmingInstall(false)}
+                className="px-3 py-1 border rounded-lg text-xs font-medium transition-colors bg-white/5 hover:bg-white/10 border-white/10 text-white/60"
+              >
+                {t('common.cancel', '取消')}
+              </button>
+            </>
+          ) : (
+            <button
+              disabled={installingPlugin}
+              onClick={() => {
+                setInstallMsg('')
+                setConfirmingInstall(true)
+              }}
+              className={`px-3 py-1 border rounded-lg text-xs font-medium transition-colors ${needsPlugin ? 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/30 text-amber-400' : 'bg-cyan-500/20 hover:bg-cyan-500/30 border-cyan-500/30 text-cyan-400'}`}
+            >
+              {needsPlugin ? '安装插件' : '更新插件'}
+            </button>
+          )}
           {installMsg && (
             <span className={`text-xs ${installMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>
               {installMsg}

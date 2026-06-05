@@ -23,6 +23,11 @@
   },
 
   "mini": {
+    "geminiDone": "Gemini ha terminado. Haz clic para ver.",
+    "geminiDoneNoJump": "Gemini ha terminado.",
+    "goToTerminal": "Por favor, apruébalo en la terminal",
+    "cursorDone": "Cursor ha terminado. Haz clic para ver.",
+    "codeDone": "Code ha terminado. Haz clic para ver.",
     "unassigned": "Sin asignar",
     "pairing": "Emparejar",
     "settings": "Ajustes",
@@ -149,6 +154,9 @@
     "viewInGemini": "Ir a Gemini",
     "enableHermes": "Activar Hermes Agent",
     "enableHermesDesc": "Remoto: probar conexión e instalar plugin. Reinstalar tras agregar nuevos Agents",
+    "pluginRestartWarn": "Instalar/actualizar reinicia el Hermes Gateway; las sesiones en curso pueden interrumpirse (~1 min). ¿Continuar?",
+    "pluginRestartWarnRemote": "Instalar/actualizar reinicia el Hermes Gateway remoto; las sesiones en curso pueden interrumpirse (~1 min). ¿Continuar?",
+    "confirmInstall": "Confirmar instalación",
     "hermesSound": "Sonido de finalización de Hermes",
     "hermesSoundDesc": "Reproducir sonido cuando Hermes termina una tarea",
     "viewInHermes": "Ir a Hermes",
@@ -332,6 +340,10 @@
 
   "claudeStats": {
     "title": "Estadísticas de Claude Code",
+    "titleCodex": "Estadísticas de Codex",
+    "titleCursor": "Estadísticas de Cursor",
+    "titleGemini": "Estadísticas de Gemini CLI",
+    "titleHermes": "Estadísticas de Hermes Agent",
     "last14Days": "Últimos 14 días",
     "totalTokens": "Tokens totales",
     "sessionsCount": "sesión(es)",

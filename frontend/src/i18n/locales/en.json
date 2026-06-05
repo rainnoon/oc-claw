@@ -37,6 +37,11 @@
   },
 
   "mini": {
+    "geminiDone": "Gemini has finished working. Click to view.",
+    "geminiDoneNoJump": "Gemini has finished working.",
+    "goToTerminal": "Please approve in the terminal",
+    "cursorDone": "Cursor has finished working. Click to view.",
+    "codeDone": "Code has finished working. Click to view.",
     "unassigned": "Unassigned",
     "pairing": "Pairing",
     "settings": "Settings",
@@ -168,6 +173,9 @@
     "viewInGemini": "Go to Gemini",
     "enableHermes": "Enable Hermes Agent",
     "enableHermesDesc": "Remote: test connection then install plugin. Reinstall after adding new Agents",
+    "pluginRestartWarn": "Installing/updating restarts the Hermes Gateway; running sessions may be interrupted (~1 min). Continue?",
+    "pluginRestartWarnRemote": "Installing/updating restarts the remote Hermes Gateway; running sessions may be interrupted (~1 min). Continue?",
+    "confirmInstall": "Confirm install",
     "hermesSound": "Hermes Completion Sound",
     "hermesSoundDesc": "Play sound when Hermes finishes a task",
     "viewInHermes": "Go to Hermes",
