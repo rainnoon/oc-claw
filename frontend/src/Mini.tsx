@@ -5290,7 +5290,10 @@ export default function Mini() {
                                             // until focus blur eventually triggers a close.
                                             if (cs.source === 'cursor') {
                                               invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
-                                            } else {
+                                            } else if (!(isWindowsPlatform && cs.source === 'gemini')) {
+                                              // Gemini on Windows runs in a terminal whose window can't be
+                                              // reliably targeted from the detached process tree, so don't
+                                              // attempt to jump — just dismiss the popup.
                                               invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
                                             }
                                             collapseFnRef.current?.()
@@ -5314,7 +5317,9 @@ export default function Mini() {
                                               {cs.source === 'codex'
                                                 ? t('mini.codeDone', 'Code has finished working. Click to view.')
                                                 : cs.source === 'gemini'
-                                                  ? t('mini.geminiDone', 'Gemini has finished working. Click to view.')
+                                                  ? (isWindowsPlatform
+                                                      ? t('mini.geminiDoneNoJump', 'Gemini has finished working.')
+                                                      : t('mini.geminiDone', 'Gemini has finished working. Click to view.'))
                                                   : t('mini.cursorDone', 'Cursor has finished working. Click to view.')}
                                             </p>
                                           ) : (
