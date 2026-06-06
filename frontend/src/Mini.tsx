@@ -109,7 +109,6 @@ const MASCOT_BASE_SIZE = 43
 // cells scaled down to ~43px). These multipliers blow them up only at the
 // rendering layer, leaving the underlying window/hitbox math untouched so
 // large-mode video sizing keeps working.
-const MINI_SPRITE_DISPLAY_MULTIPLIER = 2
 const SESSION_SPRITE_DISPLAY_MULTIPLIER = 0.88
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
@@ -1548,7 +1547,6 @@ export default function Mini() {
       const initialMascotPosition = storedPosition === 'left' || storedPosition === 'right' ? storedPosition : 'right'
       const storedMascotScale = await store.get('mascot_scale')
       const initialMascotScale = typeof storedMascotScale === 'number' ? clampMascotScale(storedMascotScale) : 1
-      const storedLargeMascot = await store.get('large_mascot')
       const storedLargeMascotScale = await store.get('large_mascot_scale')
       const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(1, storedLargeMascotScale)) : 5
       const existingMode = await loadAppMode()
@@ -4922,19 +4920,6 @@ export default function Mini() {
                                 const isCodexSource = cs.source === 'codex'
                                 const isGeminiSource = cs.source === 'gemini'
                                 const isHermesSource = cs.source === 'hermes'
-                                const hermesPlatform = isHermesSource && cs.platform ? cs.platform : ''
-                                const hermesPlatformLabel = (() => {
-                                  if (!hermesPlatform) return ''
-                                  const p = hermesPlatform.toLowerCase()
-                                  if (p.includes('feishu') || p.includes('lark')) return 'Feishu'
-                                  if (p.includes('telegram')) return 'Telegram'
-                                  if (p.includes('discord')) return 'Discord'
-                                  if (p.includes('slack')) return 'Slack'
-                                  if (p.includes('wechat') || p.includes('weixin')) return 'WeChat'
-                                  if (p.includes('whatsapp')) return 'WhatsApp'
-                                  if (!p || p === 'cli' || p === 'terminal') return ''
-                                  return hermesPlatform.charAt(0).toUpperCase() + hermesPlatform.slice(1)
-                                })()
                                 const isRemoteHermes = isHermesSource && cs.sessionId?.startsWith('ssh:')
                                 const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : isHermesSource ? 'Hermes' : 'Claude'
                                 const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : isGeminiSource ? 'bg-[#1d2736] text-[#8ab4f8]' : isHermesSource ? 'bg-[#2d1f3f] text-[#c084fc]' : 'bg-[#3f211d] text-[#e87a65]'
