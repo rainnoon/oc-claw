@@ -38,6 +38,8 @@
 
   "mini": {
     "geminiDone": "Gemini 已完成工作，点击查看。",
+    "opencodeDone": "opencode 已完成工作，点击查看。",
+    "viewInOpencode": "前往 opencode",
     "geminiDoneNoJump": "Gemini 已完成工作。",
     "goToTerminal": "请在终端中确认",
     "cursorDone": "Cursor 已完成工作，点击查看。",
@@ -171,6 +173,10 @@
     "geminiSound": "Gemini 完成提示音",
     "geminiSoundDesc": "Gemini 任务完成时播放提示音",
     "viewInGemini": "前往 Gemini",
+    "enableOpencode": "启用 opencode",
+    "enableOpencodeDesc": "通过插件监控本地 opencode 会话",
+    "opencodeSound": "opencode 完成提示音",
+    "opencodeSoundDesc": "opencode 任务完成时播放提示音",
     "enableHermes": "启用 Hermes Agent",
     "enableHermesDesc": "远程连接需测试后安装插件，新增 Agent 后需重新安装",
     "pluginRestartWarn": "安装/更新会重启 Hermes Gateway，正在进行的会话可能中断（约 1 分钟）。确认继续？",

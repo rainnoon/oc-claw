@@ -167,6 +167,27 @@ export async function saveMiniPetId(id: string): Promise<void> {
   await store.save()
 }
 
+// ─── Coding-mode extra mascots (multi-mascot feature) ───
+//
+// Extra small mascots placed in coding mode. They all share equal status with
+// the primary mini mascot (each is fully functional), but the user may pick a
+// different pet per mascot — so we persist the ordered list of pet ids. Each
+// entry spawns a fully-functional `extra-mascot-*` window that mirrors the
+// primary mascot's agent state and expands the main panel on click. Persisted
+// so the mascots survive restarts.
+export async function loadExtraMascots(): Promise<string[]> {
+  const store = await getPetStore()
+  const v = await store.get('extra_mascots')
+  if (Array.isArray(v)) return v.filter((id): id is string => typeof id === 'string')
+  return []
+}
+
+export async function saveExtraMascots(petIds: string[]): Promise<void> {
+  const store = await getPetStore()
+  await store.set('extra_mascots', petIds)
+  await store.save()
+}
+
 // ─── App-mode onboarding version gate ───
 //
 // Bump this whenever we want to force existing users through the mode-pick

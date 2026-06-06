@@ -24,6 +24,8 @@
 
   "mini": {
     "geminiDone": "Gemini 작업이 완료되었습니다. 클릭하여 보기.",
+    "opencodeDone": "opencode 작업이 완료되었습니다. 클릭하여 보기.",
+    "viewInOpencode": "opencode로 이동",
     "geminiDoneNoJump": "Gemini 작업이 완료되었습니다.",
     "goToTerminal": "터미널에서 승인해 주세요",
     "cursorDone": "Cursor 작업이 완료되었습니다. 클릭하여 보기.",
@@ -152,6 +154,10 @@
     "geminiSound": "Gemini 완료 소리",
     "geminiSoundDesc": "Gemini 작업 완료 시 소리 재생",
     "viewInGemini": "Gemini로 이동",
+    "enableOpencode": "opencode 활성화",
+    "enableOpencodeDesc": "플러그인으로 로컬 opencode 세션 모니터링",
+    "opencodeSound": "opencode 완료 소리",
+    "opencodeSoundDesc": "opencode가 작업을 완료하면 소리 재생",
     "enableHermes": "Hermes Agent 활성화",
     "enableHermesDesc": "원격 연결은 테스트 후 플러그인 설치 필요. 새 Agent 추가 시 재설치 필요",
     "pluginRestartWarn": "설치/업데이트하면 Hermes Gateway가 재시작되어 진행 중인 세션이 중단될 수 있습니다(약 1분). 계속하시겠습니까?",

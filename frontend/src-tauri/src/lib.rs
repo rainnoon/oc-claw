@@ -7533,6 +7533,34 @@ fn frontmost_matches_host_terminal(frontmost: &str, host_terminal: &str) -> bool
     false
 }
 
+/// Returns true if the user is currently looking at the terminal tab/app that
+/// hosts this session. Used to suppress both the completion popup and the
+/// waiting/permission popup when the user is already watching the session.
+fn user_looking_at_session_tab(session: &ClaudeSession) -> bool {
+    let frontmost = get_frontmost_app_name();
+    let is_ghostty_session = matches!(
+        session.host_terminal.as_deref(),
+        Some("Ghostty" | "ghostty")
+    );
+    if session.source == "cursor" {
+        is_cursor_frontmost_app(&frontmost)
+    } else if session.source == "codex" {
+        let ghostty_match = is_ghostty_session
+            && session.terminal_id.as_ref()
+                .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+                .unwrap_or(false);
+        ghostty_match || is_codex_frontmost_app(&frontmost)
+    } else if is_ghostty_session {
+        session.terminal_id.as_ref()
+            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+            .unwrap_or(false)
+    } else if let Some(ht) = session.host_terminal.as_deref() {
+        frontmost_matches_host_terminal(&frontmost, ht)
+    } else {
+        false
+    }
+}
+
 
 #[tauri::command]
 async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec<ClaudeSession>, String> {
@@ -7556,8 +7584,8 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
             if !dominated { continue; }
 
             let is_desktop_hosted = session.host_terminal.as_deref() == Some("Claude Desktop");
-            if session.source == "cursor" || session.source == "codex" || is_desktop_hosted {
-                // Cursor/Codex/CC Desktop: timeout-based staleness (120s without any event update).
+            if session.source == "cursor" || session.source == "codex" || session.source == "opencode" || is_desktop_hosted {
+                // Cursor/Codex/opencode/CC Desktop: timeout-based staleness (120s without any event update).
                 // Hook PIDs are not stable enough for PID-alive checks in these environments.
                 let age_ms = now_ms.saturating_sub(session.updated_at);
                 if age_ms > 120_000 {
@@ -8219,6 +8247,12 @@ async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String>
         return Ok(empty_claude_stats());
     }
 
+    // opencode has no local token-usage source oc-claw can parse, so return
+    // empty stats and let the frontend render a "not supported" hint.
+    if source == "opencode" {
+        return Ok(empty_claude_stats());
+    }
+
     if source == "gemini" {
         return collect_gemini_stats();
     }
@@ -8624,8 +8658,61 @@ async fn spawn_demo_mascot(app: tauri::AppHandle, pet_id: String) -> Result<Stri
     static DEMO_COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = DEMO_COUNTER.fetch_add(1, Ordering::SeqCst);
     let label = format!("demo-mascot-{}", n);
-
     let url = format!("index.html#/mini?demo=1&pet={}", pet_id);
+    spawn_mascot_window(app, label, url, n, true)
+}
+
+/// Live registry of extra (multi-pet) mascots, mapping each spawned window's
+/// label to the codex pet id it renders. The clones share equal status with the
+/// primary mascot but may each render a different pet the user picked. Lets the
+/// settings picker list and manage the currently-open mascots without
+/// re-spawning them.
+static EXTRA_MASCOTS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Spawn an extra, fully-functional mascot window for coding mode's
+/// "multi-mascot" feature. Unlike demo mascots (dev-only, decorative), these
+/// windows load `?extra=1` so the renderer wires up the click→expand-main-panel
+/// effect, making each mascot equal in status to the primary mini mascot. They
+/// still mirror the same aggregated agent state via the `mini-pet-state`
+/// broadcast.
+#[tauri::command]
+async fn spawn_extra_mascot(app: tauri::AppHandle, pet_id: String) -> Result<String, String> {
+    use std::sync::atomic::AtomicU64;
+    static EXTRA_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = EXTRA_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let label = format!("extra-mascot-{}", n);
+    let url = format!("index.html#/mini?extra=1&pet={}", pet_id);
+    let result = spawn_mascot_window(app, label.clone(), url, n, false);
+    if result.is_ok() {
+        if let Ok(mut reg) = EXTRA_MASCOTS.lock() {
+            reg.push((label, pet_id));
+        }
+    }
+    result
+}
+
+/// List the currently-open extra mascots as `[{ label, petId }]` so the picker
+/// can reflect live state and remove individual windows.
+#[tauri::command]
+fn list_extra_mascots() -> Vec<serde_json::Value> {
+    EXTRA_MASCOTS
+        .lock()
+        .map(|reg| {
+            reg.iter()
+                .map(|(label, pet_id)| {
+                    serde_json::json!({ "label": label, "petId": pet_id })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Shared mascot-window builder used by both demo and extra (multi-pet) mascots.
+/// `n` is the spawn index used to step each subsequent window across the screen
+/// so they don't stack on top of each other. `over_fullscreen` controls whether
+/// the window stays visible above other apps' fullscreen spaces (demo: yes,
+/// extra mascots: no, so they hide on fullscreen like the primary mascot).
+fn spawn_mascot_window(app: tauri::AppHandle, label: String, url: String, n: u64, over_fullscreen: bool) -> Result<String, String> {
     let win = tauri::WebviewWindowBuilder::new(
         &app,
         label.clone(),
@@ -8633,7 +8720,10 @@ async fn spawn_demo_mascot(app: tauri::AppHandle, pet_id: String) -> Result<Stri
     )
     .title("oc-claw demo mascot")
     .inner_size(96.0, 96.0)
-    .min_inner_size(96.0, 96.0)
+    // Small floor so extra (multi-pet) mascots can shrink to match a low
+    // "Mascot Size" slider via setSize. Demo mascots keep the 96px frame since
+    // they never resize.
+    .min_inner_size(16.0, 16.0)
     .resizable(false)
     .decorations(false)
     .transparent(true)
@@ -8694,7 +8784,16 @@ async fn spawn_demo_mascot(app: tauri::AppHandle, pet_id: String) -> Result<Stri
                 unsafe {
                     let _: () = msg_send![demo_obj, setLevel: 27isize];
                     let _: () = msg_send![demo_obj, setFrame: new_frame, display: true, animate: false];
-                    let behavior: usize = (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6);
+                    // CanJoinAllSpaces | Stationary | FullScreenAuxiliary | IgnoresCycle
+                    // keeps demo mascots visible over other apps' fullscreen (handy for
+                    // screen-recording demos). Extra (multi-pet) mascots omit the
+                    // fullscreen bits so macOS hides them when a video/app goes
+                    // fullscreen — matching the primary mascot's behavior.
+                    let behavior: usize = if over_fullscreen {
+                        (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6)
+                    } else {
+                        (1 << 4) | (1 << 6)
+                    };
                     let _: () = msg_send![demo_obj, setCollectionBehavior: behavior];
                     let _: () = msg_send![demo_obj, setAcceptsMouseMovedEvents: true];
                 }
@@ -8716,6 +8815,8 @@ async fn spawn_demo_mascot(app: tauri::AppHandle, pet_id: String) -> Result<Stri
         }
         let _ = win.set_always_on_top(true);
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = over_fullscreen;
     let _ = win.show();
     Ok(label)
 }
@@ -8753,6 +8854,70 @@ async fn close_demo_mascots(app: tauri::AppHandle) -> Result<u32, String> {
     Ok(closed)
 }
 
+/// Close a single extra (multi-pet) mascot window by label.
+#[tauri::command]
+async fn close_extra_mascot(app: tauri::AppHandle, label: String) -> Result<bool, String> {
+    if !label.starts_with("extra-mascot-") {
+        return Err("invalid extra mascot label".into());
+    }
+    if let Ok(mut reg) = EXTRA_MASCOTS.lock() {
+        reg.retain(|(l, _)| l != &label);
+    }
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.close();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Close every spawned extra (multi-pet) mascot window, leaving only the main mini.
+#[tauri::command]
+async fn close_extra_mascots(app: tauri::AppHandle) -> Result<u32, String> {
+    if let Ok(mut reg) = EXTRA_MASCOTS.lock() {
+        reg.clear();
+    }
+    let mut closed = 0u32;
+    let labels: Vec<String> = app
+        .webview_windows()
+        .keys()
+        .filter(|l| l.starts_with("extra-mascot-"))
+        .cloned()
+        .collect();
+    for label in labels {
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = win.close();
+            closed += 1;
+        }
+    }
+    Ok(closed)
+}
+
+/// Hide or show every extra (multi-pet) mascot window without destroying it,
+/// so their positions survive. Used to keep the extra mascots in lock-step with
+/// the primary mascot: when the session panel is expanded the primary mascot is
+/// replaced by the panel, so the clones must disappear too (and reappear when it
+/// collapses).
+#[tauri::command]
+async fn set_extra_mascots_hidden(app: tauri::AppHandle, hidden: bool) -> Result<(), String> {
+    let labels: Vec<String> = app
+        .webview_windows()
+        .keys()
+        .filter(|l| l.starts_with("extra-mascot-"))
+        .cloned()
+        .collect();
+    for label in labels {
+        if let Some(win) = app.get_webview_window(&label) {
+            if hidden {
+                let _ = win.hide();
+            } else {
+                let _ = win.show();
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Open the platform's native folder picker so the user can choose a
 /// codex pet directory to import. Returns the absolute path or `null` if
 /// the user cancelled. Implemented with `osascript` on macOS and
@@ -8768,26 +8933,46 @@ async fn close_demo_mascots(app: tauri::AppHandle) -> Result<u32, String> {
 // main-thread assertions and aborts the app with SIGTERM.
 fn reassert_mini_floating(app: &tauri::AppHandle) {
     use tauri::Manager;
-    let Some(win) = app.get_webview_window("mini") else {
-        return;
-    };
-    let win_clone = win.clone();
-    let _ = app.run_on_main_thread(move || {
-        #[cfg(target_os = "macos")]
-        {
-            use objc2::runtime::AnyObject;
-            use objc2::msg_send;
-            if let Ok(ns_win) = win_clone.ns_window() {
-                let obj = unsafe { &*(ns_win as *mut AnyObject) };
-                unsafe {
-                    let _: () = msg_send![obj, setLevel: 27isize];
-                    let behavior: usize = (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6);
-                    let _: () = msg_send![obj, setCollectionBehavior: behavior];
+    // Reassert the main mini window plus every extra (multi-pet) mascot so they
+    // all sit at the exact same window level. macOS (and Tauri's own
+    // always-on-top bookkeeping) can silently demote floating windows after a
+    // foreign app takes focus; without this the extra mascots drift to a
+    // different layer than the primary mascot.
+    let mut wins: Vec<(tauri::WebviewWindow, bool)> = Vec::new();
+    if let Some(win) = app.get_webview_window("mini") {
+        wins.push((win, true));
+    }
+    for (label, win) in app.webview_windows() {
+        if label.starts_with("extra-mascot-") {
+            // Extra mascots omit the fullscreen bits so they hide on fullscreen.
+            wins.push((win, false));
+        }
+    }
+    for (win, over_fullscreen) in wins {
+        let win_clone = win.clone();
+        let _ = app.run_on_main_thread(move || {
+            #[cfg(target_os = "macos")]
+            {
+                use objc2::runtime::AnyObject;
+                use objc2::msg_send;
+                if let Ok(ns_win) = win_clone.ns_window() {
+                    let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                    unsafe {
+                        let _: () = msg_send![obj, setLevel: 27isize];
+                        let behavior: usize = if over_fullscreen {
+                            (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6)
+                        } else {
+                            (1 << 4) | (1 << 6)
+                        };
+                        let _: () = msg_send![obj, setCollectionBehavior: behavior];
+                    }
                 }
             }
-        }
-        let _ = win_clone.set_always_on_top(true);
-    });
+            #[cfg(not(target_os = "macos"))]
+            let _ = over_fullscreen;
+            let _ = win_clone.set_always_on_top(true);
+        });
+    }
 }
 
 #[tauri::command]
@@ -10123,6 +10308,13 @@ end tell"#,
                 }
             }
             return Err("No PID tracked for this Gemini session".to_string());
+        } else if source == "opencode" {
+            for app_name in ["Ghostty", "Terminal", "iTerm2", "iTerm", "Warp"] {
+                if try_activate_app(app_name) {
+                    return Ok(format!("Activated {}", app_name));
+                }
+            }
+            return Err("No PID tracked for this opencode session".to_string());
         } else if source == "hermes" {
             // Hermes supports multiple platforms. Use the platform field to
             // decide which application to activate, like OpenClaw does for
@@ -10418,6 +10610,15 @@ end tell"#,
             if let Some(p) = find_pid_by_exe_names(terminal_exes) {
                 activate_window_by_pid(p);
                 return Ok("Activated terminal for Gemini session".to_string());
+            }
+        } else if source == "opencode" {
+            let terminal_exes = &[
+                "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                "alacritty.exe", "wezterm-gui.exe", "hyper.exe",
+            ];
+            if let Some(p) = find_pid_by_exe_names(terminal_exes) {
+                activate_window_by_pid(p);
+                return Ok("Activated terminal for opencode session".to_string());
             }
         } else if source == "hermes" {
             let plat = platform.as_deref().unwrap_or("unknown").to_lowercase();
@@ -12594,6 +12795,10 @@ fn process_claude_event(
         let session_source: String;
         let session_host_terminal: Option<String>;
         let stop_was_interrupted;
+        // Whether the user is already looking at this session's terminal tab at
+        // the moment a waiting/permission event arrives — used to suppress the
+        // waiting popup, same focus rule as the completion popup.
+        let mut wait_tab_active = false;
 
         {
             let mut sessions = state.lock().unwrap();
@@ -12651,7 +12856,8 @@ fn process_claude_event(
                         "codex" => 2,
                         "gemini" => 3,
                         "hermes" => 4,
-                        "cursor" => 5,
+                        "opencode" => 5,
+                        "cursor" => 6,
                         _ => 0,
                     }
                 };
@@ -12874,28 +13080,7 @@ fn process_claude_event(
                     // Cursor: check if Cursor (or oc-claw) is the frontmost app.
                     // If a terminal ID is missing (older hooks / non-Ghostty),
                     // fall back to host-terminal checks where available.
-                    let frontmost = get_frontmost_app_name();
-                    let is_ghostty_session = matches!(
-                        session.host_terminal.as_deref(),
-                        Some("Ghostty" | "ghostty")
-                    );
-                    let is_tab_active = if session.source == "cursor" {
-                        is_cursor_frontmost_app(&frontmost)
-                    } else if session.source == "codex" {
-                        let ghostty_match = is_ghostty_session
-                            && session.terminal_id.as_ref()
-                                .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
-                                .unwrap_or(false);
-                        ghostty_match || is_codex_frontmost_app(&frontmost)
-                    } else if is_ghostty_session {
-                        session.terminal_id.as_ref()
-                            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
-                            .unwrap_or(false)
-                    } else if let Some(ht) = session.host_terminal.as_deref() {
-                        frontmost_matches_host_terminal(&frontmost, ht)
-                    } else {
-                        false
-                    };
+                    let is_tab_active = user_looking_at_session_tab(session);
                     if is_tab_active || interrupted {
                         session.last_response = None;
                     } else if session.source == "hermes" {
@@ -12922,9 +13107,9 @@ fn process_claude_event(
                         if resp_from_event.is_some() {
                             session.last_response = resp_from_event;
                         } else if session.last_response.is_none()
-                            && (session.source == "cursor" || session.source == "codex" || session.source == "gemini")
+                            && (session.source == "cursor" || session.source == "codex" || session.source == "gemini" || session.source == "opencode")
                         {
-                            // Gemini's AfterAgent hook carries no assistant text, so fall
+                            // Gemini/opencode hooks carry no assistant text, so fall
                             // back to a placeholder like Cursor/Codex so the completion
                             // popup still triggers. The frontend renders "✓" specially.
                             session.last_response = Some("✓".to_string());
@@ -12947,6 +13132,14 @@ fn process_claude_event(
                     session.permission_suggestions = None;
                 }
 
+                // For waiting/permission events, capture tab focus now (real-time,
+                // not polling) so the waiting popup can be suppressed when the
+                // user is already watching the session's terminal tab.
+                if hook_event == "PermissionRequest"
+                    || (hook_event == "PreToolUse" && status == "waiting") {
+                    wait_tab_active = user_looking_at_session_tab(session);
+                }
+
                 pending_agents = session.pending_agents;
                 session_source = session.source.clone();
                 session_host_terminal = session.host_terminal.clone();
@@ -12961,8 +13154,11 @@ fn process_claude_event(
         // Also suppress sound while sub-agents are still running (pending_agents > 0).
         // Each PreToolUse(Agent) increments the counter, each SubagentStop decrements it.
         // Sound only plays when all sub-agents have completed.
-        let is_wait_event = hook_event == "PermissionRequest"
-            || (hook_event == "PreToolUse" && status == "waiting");
+        let is_wait_event = (hook_event == "PermissionRequest"
+            || (hook_event == "PreToolUse" && status == "waiting"))
+            // Suppress the waiting popup when the user is already looking at the
+            // session's terminal tab (same focus rule as the completion popup).
+            && !wait_tab_active;
         let is_completion_stop = hook_event == "Stop" && pending_agents == 0 && !stop_was_interrupted;
         if was_processing && !was_compacting
             && (is_completion_stop || is_wait_event) {
@@ -13320,6 +13516,378 @@ try {
     std::fs::write(&settings_path, json_str).map_err(|e| e.to_string())?;
     log::info!("[gemini_hooks] installed hooks to {:?}", settings_path);
 
+    Ok(())
+}
+
+// ─── opencode Integration ──────────────────────────────────────────────
+
+// oc-claw plugin source for opencode. opencode auto-loads any *.js/*.ts file
+// under ~/.config/opencode/plugins/, so we just drop this file there (no
+// opencode.json edit needed). It runs inside the opencode (Bun) process and
+// forwards session/tool events to the oc-claw socket. Zero dependencies
+// (node:net + node:os). Event names use Claude Code's PascalCase vocabulary so
+// process_claude_event() can normalize opencode the same way as other agents.
+const OPENCODE_PLUGIN_JS: &str = r#"// oc-claw opencode plugin (auto-generated by oc-claw — do not edit).
+// Forwards opencode session/tool events to oc-claw over a local socket so the
+// desktop pet can react to opencode activity. Runs in the opencode/Bun process.
+//
+// Event shapes (verified on opencode 1.16.2) put the session id in different
+// places depending on the event, so we extract it per-event instead of from a
+// single field:
+//   - session.created/updated/deleted: properties.info.id
+//   - session.status:                  properties.sessionID
+//   - message.updated:                 properties.info.sessionID
+//   - message.part.updated (tool/text):properties.part.sessionID
+// Completion ("Stop") is delivered as session.status with status.type==="idle",
+// NOT as a session.idle event.
+import net from "node:net";
+import os from "node:os";
+import { execFileSync } from "node:child_process";
+
+const IS_WIN = os.platform() === "win32";
+const SOCKET_PATH = "/tmp/ooclaw-opencode.sock";
+const TCP_PORT = 19287;
+const SOURCE = "opencode";
+
+// Only the root session (first non-subtask session seen in this opencode
+// process) is forwarded. Subtask sessions spawned by the `task` tool carry a
+// parentID and would otherwise show up as extra rows + duplicate sounds.
+let rootSessionId = null;
+// sessionId -> cwd, captured from session.created so every event can report it.
+const sessionCwd = new Map();
+// messageID -> { role, sessionID }, so message.part.updated text parts know
+// whether they belong to the user (prompt) or the assistant (reply text).
+const msgRoles = new Map();
+// Most recent assistant text on the root session — sent with Stop so oc-claw
+// can show it in the completion popup.
+let lastAssistantText = "";
+// Dedup consecutive identical event+status so streaming part updates don't spam.
+let lastSent = null;
+// True while opencode is blocked on a permission/question prompt. The gated tool
+// stays "running" and keeps streaming part updates during the wait, so we must
+// keep mapping those to the waiting state instead of letting them flip the pet
+// back to "working" (green). Cleared once answered, the tool finishes, or idle.
+let pendingWait = false;
+
+// Ghostty terminal id of the tab opencode runs in. oc-claw uses it to skip the
+// completion popup when that tab is already focused (same trick the CC/Gemini
+// hooks use). Captured lazily at startup, when the opencode tab is frontmost.
+// Empty for non-Ghostty terminals, which fall back to host-app focus matching.
+let terminalId = null;
+let tidAttempts = 0;
+function resolveTerminalId() {
+  if (terminalId || IS_WIN || tidAttempts >= 5) return terminalId;
+  tidAttempts++;
+  try {
+    const out = execFileSync(
+      "osascript",
+      ["-e", 'try\ntell application "Ghostty" to return id of first terminal of selected tab of front window as text\nend try'],
+      { encoding: "utf8", timeout: 2000 },
+    ).trim();
+    if (out) terminalId = out;
+  } catch {}
+  return terminalId;
+}
+
+// Fire-and-forget: a broken or missing oc-claw must never stall opencode.
+function sendToOcClaw(payload) {
+  let sock;
+  try {
+    sock = IS_WIN
+      ? net.createConnection({ host: "127.0.0.1", port: TCP_PORT })
+      : net.createConnection({ path: SOCKET_PATH });
+  } catch {
+    return;
+  }
+  const done = () => { try { sock.destroy(); } catch {} };
+  sock.setTimeout(1000);
+  sock.on("error", done);
+  sock.on("timeout", done);
+  sock.on("connect", () => {
+    try { sock.end(JSON.stringify(payload)); } catch { done(); }
+  });
+}
+
+function emit(sessionId, eventName, status, extra, force) {
+  if (!sessionId) return;
+  if (!rootSessionId) rootSessionId = sessionId;
+  // Ignore everything that isn't the root session.
+  if (sessionId !== rootSessionId) return;
+
+  const dedupKey = sessionId + "|" + eventName + "|" + status;
+  // `force` lets permission/question events carry their text through even when
+  // the interactive tool already pushed an identical waiting state.
+  if (!force && dedupKey === lastSent) return;
+  lastSent = dedupKey;
+
+  const payload = Object.assign({
+    sessionId,
+    cwd: sessionCwd.get(sessionId) || "",
+    event: eventName,
+    claudeStatus: status,
+    source: SOURCE,
+    pid: process.pid,
+  }, extra || {});
+  const tid = resolveTerminalId();
+  if (tid) payload.terminalId = tid;
+  sendToOcClaw(payload);
+}
+
+const plugin = async (ctx) => {
+  const initCwd = ctx && typeof ctx.directory === "string" ? ctx.directory : "";
+  // Capture the Ghostty tab id while opencode's tab is still frontmost.
+  resolveTerminalId();
+  return {
+    event: async ({ event }) => {
+      try {
+        if (!event || typeof event.type !== "string") return;
+        const t = event.type;
+        const p = event.properties || {};
+
+        switch (t) {
+          case "session.created": {
+            const info = p.info;
+            if (!info || !info.id) return;
+            sessionCwd.set(info.id, info.directory || initCwd || "");
+            // Subtask sessions carry a parentID — never promote them to root.
+            if (info.parentID) return;
+            emit(info.id, "SessionStart", "waiting_for_input");
+            return;
+          }
+
+          case "session.updated": {
+            const info = p.info;
+            if (!info || !info.id) return;
+            if (info.directory) sessionCwd.set(info.id, info.directory);
+            if (info.time && info.time.archived) emit(info.id, "SessionEnd", "ended");
+            return;
+          }
+
+          case "session.deleted": {
+            const info = p.info;
+            if (info && info.id) emit(info.id, "SessionEnd", "ended");
+            return;
+          }
+
+          case "server.instance.disposed": {
+            if (rootSessionId) emit(rootSessionId, "SessionEnd", "ended");
+            return;
+          }
+
+          case "session.status": {
+            const sid = p.sessionID;
+            if (!sid) return;
+            const type = p.status && p.status.type;
+            if (type === "idle") {
+              pendingWait = false;
+              emit(sid, "Stop", "waiting_for_input",
+                lastAssistantText ? { last_assistant_message: lastAssistantText } : null);
+            } else if (type === "busy") {
+              emit(sid, "UserPromptSubmit", "processing");
+            }
+            return;
+          }
+
+          // Some builds may still emit these directly — handle as a fallback.
+          case "session.idle": {
+            pendingWait = false;
+            emit(p.sessionID || rootSessionId, "Stop", "waiting_for_input",
+              lastAssistantText ? { last_assistant_message: lastAssistantText } : null);
+            return;
+          }
+          case "session.error": {
+            pendingWait = false;
+            emit(p.sessionID || rootSessionId, "Stop", "waiting_for_input");
+            return;
+          }
+          case "session.compacted": {
+            emit(p.sessionID || rootSessionId, "PreCompact", "compacting");
+            return;
+          }
+
+          // Permission / interactive question — opencode is blocked waiting for
+          // the user to choose in its own TUI, so surface the "waiting" pet
+          // state (oc-claw shows a "go to opencode" jump, not allow/deny).
+          case "permission.asked": {
+            pendingWait = true;
+            const perm = p.permission || (p.metadata && p.metadata.title) || "";
+            emit(p.sessionID || rootSessionId, "PermissionRequest", "waiting",
+              perm ? { tool_name: perm } : null, true);
+            return;
+          }
+          case "question.asked": {
+            pendingWait = true;
+            const qtext = Array.isArray(p.questions)
+              ? p.questions.map((q) => (q && (q.question || q.title)) || "").filter(Boolean).join("; ")
+              : "";
+            emit(p.sessionID || rootSessionId, "PermissionRequest", "waiting",
+              qtext ? { prompt: qtext } : null, true);
+            return;
+          }
+          case "permission.replied":
+          case "question.replied":
+          case "question.rejected": {
+            pendingWait = false;
+            emit(p.sessionID || rootSessionId, "PostToolUse", "processing");
+            return;
+          }
+
+          case "message.updated": {
+            const info = p.info;
+            if (info && info.id && info.sessionID) {
+              msgRoles.set(info.id, { role: info.role, sessionID: info.sessionID });
+              if (msgRoles.size > 200) msgRoles.delete(msgRoles.keys().next().value);
+            }
+            return;
+          }
+
+          case "message.part.updated": {
+            const part = p.part;
+            if (!part || typeof part !== "object") return;
+
+            if (part.type === "text") {
+              const meta = msgRoles.get(part.messageID);
+              if (!meta) return;
+              const text = part.text || "";
+              if (meta.role === "user" && text) {
+                emit(meta.sessionID, "UserPromptSubmit", "processing", { prompt: text });
+              } else if (meta.role === "assistant" && text) {
+                // Only the root session's reply feeds the completion popup.
+                if (!rootSessionId || meta.sessionID === rootSessionId) lastAssistantText = text;
+              }
+              return;
+            }
+
+            if (part.type === "tool") {
+              const sid = part.sessionID;
+              if (!sid) return;
+              const st = part.state && part.state.status;
+              const toolName = part.tool || "";
+              // The interactive "question"/"ask" tool stays in the running state
+              // the whole time opencode waits for the user to choose, and keeps
+              // streaming part updates. Map it to the waiting state so those
+              // updates don't overwrite question.asked's waiting back to working.
+              const tl = toolName.toLowerCase();
+              const interactive = tl === "question" || tl === "ask"
+                || tl.includes("question") || tl.includes("ask_user");
+              if (st === "running" || st === "pending") {
+                if (interactive || pendingWait) {
+                  emit(sid, "PermissionRequest", "waiting");
+                } else {
+                  emit(sid, "PreToolUse", "running_tool", toolName ? { tool_name: toolName } : null);
+                }
+              } else if (st === "completed" || st === "error") {
+                // The gated tool finished → the permission/question wait is over.
+                pendingWait = false;
+                emit(sid, "PostToolUse", "processing", toolName ? { tool_name: toolName } : null);
+              }
+              return;
+            }
+
+            if (part.type === "compaction") {
+              emit(part.sessionID || rootSessionId, "PreCompact", "compacting");
+              return;
+            }
+            return;
+          }
+
+          default:
+            return;
+        }
+      } catch {}
+    },
+  };
+};
+
+export default plugin;
+"#;
+
+/// Install the oc-claw plugin for opencode.
+/// opencode auto-loads any *.js/*.ts file under ~/.config/opencode/plugins/,
+/// so we just drop a plugin file there (no opencode.json edit needed). The
+/// plugin forwards session/tool events to /tmp/ooclaw-opencode.sock (unix) or
+/// TCP 127.0.0.1:19287 (Windows). Skips if ~/.config/opencode/ is missing.
+#[tauri::command]
+async fn install_opencode_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let opencode_dir = home.join(".config").join("opencode");
+
+    // Skip if ~/.config/opencode/ doesn't exist (opencode not installed)
+    if !opencode_dir.exists() {
+        log::info!("[opencode_hooks] ~/.config/opencode/ not found — skipping");
+        return Ok(());
+    }
+
+    let plugins_dir = opencode_dir.join("plugins");
+    std::fs::create_dir_all(&plugins_dir).map_err(|e| e.to_string())?;
+
+    let plugin_path = plugins_dir.join("ooclaw-opencode.js");
+    std::fs::write(&plugin_path, OPENCODE_PLUGIN_JS).map_err(|e| e.to_string())?;
+    log::info!("[opencode_hooks] installed plugin to {:?}", plugin_path);
+
+    // opencode only reliably loads plugins listed in opencode.json's "plugin"
+    // array (auto-scanning ~/.config/opencode/plugins/ is version-dependent),
+    // so register the file explicitly with the documented file:// scheme. Both
+    // load paths resolve to the same module, and the plugin dedups at module
+    // scope, so there's no double-reporting.
+    let config_path = opencode_dir.join("opencode.json");
+    let plugin_uri = path_to_file_uri(&plugin_path);
+    if let Err(e) = register_opencode_plugin(&config_path, &plugin_uri) {
+        // Don't fail the whole install over a config we couldn't safely edit
+        // (e.g. opencode.jsonc with comments) — the plugins/ file may still be
+        // auto-loaded on newer opencode builds.
+        log::warn!("[opencode_hooks] could not register in opencode.json: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Convert an absolute path to a `file://` URI opencode accepts in its "plugin"
+/// array. Uses forward slashes on every platform (file:///Users/… on macOS,
+/// file:///C:/… on Windows).
+fn path_to_file_uri(path: &std::path::Path) -> String {
+    let p = path.to_string_lossy().replace('\\', "/");
+    if p.starts_with('/') {
+        format!("file://{}", p)
+    } else {
+        format!("file:///{}", p)
+    }
+}
+
+/// Idempotently add `plugin_uri` to the `plugin` array of opencode.json,
+/// creating the file if missing. Returns an error (without clobbering) when the
+/// existing config can't be parsed as strict JSON.
+fn register_opencode_plugin(config_path: &std::path::Path, plugin_uri: &str) -> Result<(), String> {
+    use serde_json::Value;
+    let mut root: Value = if config_path.exists() {
+        let raw = std::fs::read_to_string(config_path).map_err(|e| e.to_string())?;
+        if raw.trim().is_empty() {
+            serde_json::json!({ "$schema": "https://opencode.ai/config.json" })
+        } else {
+            serde_json::from_str(&raw).map_err(|e| format!("parse opencode.json: {}", e))?
+        }
+    } else {
+        serde_json::json!({ "$schema": "https://opencode.ai/config.json" })
+    };
+
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| "opencode.json is not a JSON object".to_string())?;
+    let arr = obj
+        .entry("plugin")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let list = arr
+        .as_array_mut()
+        .ok_or_else(|| "opencode.json 'plugin' is not an array".to_string())?;
+
+    if list.iter().any(|v| v.as_str() == Some(plugin_uri)) {
+        return Ok(()); // already registered
+    }
+    list.push(Value::String(plugin_uri.to_string()));
+
+    let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    std::fs::write(config_path, pretty).map_err(|e| e.to_string())?;
+    log::info!("[opencode_hooks] registered plugin in {:?}", config_path);
     Ok(())
 }
 
@@ -15376,6 +15944,74 @@ fn start_gemini_socket_server(
     }
 }
 
+/// Start the opencode IPC server.
+/// On macOS/Linux: Unix domain socket at /tmp/ooclaw-opencode.sock
+/// On Windows: TCP server on localhost:19287
+fn start_opencode_socket_server(
+    claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    app: tauri::AppHandle,
+) {
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/ooclaw-opencode.sock";
+        let _ = std::fs::remove_file(socket_path);
+        let listener = match std::os::unix::net::UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[opencode_socket] bind failed: {}", e); return; }
+        };
+        log::info!("[opencode_socket] listening on {}", socket_path);
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            // opencode handles permission in its own TUI, so events never block.
+                            process_claude_event(&buf, &state, &app, Some("opencode"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:19287") {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[opencode_socket] TCP bind failed: {}", e); return; }
+        };
+        log::info!("[opencode_socket] listening on 127.0.0.1:19287");
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            process_claude_event(&buf, &state, &app, Some("opencode"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
 /// Start the Hermes Agent IPC server.
 /// On macOS/Linux: Unix domain socket at /tmp/ooclaw-hermes.sock
 /// On Windows: TCP server on localhost:19286
@@ -15918,6 +16554,10 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(install_gemini_hooks()) {
                 log::warn!("Failed to install Gemini hooks on startup: {}", e);
             }
+            // Install opencode plugin on startup (idempotent, skips if ~/.config/opencode/ missing)
+            if let Err(e) = tauri::async_runtime::block_on(install_opencode_hooks()) {
+                log::warn!("Failed to install opencode plugin on startup: {}", e);
+            }
             // Hermes plugin is NOT auto-installed on startup because it restarts
             // the gateway. User must manually install via Settings UI.
 
@@ -16158,6 +16798,14 @@ pub fn run() {
                 start_gemini_socket_server(sessions_arc, app.handle().clone());
             }
 
+            // Start opencode socket server (shares ClaudeState for unified session tracking).
+            // Unix uses /tmp/ooclaw-opencode.sock, Windows uses TCP 127.0.0.1:19287.
+            {
+                let claude_state = app.state::<ClaudeState>();
+                let sessions_arc = Arc::clone(&claude_state.sessions);
+                start_opencode_socket_server(sessions_arc, app.handle().clone());
+            }
+
             // Start Hermes Agent socket server.
             // Unix uses /tmp/ooclaw-hermes.sock, Windows uses TCP 127.0.0.1:19286.
             {
@@ -16235,7 +16883,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, set_outside_click_watch, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, set_outside_click_watch, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_opencode_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, spawn_extra_mascot, close_extra_mascot, close_extra_mascots, list_extra_mascots, set_extra_mascots_hidden, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())

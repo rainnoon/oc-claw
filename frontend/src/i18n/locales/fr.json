@@ -24,6 +24,8 @@
 
   "mini": {
     "geminiDone": "Gemini a terminé. Cliquez pour voir.",
+    "opencodeDone": "opencode a terminé son travail. Cliquez pour voir.",
+    "viewInOpencode": "Aller vers opencode",
     "geminiDoneNoJump": "Gemini a terminé.",
     "goToTerminal": "Veuillez approuver dans le terminal",
     "cursorDone": "Cursor a terminé. Cliquez pour voir.",
@@ -152,6 +154,10 @@
     "geminiSound": "Son de fin Gemini",
     "geminiSoundDesc": "Jouer un son quand Gemini termine une tâche",
     "viewInGemini": "Aller vers Gemini",
+    "enableOpencode": "Activer opencode",
+    "enableOpencodeDesc": "Surveiller les sessions opencode locales via un plugin",
+    "opencodeSound": "Son de fin d'opencode",
+    "opencodeSoundDesc": "Jouer un son lorsque opencode termine une tâche",
     "enableHermes": "Activer Hermes Agent",
     "enableHermesDesc": "Distant : tester la connexion puis installer le plugin. Réinstaller après ajout de nouveaux Agents",
     "pluginRestartWarn": "L'installation/mise à jour redémarre le Hermes Gateway ; les sessions en cours peuvent être interrompues (~1 min). Continuer ?",
