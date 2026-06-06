@@ -576,9 +576,7 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
   )
 }
 
-function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
-  enableHermes: boolean
-  toggleHermes: (v: boolean) => void
+function HermesSection({ hermesHookStatus, t }: {
   hermesHookStatus: string
   t: any
 }) {
@@ -593,8 +591,13 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
         if (saved && saved.length > 0) {
           const adjusted = isWindows ? saved.map(c => c.type === 'local' ? { ...c, type: 'remote' as const } : c) : saved
           setConns(adjusted)
+        } else if (saved) {
+          // Explicitly empty list → the user removed all connections. Respect it
+          // so Hermes stays disabled (enablement now follows connection presence).
+          setConns([])
         } else {
-          // Migrate from old hermes_ssh_connections format
+          // First run (key never set): migrate old format or seed a default
+          // local connection so Hermes works out of the box.
           const oldSsh = await store.get<{ host: string; user: string }[]>('hermes_ssh_connections')
           if (oldSsh && oldSsh.length > 0) {
             const migrated: HermesConn[] = oldSsh.map(c => ({
@@ -602,7 +605,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
             }))
             setConns(migrated)
             await store.set('hermes_connections', migrated)
-          } else if (enableHermes) {
+          } else {
             const defaultConn: HermesConn[] = [{ id: crypto.randomUUID(), type: isWindows ? 'remote' : 'local' }]
             setConns(defaultConn)
             await store.set('hermes_connections', defaultConn)
@@ -610,7 +613,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
         }
       } catch {}
     })()
-  }, [enableHermes])
+  }, [])
 
   const saveConns = async (updated: HermesConn[]) => {
     setConns(updated)
@@ -653,16 +656,9 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
           <Plus className="w-3 h-3" /> {t('common.add', 'Add')}
         </button>
       </div>
+      {hermesHookStatus && <span className="text-xs text-white/30 -mt-2">{hermesHookStatus}</span>}
 
       <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden divide-y divide-white/5">
-        <div className="flex items-center justify-between p-4">
-          <div className="flex flex-col gap-1">
-            <span className="text-sm font-medium text-white/90">{t('settings.enableHermes', 'Enable Hermes Agent')}</span>
-            <span className="text-xs text-white/40">{t('settings.enableHermesDesc', 'Monitor Hermes Agent sessions')}</span>
-            {hermesHookStatus && <span className="text-xs text-white/30 mt-1">{hermesHookStatus}</span>}
-          </div>
-          <Toggle checked={enableHermes} onChange={toggleHermes} />
-        </div>
         {conns.length === 0 ? (
           <div className="text-center text-white/30 py-8 text-sm">
             {t('settings.noConnections', 'No connections configured')}
@@ -698,7 +694,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
   const [cursorHookStatus, setCursorHookStatus] = useState('')
   const [enableGemini, setEnableGemini] = useState(true)
   const [geminiHookStatus, setGeminiHookStatus] = useState('')
-  const [enableHermes, setEnableHermes] = useState(true)
   const [hermesHookStatus] = useState('')
   const [enableAutostart, setEnableAutostart] = useState(false)
   const [autostartStatus, setAutostartStatus] = useState('')
@@ -768,8 +763,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       if (typeof cur === 'boolean') setEnableCursor(cur)
       const gem = await store.get('enable_gemini')
       if (typeof gem === 'boolean') setEnableGemini(gem)
-      const herm = await store.get('enable_hermes')
-      if (typeof herm === 'boolean') setEnableHermes(herm)
       // Reconcile autostart toggle with the system: the OS-level registration
       // (registry on Windows, LaunchAgent on macOS) is the source of truth in
       // case the user disabled it externally; mirror that into our store so
@@ -970,14 +963,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     }
   }
 
-  const toggleHermes = async (val: boolean) => {
-    setEnableHermes(val)
-    const store = await getStore()
-    await store.set('enable_hermes', val)
-    await store.save()
-    // Plugin install is user-triggered via the dedicated button (restarts gateway)
-  }
-
   const toggleAutostart = async (val: boolean) => {
     setEnableAutostart(val)
     setAutostartStatus('')
@@ -1133,8 +1118,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
 
       {/* Hermes Agent */}
       <HermesSection
-        enableHermes={enableHermes}
-        toggleHermes={toggleHermes}
         hermesHookStatus={hermesHookStatus}
         t={t}
       />

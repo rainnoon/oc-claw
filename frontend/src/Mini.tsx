@@ -511,8 +511,10 @@ export default function Mini() {
   const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
   const [enableCursor, setEnableCursor] = useState(true)
   const [enableGemini, setEnableGemini] = useState(true)
-  const [enableHermes, setEnableHermes] = useState(true)
   const [hermesConns, setHermesConns] = useState<{ id: string; type: 'local' | 'remote'; host?: string; user?: string }[]>([])
+  // Hermes is enabled whenever at least one connection is configured, mirroring
+  // the OpenClaw model (presence of a connection implies it is enabled).
+  const enableHermes = hermesConns.length > 0
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
@@ -2046,10 +2048,8 @@ export default function Mini() {
       const gemEnabled = gem !== false
       setEnableGemini(gemEnabled)
       if (gemEnabled) invoke('install_gemini_hooks').catch(() => {})
-      const herm = await store.get('enable_hermes')
-      const hermEnabled = herm !== false
-      setEnableHermes(hermEnabled)
-      // Hermes plugin install is user-triggered only (restarts gateway)
+      // Hermes plugin install is user-triggered only (restarts gateway).
+      // Enablement now follows whether any connection is configured.
       const hermConns = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
       if (hermConns) setHermesConns(hermConns)
       if (isWindowsPlatform) {
@@ -3281,8 +3281,6 @@ export default function Mini() {
           setEnableCursor(cur !== false)
           const gem = await store.get('enable_gemini')
           setEnableGemini(gem !== false)
-          const herm = await store.get('enable_hermes')
-          setEnableHermes(herm !== false)
           const hcn = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
           if (hcn) setHermesConns(hcn)
         } catch {}
@@ -3591,8 +3589,6 @@ export default function Mini() {
         setEnableCursor(cur !== false)
         const gem = await store.get('enable_gemini')
         setEnableGemini(gem !== false)
-        const herm = await store.get('enable_hermes')
-        setEnableHermes(herm !== false)
         const hcn2 = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
         if (hcn2) setHermesConns(hcn2)
         fetchAgents()

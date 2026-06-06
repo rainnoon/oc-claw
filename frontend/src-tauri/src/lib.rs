@@ -12922,8 +12922,11 @@ fn process_claude_event(
                         if resp_from_event.is_some() {
                             session.last_response = resp_from_event;
                         } else if session.last_response.is_none()
-                            && (session.source == "cursor" || session.source == "codex")
+                            && (session.source == "cursor" || session.source == "codex" || session.source == "gemini")
                         {
+                            // Gemini's AfterAgent hook carries no assistant text, so fall
+                            // back to a placeholder like Cursor/Codex so the completion
+                            // popup still triggers. The frontend renders "✓" specially.
                             session.last_response = Some("✓".to_string());
                         }
                         // else: keep existing last_response from afterAgentResponse
@@ -13053,16 +13056,20 @@ SOCKET_PATH="/tmp/ooclaw-gemini.sock"
 # Capture Gemini CLI PID for terminal jump support
 export GEMINI_PID=$PPID
 
-# Cache Ghostty terminal ID per Gemini PID (so jump-to-terminal works)
+# Cache Ghostty terminal ID per Gemini PID (so jump-to-terminal works).
+# IMPORTANT: must use the SAME AppleScript expression as get_active_ghostty_terminal_id()
+# (id of first terminal of selected tab of front window). A different expression
+# (e.g. "current terminal of front window") yields a non-matching id, which breaks
+# the Stop-time is_tab_active check and makes the completion popup fire even when the
+# Gemini terminal tab is active.
 _TID_CACHE="/tmp/ooclaw-gemini-tid-$PPID"
 if [ -f "$_TID_CACHE" ]; then
     export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
 else
-    _TID=$(osascript -e 'tell application "Ghostty" to return id of current terminal of front window as text' 2>/dev/null || true)
-    if [ -n "$_TID" ]; then
-        echo "$_TID" > "$_TID_CACHE"
-        export GHOSTTY_TID="$_TID"
-    fi
+    export GHOSTTY_TID=$(osascript -e 'try
+tell application "Ghostty" to return id of first terminal of selected tab of front window as text
+end try' 2>/dev/null || echo "")
+    [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
 fi
 
 /usr/bin/python3 -c "
