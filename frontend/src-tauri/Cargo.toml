@@ -1,6 +1,6 @@
 [package]
 name = "oc_claw"
-version = "1.8.4"
+version = "1.8.5"
 description = "OpenClaw Desktop Pet"
 authors = ["you"]
 license = "MIT"
@@ -28,6 +28,7 @@ base64 = "0.22"
 chrono = "0.4"
 dirs = "5"
 percent-encoding = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
@@ -41,7 +42,7 @@ notify = { version = "6", default-features = false, features = ["macos_kqueue"] 
 [target.'cfg(target_os = "windows")'.dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 notify = { version = "6" }
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Media_Audio", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Graphics_Gdi", "Win32_System_Diagnostics_ToolHelp", "Media_Control", "Foundation", "Foundation_Collections"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Media_Audio", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Console", "Win32_Graphics_Gdi", "Win32_System_Diagnostics_ToolHelp", "Media_Control", "Foundation", "Foundation_Collections"] }
 # Used to reverse the GBK-mis-interpreted-as-UTF-8 mojibake that Cursor IDE
 # emits when writing hook stdin on CJK Windows.
 encoding_rs = "0.8"

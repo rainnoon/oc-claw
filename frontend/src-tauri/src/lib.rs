@@ -17,6 +17,15 @@ static EFFICIENCY_HOVER_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
 /// decide which detection region to check — collapsed notch area vs expanded
 /// panel area).
 static EFFICIENCY_EXPANDED: AtomicBool = AtomicBool::new(false);
+/// Windows-only: whether the global outside-click watcher should run. The
+/// expanded mini panel may never take OS focus (auto-expanded completion
+/// popups), so the window-blur close path never fires. This watcher polls the
+/// global mouse buttons and emits `mini-outside-click` when the user clicks
+/// outside the mini window, letting the frontend collapse the panel.
+#[cfg(target_os = "windows")]
+static OUTSIDE_CLICK_WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static OUTSIDE_CLICK_WATCH_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
 /// Cached screen geometry for the notch hover poll thread so it doesn't need
 /// to access NSWindow from a background thread.
 /// (screen_x, screen_y, screen_width, screen_height, notch_offset)
@@ -86,23 +95,24 @@ fn unix_now() -> u64 {
 }
 
 fn ssh_backoff_remaining(host_key: &str) -> Option<u64> {
-    let map = ssh_backoff_map().lock().unwrap();
+    let map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     let state = map.get(host_key)?;
     if state.fail_count == 0 { return None; }
-    let cooldown = std::cmp::min(15u64 * 2u64.pow(state.fail_count.saturating_sub(1)), 300);
+    let exp = std::cmp::min(state.fail_count.saturating_sub(1), 6);
+    let cooldown = std::cmp::min(10u64.saturating_mul(2u64.pow(exp)), 60);
     let elapsed = unix_now().saturating_sub(state.fail_epoch);
     if elapsed < cooldown { Some(cooldown - elapsed) } else { None }
 }
 
 fn ssh_backoff_record_failure(host_key: &str) {
-    let mut map = ssh_backoff_map().lock().unwrap();
+    let mut map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     let state = map.entry(host_key.to_string()).or_insert(SshBackoffState { fail_count: 0, fail_epoch: 0 });
-    state.fail_count += 1;
+    state.fail_count = state.fail_count.saturating_add(1).min(20);
     state.fail_epoch = unix_now();
 }
 
 fn ssh_backoff_reset(host_key: &str) {
-    let mut map = ssh_backoff_map().lock().unwrap();
+    let mut map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     map.remove(host_key);
 }
 
@@ -159,7 +169,7 @@ mod win_ssh_mux {
     }
 
     fn session_lock(host_key: &str) -> Arc<TokioMutex<Option<MuxChild>>> {
-        let mut map = mux_map().lock().unwrap();
+        let mut map = mux_map().lock().unwrap_or_else(|e| e.into_inner());
         map.entry(host_key.to_string())
             .or_insert_with(|| Arc::new(TokioMutex::new(None)))
             .clone()
@@ -321,7 +331,7 @@ mod win_ssh_mux {
     /// Kill all persistent subprocesses.
     pub async fn kill_all() {
         let keys: Vec<String> = {
-            mux_map().lock().unwrap().keys().cloned().collect()
+            mux_map().lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
         };
         for key in keys {
             let lock = session_lock(&key);
@@ -654,7 +664,7 @@ async fn invoke_tool(url: &str, token: &str, tool: &str, args: serde_json::Value
     if !status.is_success() {
         return Err(format!("remote API error ({}): {}", status, text));
     }
-    serde_json::from_str(&text).map_err(|e| format!("parse remote response: {} body: {}", e, &text[..text.len().min(200)]))
+    serde_json::from_str(&text).map_err(|e| format!("parse remote response: {} body: {}", e, truncate_chars(&text, 200)))
 }
 
 /// Extract sessions array from remote API response, handling both formats:
@@ -828,6 +838,7 @@ fn ssh_control_path(ssh_user: &str, ssh_host: &str) -> String {
 async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
     let host_key = format!("{}@{}", ssh_user, ssh_host);
     if let Some(remaining) = ssh_backoff_remaining(&host_key) {
+        eprintln!("[ssh] {} backing off, retry in {}s", host_key, remaining);
         return Err(format!("SSH connection to {} backing off, retry in {}s", host_key, remaining));
     }
 
@@ -893,7 +904,7 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             ssh_backoff_record_failure(&host_key);
-            let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
+            let count = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner()).get(&host_key).map(|s| s.fail_count).unwrap_or(0);
             let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
             log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
             return Err(format!("SSH master failed [exit {}]: {}", code, stderr));
@@ -917,7 +928,7 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
         // prevents hitting server-side MaxStartups limits.
         if let Err(e) = win_ssh_mux::ensure(ssh_user, ssh_host).await {
             ssh_backoff_record_failure(&host_key);
-            let count = ssh_backoff_map().lock().unwrap().get(&host_key).map(|s| s.fail_count).unwrap_or(0);
+            let count = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner()).get(&host_key).map(|s| s.fail_count).unwrap_or(0);
             log::warn!("[ssh] connection to {} failed (attempt {}), entering backoff", host_key, count);
             return Err(format!("SSH connection failed: {}", e));
         }
@@ -940,7 +951,7 @@ async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String>
                 let expanded = path.replace("~", &home_dir_string());
                 if std::path::Path::new(&expanded).exists() {
                     log::info!("[ssh] {} will use key: {}", host_key, expanded);
-                    ssh_key_map().lock().unwrap().insert(host_key.clone(), expanded);
+                    ssh_key_map().lock().unwrap_or_else(|e| e.into_inner()).insert(host_key.clone(), expanded);
                     break;
                 }
             }
@@ -1104,7 +1115,7 @@ fn exit_app(app: tauri::AppHandle) {
 #[tauri::command]
 fn get_ssh_key_info(ssh_host: String, ssh_user: String) -> Option<String> {
     let key = format!("{}@{}", ssh_user, ssh_host);
-    ssh_key_map().lock().unwrap().get(&key).cloned()
+    ssh_key_map().lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
 }
 
 /// Reset backoff, gracefully close the existing SSH master process, and
@@ -1120,7 +1131,7 @@ async fn reset_ssh(ssh_host: String, ssh_user: String) {
     // from piling up and conflicting with the new master.
     let _ = close_ssh_master(&ssh_host, &ssh_user).await;
     // Clear cached key info since we're starting fresh
-    ssh_key_map().lock().unwrap().remove(&host_key);
+    ssh_key_map().lock().unwrap_or_else(|e| e.into_inner()).remove(&host_key);
     log::info!("[reset_ssh] cleared backoff, killed master, and reset for {}", host_key);
 }
 
@@ -1147,7 +1158,7 @@ async fn close_ssh(ssh_host: Option<String>, ssh_user: Option<String>) -> Result
         #[cfg(windows)]
         { win_ssh_mux::kill_all().await; }
         // Clear all backoff entries
-        ssh_backoff_map().lock().unwrap().clear();
+        ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner()).clear();
         return Ok(());
     }
     close_ssh_master(&sh, &su).await
@@ -3211,8 +3222,9 @@ fn collapsed_mascot_window_size(scale: f64) -> (f64, f64) {
 
 fn large_collapsed_mascot_window_size(scale: f64, large_scale: f64) -> (f64, f64) {
     let lms = if large_scale.is_finite() && large_scale >= 1.0 && large_scale <= 6.0 { large_scale } else { LARGE_MASCOT_SIZE_MULTIPLIER };
-    let size = 43.0 * scale * lms;
-    (size, size)
+    let w = 43.0 * scale * lms;
+    let h = (w * 208.0 / 192.0).ceil();
+    (w, h)
 }
 
 /// Compute a UI-scale multiplier for Windows based on the monitor's logical
@@ -3797,6 +3809,102 @@ async fn set_efficiency_hover_tracking(app: tauri::AppHandle, active: bool) -> R
     Ok(())
 }
 
+/// Whether the OS mouse cursor is currently within the mini window's bounds.
+///
+/// The mini window is always-on-top, so Windows hands it focus whenever
+/// another window is minimized. The frontend's focus→auto-expand path uses
+/// this to tell a genuine mascot click (cursor over the window) apart from an
+/// incidental focus grab (cursor over the other window's minimize button),
+/// preventing the panel from popping up when the user minimizes any app.
+#[tauri::command]
+fn cursor_over_mini_window(app: tauri::AppHandle) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        use windows::Win32::Foundation::POINT;
+        if let Some(win) = app.get_webview_window("mini") {
+            if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                let mut pt = POINT::default();
+                let ok = unsafe { GetCursorPos(&mut pt).is_ok() };
+                if ok {
+                    return pt.x >= pos.x
+                        && pt.x <= pos.x + size.width as i32
+                        && pt.y >= pos.y
+                        && pt.y <= pos.y + size.height as i32;
+                }
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        true
+    }
+}
+
+/// Start/stop the Windows outside-click watcher. No-op on other platforms,
+/// where window blur already closes the expanded panel.
+#[tauri::command]
+fn set_outside_click_watch(app: tauri::AppHandle, active: bool) {
+    #[cfg(target_os = "windows")]
+    {
+        OUTSIDE_CLICK_WATCH_ACTIVE.store(active, Ordering::SeqCst);
+        if active && !OUTSIDE_CLICK_WATCH_THREAD_ALIVE.load(Ordering::SeqCst) {
+            let app2 = app.clone();
+            std::thread::spawn(move || outside_click_watch_poll(app2));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, active);
+    }
+}
+
+/// Windows polling loop: detect a fresh left/right mouse press and, if the
+/// cursor is outside the mini window's bounds, emit `mini-outside-click` so the
+/// frontend can collapse the panel. Runs only while the panel is expanded.
+#[cfg(target_os = "windows")]
+fn outside_click_watch_poll(app: tauri::AppHandle) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    use windows::Win32::Foundation::POINT;
+    const VK_LBUTTON: i32 = 0x01;
+    const VK_RBUTTON: i32 = 0x02;
+
+    OUTSIDE_CLICK_WATCH_THREAD_ALIVE.store(true, Ordering::SeqCst);
+    // Only react on the press edge so one click emits at most one event.
+    let mut prev_pressed = false;
+    while OUTSIDE_CLICK_WATCH_ACTIVE.load(Ordering::SeqCst) {
+        let pressed = unsafe {
+            ((GetAsyncKeyState(VK_LBUTTON) as u16) & 0x8000) != 0
+                || ((GetAsyncKeyState(VK_RBUTTON) as u16) & 0x8000) != 0
+        };
+        if pressed && !prev_pressed {
+            // Default to "inside" when geometry can't be read, so we never
+            // collapse on an ambiguous reading.
+            let mut inside = true;
+            if let Some(win) = app.get_webview_window("mini") {
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                    let mut pt = POINT::default();
+                    if unsafe { GetCursorPos(&mut pt).is_ok() } {
+                        inside = pt.x >= pos.x
+                            && pt.x <= pos.x + size.width as i32
+                            && pt.y >= pos.y
+                            && pt.y <= pos.y + size.height as i32;
+                    }
+                }
+            }
+            if !inside {
+                let _ = app.emit("mini-outside-click", ());
+            }
+        }
+        prev_pressed = pressed;
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    OUTSIDE_CLICK_WATCH_THREAD_ALIVE.store(false, Ordering::SeqCst);
+}
+
 /// Background polling loop for efficiency-mode hover.
 /// Checks the cursor position against two regions:
 ///  - **Collapsed**: a wide strip around the notch (notch_off*2 + 200 px,
@@ -4233,6 +4341,33 @@ async fn get_system_idle_time(app: tauri::AppHandle) -> Result<f64, String> {
     #[cfg(not(target_os = "macos"))]
     {
         Ok(0.0)
+    }
+}
+
+/// Seconds since the last keyboard event (key down).
+/// Used to suppress auto-expand popups when the user is actively typing.
+#[tauri::command]
+async fn get_keyboard_idle_secs(app: tauri::AppHandle) -> Result<f64, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<f64>();
+        app.run_on_main_thread(move || {
+            #[link(name = "CoreGraphics", kind = "framework")]
+            extern "C" {
+                fn CGEventSourceSecondsSinceLastEventType(
+                    state_id: i32,
+                    event_type: u32,
+                ) -> f64;
+            }
+            // kCGEventKeyDown = 10
+            let idle = unsafe { CGEventSourceSecondsSinceLastEventType(0, 10) };
+            let _ = tx.send(idle);
+        }).map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(999.0)
     }
 }
 
@@ -6646,7 +6781,7 @@ pub struct ClaudeSession {
     /// Set dynamically in `get_claude_sessions` — not persisted.
     #[serde(rename = "isActiveTab")]
     pub is_active_tab: bool,
-    /// Source of this session: "cc" (Claude Code), "codex" (Codex), or "cursor" (Cursor IDE).
+    /// Source of this session: "cc" (Claude Code), "codex" (Codex), "cursor" (Cursor IDE), or "gemini" (Gemini CLI).
     pub source: String,
     /// Ghostty terminal `id` captured when the session is first seen.
     /// Used by `jump_to_claude_terminal` to select the exact tab instead
@@ -6659,6 +6794,10 @@ pub struct ClaudeSession {
     /// CC CLI sessions from CC Desktop sessions and gate them independently.
     #[serde(rename = "hostTerminal", skip_serializing_if = "Option::is_none")]
     pub host_terminal: Option<String>,
+    /// Hermes platform identifier (e.g. "feishu", "slack", "discord").
+    /// Used to decide which application to activate on session click.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
     /// Bound Cursor extension port for this session.
     /// Unlike `pid`, this is stable for the lifetime of a Cursor window.
     /// We resolve it from the session cwd/workspace and reuse it on click.
@@ -6684,6 +6823,9 @@ type PendingPermissions = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Stri
 struct ClaudeState {
     sessions: Arc<Mutex<HashMap<String, ClaudeSession>>>,
     pending_permissions: PendingPermissions,
+    /// Session IDs dismissed by the user (trash icon). Prevents DB-loaded
+    /// Hermes sessions from reappearing after removal.
+    dismissed: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -6770,6 +6912,244 @@ fn empty_claude_stats() -> ClaudeStats {
         daily_stats,
         model: "unsupported".to_string(),
     }
+}
+
+fn collect_gemini_stats() -> Result<ClaudeStats, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let gemini_dir = home.join(".gemini");
+
+    let log_path = {
+        let settings_path = gemini_dir.join("settings.json");
+        let mut path: Option<std::path::PathBuf> = None;
+        if settings_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&settings_path) {
+                if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(outfile) = settings.get("telemetry")
+                        .and_then(|t| t.get("outfile"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let p = std::path::PathBuf::from(outfile);
+                        if p.is_absolute() {
+                            path = Some(p);
+                        } else {
+                            path = Some(home.join(outfile));
+                        }
+                    }
+                }
+            }
+        }
+        path.unwrap_or_else(|| gemini_dir.join("telemetry.jsonl"))
+    };
+
+    if !log_path.exists() {
+        return Ok(empty_claude_stats());
+    }
+
+    let content = std::fs::read_to_string(&log_path)
+        .map_err(|e| format!("read gemini telemetry: {}", e))?;
+
+    // The telemetry file is pretty-printed JSON objects concatenated
+    // without delimiters (e.g. "}\n{"). Use a streaming deserializer.
+    let stream = serde_json::Deserializer::from_str(&content).into_iter::<serde_json::Value>();
+
+    let now = chrono::Utc::now();
+    let cutoff = now - chrono::Duration::days(14);
+    let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_messages = 0u64;
+    let mut total_sessions = 0u64;
+    let mut model = String::new();
+    let mut seen_session_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for item in stream {
+        let parsed = match item {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let attrs = parsed.get("attributes").unwrap_or(&parsed);
+
+        let event_name = attrs.get("event.name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if event_name == "gemini_cli.api_response" {
+            let ts = attrs.get("event.timestamp")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let date = ts.get(..10).unwrap_or("").to_string();
+            if !date.is_empty() && date < cutoff_str { continue; }
+
+            let input = attrs.get("input_token_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = attrs.get("output_token_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cached = attrs.get("cached_content_token_count").and_then(|v| v.as_u64()).unwrap_or(0);
+
+            if model.is_empty() {
+                if let Some(m) = attrs.get("model").and_then(|v| v.as_str()) {
+                    model = m.to_string();
+                }
+            }
+
+            total_input += input;
+            total_output += output;
+            total_cache_read += cached;
+            total_messages += 1;
+
+            if !date.is_empty() {
+                let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                    date: date.clone(),
+                    input_tokens: 0, output_tokens: 0,
+                    cache_read_tokens: 0, cache_write_tokens: 0,
+                    messages: 0, sessions: 0,
+                });
+                entry.input_tokens += input;
+                entry.output_tokens += output;
+                entry.cache_read_tokens += cached;
+                entry.messages += 1;
+            }
+        } else if event_name == "gemini_cli.config" {
+            let session_id = attrs.get("session.id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !session_id.is_empty() && seen_session_ids.insert(session_id) {
+                total_sessions += 1;
+                let ts = attrs.get("event.timestamp")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let date = ts.get(..10).unwrap_or("").to_string();
+                if !date.is_empty() && date >= cutoff_str {
+                    let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                        date: date.clone(),
+                        input_tokens: 0, output_tokens: 0,
+                        cache_read_tokens: 0, cache_write_tokens: 0,
+                        messages: 0, sessions: 0,
+                    });
+                    entry.sessions += 1;
+                }
+            }
+        }
+    }
+
+    // Fill in all 14 days so the chart shows a complete timeline
+    let now_local = chrono::Local::now();
+    let mut daily_stats: Vec<ClaudeDailyStats> = Vec::with_capacity(14);
+    for i in (0..14).rev() {
+        let day = (now_local - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        let entry = daily_map.remove(&day).unwrap_or(ClaudeDailyStats {
+            date: day.clone(),
+            input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0,
+            messages: 0, sessions: 0,
+        });
+        daily_stats.push(entry);
+    }
+
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: 0,
+        total_messages,
+        total_sessions,
+        daily_stats,
+        model,
+    })
+}
+
+fn collect_hermes_stats() -> Result<ClaudeStats, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let db_path = home.join(".hermes").join("state.db");
+    if !db_path.exists() {
+        return Ok(empty_claude_stats());
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open hermes state.db: {}", e))?;
+
+    let now = chrono::Utc::now();
+    let cutoff = now - chrono::Duration::days(14);
+    let cutoff_ts = cutoff.timestamp() as f64;
+
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    for i in (0..14).rev() {
+        let day = (chrono::Local::now() - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        daily_map.insert(day.clone(), ClaudeDailyStats {
+            date: day, input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0, messages: 0, sessions: 0,
+        });
+    }
+
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_cache_write = 0u64;
+    let mut total_messages = 0u64;
+    let mut total_sessions = 0u64;
+    let mut model = String::new();
+
+    let mut stmt = conn.prepare(
+        "SELECT started_at, input_tokens, output_tokens, cache_read_tokens, \
+         cache_write_tokens, message_count, model \
+         FROM sessions WHERE started_at > ?1 ORDER BY started_at DESC"
+    ).map_err(|e| format!("prepare: {}", e))?;
+
+    let rows = stmt.query_map(rusqlite::params![cutoff_ts], |row| {
+        Ok((
+            row.get::<_, f64>(0)?,
+            row.get::<_, i64>(1).unwrap_or(0),
+            row.get::<_, i64>(2).unwrap_or(0),
+            row.get::<_, i64>(3).unwrap_or(0),
+            row.get::<_, i64>(4).unwrap_or(0),
+            row.get::<_, i64>(5).unwrap_or(0),
+            row.get::<_, String>(6).unwrap_or_default(),
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    for row in rows {
+        let (ts, inp, out, cr, cw, msgs, mdl) = row.map_err(|e| format!("row: {}", e))?;
+        let day = chrono::DateTime::from_timestamp(ts as i64, 0)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+
+        if let Some(entry) = daily_map.get_mut(&day) {
+            entry.input_tokens += inp as u64;
+            entry.output_tokens += out as u64;
+            entry.cache_read_tokens += cr as u64;
+            entry.cache_write_tokens += cw as u64;
+            entry.messages += msgs as u64;
+            entry.sessions += 1;
+        }
+
+        total_input += inp as u64;
+        total_output += out as u64;
+        total_cache_read += cr as u64;
+        total_cache_write += cw as u64;
+        total_messages += msgs as u64;
+        total_sessions += 1;
+        if model.is_empty() && !mdl.is_empty() {
+            model = mdl;
+        }
+    }
+
+    let daily_stats: Vec<ClaudeDailyStats> = daily_map.into_values().collect();
+
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
+        total_messages: total_messages,
+        total_sessions: total_sessions,
+        daily_stats,
+        model,
+    })
 }
 
 fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
@@ -7082,7 +7462,35 @@ fn get_frontmost_app_name() -> String {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows equivalent: resolve the foreground window's owning process and
+/// return its exe file stem (e.g. "Cursor" from "...\Cursor.exe", "oc-claw",
+/// "Code"). The shared matchers (`is_cursor_frontmost_app`, etc.) compare
+/// against these stems, so completion popups can be suppressed while the
+/// relevant app is focused.
+#[cfg(target_os = "windows")]
+fn get_frontmost_app_name() -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0 == std::ptr::null_mut() {
+            return String::new();
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == 0 {
+            return String::new();
+        }
+        match get_process_exe_path(pid) {
+            Some(path) => std::path::Path::new(&path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            None => String::new(),
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn get_frontmost_app_name() -> String { String::new() }
 
 fn is_cursor_frontmost_app(name: &str) -> bool {
@@ -7181,18 +7589,36 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let active_tid = get_active_ghostty_terminal_id();
     let mut list: Vec<ClaudeSession> = sessions.values()
-        .filter(|s| !s.cwd.is_empty())
+        .filter(|s| !s.cwd.is_empty() || s.source == "cursor")
         .filter(|s| !is_codex_internal_utility_session(s))
         .cloned()
         .collect();
     // Mark sessions' active tab:
     // - Ghostty: match by terminal ID
     // - CC running inside Cursor's integrated terminal: check if Cursor is frontmost
-    // - Cursor IDE sessions: set at Stop time in process_claude_event
+    // - Cursor IDE sessions: on Windows, prefer the per-window focus state
+    //   reported by the bound extension port (`/window-meta` → `focused`),
+    //   falling back to the coarse "is any Cursor frontmost" check when no port
+    //   is bound. macOS keeps the original frontmost-app behavior unchanged.
     // - Codex standalone app: check if Codex/Code is frontmost
     let frontmost = get_frontmost_app_name();
     let cursor_is_active = is_cursor_frontmost_app(&frontmost);
     let codex_is_active = is_codex_frontmost_app(&frontmost);
+    // While the user is interacting with our own panel, Cursor's window loses
+    // OS focus. Treat the panel being frontmost as "still on Cursor" so a
+    // completed session isn't (re)surfaced just because the user clicked oc-claw.
+    #[cfg(target_os = "windows")]
+    let panel_is_frontmost = frontmost == "oc-claw";
+    // Cache `/window-meta` focus lookups so multiple sessions sharing one
+    // Cursor window only hit the extension once per poll.
+    #[cfg(target_os = "windows")]
+    let mut cursor_focus_cache: std::collections::HashMap<u16, bool> = std::collections::HashMap::new();
+    #[cfg(target_os = "windows")]
+    let mut cursor_window_focused = |port: u16| -> bool {
+        *cursor_focus_cache
+            .entry(port)
+            .or_insert_with(|| get_cursor_window_meta(port).map(|m| m.focused).unwrap_or(false))
+    };
     let is_ghostty = |s: &ClaudeSession| -> bool {
         matches!(s.host_terminal.as_deref(), Some("Ghostty" | "ghostty"))
     };
@@ -7205,6 +7631,17 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     }
     for s in &mut list {
         if s.source == "cursor" {
+            #[cfg(target_os = "windows")]
+            {
+                s.is_active_tab = match s.cursor_port {
+                    Some(port) => cursor_window_focused(port) || panel_is_frontmost,
+                    None => cursor_is_active,
+                };
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                s.is_active_tab = cursor_is_active;
+            }
             continue;
         }
         if s.is_active_tab {
@@ -7222,14 +7659,395 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
             }
         }
     }
+    // Load ooclaw plugin status to filter hermes sessions.
+    // Only hermes sessions present in ooclaw-status.json are shown.
+    let hermes_dir = dirs::home_dir().map(|h| h.join(".hermes"));
+    let mut ooclaw_known_sids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(ref hd) = hermes_dir {
+        for (sid, _) in load_ooclaw_status(hd) {
+            ooclaw_known_sids.insert(sid);
+        }
+        let pd = hd.join("profiles");
+        if pd.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&pd) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        for (sid, _) in load_ooclaw_status(&entry.path()) {
+                            ooclaw_known_sids.insert(sid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Remove live hermes sessions not in ooclaw-status.json
+    list.retain(|s| s.source != "hermes" || ooclaw_known_sids.contains(&s.session_id));
+
+    let dismissed = state.dismissed.lock().map(|d| d.clone()).unwrap_or_default();
+    let live_hermes_ids: std::collections::HashSet<String> = list.iter()
+        .filter(|s| s.source == "hermes")
+        .map(|s| s.session_id.clone())
+        .collect();
+    if let Ok(db_sessions) = load_recent_hermes_sessions_from_db() {
+        for dbs in db_sessions {
+            if dismissed.contains(&dbs.session_id) {
+                continue;
+            }
+            if live_hermes_ids.contains(&dbs.session_id) {
+                if let Some(live) = list.iter_mut().find(|s| s.source == "hermes" && s.session_id == dbs.session_id) {
+                    // Update active status from plugin (same source of truth as db_sessions)
+                    live.status = dbs.status.clone();
+                    live.is_processing = dbs.is_processing;
+                    if live.user_prompt.is_none() || live.user_prompt.as_deref() == Some("") {
+                        if let Some(ref prompt) = dbs.user_prompt {
+                            live.user_prompt = Some(prompt.clone());
+                        }
+                    }
+                    if live.last_response.is_none() {
+                        live.last_response = dbs.last_response.clone();
+                    }
+                }
+            } else {
+                list.push(dbs);
+            }
+        }
+    }
+
     list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(list)
+}
+
+/// Internal Hermes framework tools (skill management, memory management).
+/// These run during a turn as housekeeping and don't represent user-visible work,
+/// so they're hidden from recent activity and ignored for active-state detection.
+/// Matches singular and plural forms: skill_*, skills_*, memory_*, memories_*.
+fn is_internal_tool(tool: &str) -> bool {
+    tool.starts_with("skill") || tool.starts_with("memor")
+}
+
+/// Interactive tools that block the agent waiting for a user reply via the
+/// chat platform. While such a tool is in flight (PreToolUse fired, PostToolUse
+/// has not), the agent is idle — UI should show "waiting for input", not "working".
+fn is_interactive_tool(tool: &str) -> bool {
+    matches!(tool, "clarify" | "ask_user" | "confirm")
+}
+
+/// Find the latest Stop and UserPromptSubmit timestamps for a session.
+/// Stop event = end of an assistant turn; UserPromptSubmit = start of a turn.
+/// Used as a safety net: any event after the most recent Stop is housekeeping.
+fn session_turn_boundary(events: &[serde_json::Value]) -> (f64, f64) {
+    let mut last_stop_ts = 0.0_f64;
+    let mut last_user_ts = 0.0_f64;
+    for e in events {
+        let ts = e.get("timestamp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let ev = e.get("event").and_then(|v| v.as_str()).unwrap_or("");
+        if ev == "Stop" && ts > last_stop_ts { last_stop_ts = ts; }
+        if ev == "UserPromptSubmit" && ts > last_user_ts { last_user_ts = ts; }
+    }
+    (last_stop_ts, last_user_ts)
+}
+
+/// Read ooclaw-status.json from a Hermes profile directory.
+/// Returns a map of session_id -> effective claudeStatus.
+///
+/// A session is considered completed (status = waiting_for_input) when EITHER:
+///   1. Last Stop event is newer than last UserPromptSubmit (turn officially ended), OR
+///   2. The last non-internal event reports a non-active status
+///
+/// Internal-tool events (skill_view, skill_manage, skills_list, memory_*, etc.)
+/// are skipped when picking the last status, so framework housekeeping during a
+/// turn doesn't keep the UI stuck in "working".
+fn load_ooclaw_status(hermes_dir: &std::path::Path) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    let status_path = hermes_dir.join("ooclaw-status.json");
+    if let Ok(data) = std::fs::read_to_string(&status_path) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+            if let Some(obj) = parsed.as_object() {
+                for (sid, events) in obj {
+                    if let Some(arr) = events.as_array() {
+                        // Skip delegate_task sub-agents: they only emit PostToolUse
+                        // + SubagentStop, never UserPromptSubmit / SessionStart / Stop.
+                        // The 30-event buffer is large enough that a real user turn
+                        // will always retain at least one of these markers.
+                        let is_user_facing = arr.iter().any(|e| {
+                            e.get("event").and_then(|v| v.as_str())
+                                .map(|s| s == "UserPromptSubmit" || s == "SessionStart" || s == "Stop")
+                                .unwrap_or(false)
+                        });
+                        if !is_user_facing { continue; }
+                        let (stop_ts, user_ts) = session_turn_boundary(arr);
+                        let status = if stop_ts > 0.0 && stop_ts > user_ts {
+                            // Safety net: turn officially ended via Stop event.
+                            "waiting_for_input".to_string()
+                        } else {
+                            // Pick the latest non-internal event's status.
+                            let last_non_internal = arr.iter().rev().find(|e| {
+                                let tool = e.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                                !is_internal_tool(tool)
+                            }).or_else(|| arr.last());
+                            last_non_internal
+                                .map(|e| {
+                                    let tool = e.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                                    let event_type = e.get("event").and_then(|v| v.as_str()).unwrap_or("");
+                                    // Agent is blocked waiting for user response:
+                                    //   - PreToolUse(clarify/ask_user/confirm) — interactive tool in flight
+                                    //   - PermissionRequest — waiting for approval card click
+                                    // Use a distinct sentinel so the caller can render
+                                    // the waiting pet (different from a finished turn).
+                                    if event_type == "PermissionRequest"
+                                        || (event_type == "PreToolUse" && is_interactive_tool(tool))
+                                    {
+                                        return "blocked_on_user".to_string();
+                                    }
+                                    e.get("claudeStatus").and_then(|v| v.as_str()).unwrap_or("").to_string()
+                                })
+                                .unwrap_or_default()
+                        };
+                        result.insert(sid.clone(), status);
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Check if a session is active based on ooclaw plugin status.
+/// Same logic as remote check_active: processing/running_tool/waiting = active.
+fn is_hermes_active_by_plugin(status_map: &HashMap<String, String>, session_id: &str) -> Option<bool> {
+    status_map.get(session_id).map(|st| {
+        matches!(st.as_str(), "processing" | "running_tool" | "waiting")
+    })
+}
+
+/// Return the freshest event timestamp (ms) for `session_id` across all
+/// ooclaw-status.json files (default profile + named profiles). Returns 0 if
+/// the session is unknown or has no events.
+fn ooclaw_session_latest_event_ms(hermes_dir: &std::path::Path, session_id: &str) -> u64 {
+    let mut dirs_to_check = vec![hermes_dir.to_path_buf()];
+    let profiles_dir = hermes_dir.join("profiles");
+    if profiles_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    dirs_to_check.push(entry.path());
+                }
+            }
+        }
+    }
+    let mut max_ts: f64 = 0.0;
+    for dir in dirs_to_check {
+        let status_path = dir.join("ooclaw-status.json");
+        if let Ok(data) = std::fs::read_to_string(&status_path) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(events) = parsed.get(session_id).and_then(|v| v.as_array()) {
+                    for e in events {
+                        if let Some(ts) = e.get("timestamp").and_then(|v| v.as_f64()) {
+                            if ts > max_ts { max_ts = ts; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (max_ts * 1000.0) as u64
+}
+
+/// Read userPrompt and lastResponse for a specific session from ooclaw-status.json.
+/// Searches default profile and named profiles.
+/// Returns (Option<userPrompt>, Option<lastResponse>).
+fn load_ooclaw_session_detail(hermes_dir: &std::path::Path, session_id: &str) -> Option<(Option<String>, Option<String>)> {
+    let mut dirs_to_check = vec![hermes_dir.to_path_buf()];
+    let profiles_dir = hermes_dir.join("profiles");
+    if profiles_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    dirs_to_check.push(entry.path());
+                }
+            }
+        }
+    }
+
+    for dir in &dirs_to_check {
+        let status_path = dir.join("ooclaw-status.json");
+        if let Ok(data) = std::fs::read_to_string(&status_path) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(events) = parsed.get(session_id).and_then(|v| v.as_array()) {
+                    // userPrompt only on UserPromptSubmit events; lastResponse only on
+                    // Stop events. Scan ALL events and take the most recent non-empty
+                    // value of each — last event alone is rarely the right pick.
+                    let mut up: Option<String> = None;
+                    let mut lr: Option<String> = None;
+                    for evt in events.iter().rev() {
+                        if up.is_none() {
+                            if let Some(s) = evt.get("userPrompt").and_then(|v| v.as_str()) {
+                                if !s.is_empty() { up = Some(s.to_string()); }
+                            }
+                        }
+                        if lr.is_none() {
+                            if let Some(s) = evt.get("lastResponse").and_then(|v| v.as_str()) {
+                                if !s.is_empty() { lr = Some(s.to_string()); }
+                            }
+                        }
+                        if up.is_some() && lr.is_some() { break; }
+                    }
+                    return Some((up, lr));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Load recent Hermes sessions from ooclaw-status.json (plugin required).
+/// Only sessions present in ooclaw-status.json are shown. If the plugin
+/// is not installed (no JSON file), no Hermes sessions are displayed.
+/// Session metadata (userPrompt, lastResponse) is enriched from state.db.
+fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let hermes_dir = home.join(".hermes");
+
+    // Load ooclaw plugin status — this is the single source of truth.
+    // No JSON → no sessions shown.
+    let mut plugin_status: HashMap<String, String> = HashMap::new();
+    plugin_status.extend(load_ooclaw_status(&hermes_dir));
+    let profiles_dir = hermes_dir.join("profiles");
+    if profiles_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    plugin_status.extend(load_ooclaw_status(&entry.path()));
+                }
+            }
+        }
+    }
+    if plugin_status.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+
+    // Open state.db for enrichment (userPrompt, lastResponse, timestamps)
+    let db_path = hermes_dir.join("state.db");
+    let conn = if db_path.exists() {
+        rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ).ok()
+    } else {
+        None
+    };
+
+    let mut sessions = Vec::new();
+
+    for (sid, claude_status) in &plugin_status {
+        // load_ooclaw_status uses "blocked_on_user" as a sentinel when the
+        // agent is paused waiting for user reply (PermissionRequest or an
+        // interactive tool like clarify). UI maps that to the waiting pet,
+        // while plain "waiting_for_input" means the turn cleanly ended.
+        let status = match claude_status.as_str() {
+            "processing" | "running_tool" | "waiting" => "processing".to_string(),
+            "blocked_on_user" => "waiting".to_string(),
+            _ => "stopped".to_string(),
+        };
+        let is_active = status == "processing";
+
+        let mut user_prompt: Option<String> = None;
+        let mut asst_response: Option<String> = None;
+        let mut updated_at_ms = now_ms;
+        let mut platform = String::new();
+
+        // Read userPrompt/lastResponse from plugin status
+        if let Some((up, lr)) = load_ooclaw_session_detail(&hermes_dir, sid) {
+            user_prompt = up;
+            asst_response = lr;
+        }
+
+        // Enrich from state.db
+        if let Some(ref db) = conn {
+            if let Ok(src) = db.query_row(
+                "SELECT source FROM sessions WHERE id = ?1", rusqlite::params![sid], |r| r.get::<_, String>(0)
+            ) {
+                platform = src;
+            }
+            if let Ok(Some(ts)) = db.query_row(
+                "SELECT MAX(timestamp) FROM messages WHERE session_id = ?1 AND role NOT IN ('session_meta','system','metadata')",
+                rusqlite::params![sid], |r| r.get::<_, Option<f64>>(0)
+            ) {
+                updated_at_ms = (ts * 1000.0) as u64;
+            }
+        }
+        // Plugin event timestamps lead state.db by several seconds (especially
+        // on UserPromptSubmit when feishu is still flushing). Prefer the
+        // freshest ooclaw event timestamp so the "Xm ago" badge reflects
+        // actual activity instead of the last persisted message.
+        let evt_max_ms = ooclaw_session_latest_event_ms(&hermes_dir, sid);
+        if evt_max_ms > updated_at_ms {
+            updated_at_ms = evt_max_ms;
+        }
+        if let Some(ref db) = conn {
+            if user_prompt.is_none() {
+                if let Ok(p) = db.query_row(
+                    "SELECT substr(content, 1, 200) FROM messages WHERE session_id = ?1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1",
+                    rusqlite::params![sid], |r| r.get::<_, String>(0)
+                ) {
+                    user_prompt = Some(p);
+                }
+            }
+            if asst_response.is_none() {
+                if let Ok(r) = db.query_row(
+                    "SELECT substr(content, 1, 200) FROM messages WHERE session_id = ?1 AND role = 'assistant' ORDER BY timestamp DESC LIMIT 1",
+                    rusqlite::params![sid], |r| r.get::<_, String>(0)
+                ) {
+                    asst_response = Some(r);
+                }
+            }
+        }
+
+        // Skip CLI sessions
+        if platform == "cli" || platform == "terminal" {
+            continue;
+        }
+
+        sessions.push(ClaudeSession {
+            session_id: sid.clone(),
+            status,
+            source: "hermes".to_string(),
+            cwd: "~/.hermes".to_string(),
+            tool: None,
+            tool_input: None,
+            user_prompt,
+            interactive: false,
+            updated_at: updated_at_ms,
+            is_processing: is_active,
+            pid: None,
+            pending_agents: 0,
+            permission_suggestions: None,
+            last_response: asst_response,
+            is_active_tab: false,
+            terminal_id: None,
+            host_terminal: None,
+            platform: Some(platform),
+            cursor_port: None,
+            cursor_workspace_root: None,
+            cursor_workspace_name: None,
+            cursor_native_handle: None,
+        });
+    }
+
+    Ok(sessions)
 }
 
 #[tauri::command]
 async fn remove_claude_session(session_id: String, state: tauri::State<'_, ClaudeState>) -> Result<(), String> {
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     sessions.remove(&session_id);
+    drop(sessions);
+    if let Ok(mut dismissed) = state.dismissed.lock() {
+        dismissed.insert(session_id);
+    }
     Ok(())
 }
 
@@ -7399,6 +8217,14 @@ async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String>
     // instead of mixing in Claude Code's totals as if they were Cursor's.
     if source == "cursor" {
         return Ok(empty_claude_stats());
+    }
+
+    if source == "gemini" {
+        return collect_gemini_stats();
+    }
+
+    if source == "hermes" {
+        return collect_hermes_stats();
     }
 
     let jsonl_files = match source.as_str() {
@@ -8144,7 +8970,27 @@ async fn activate_app(app_name: String) -> Result<String, String> {
             .map_err(|e| e.to_string())?;
         Ok(format!("Activated {}", app_name))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let name_lower = app_name.to_lowercase();
+        let exe_candidates: Vec<String> = match name_lower.as_str() {
+            "lark" => vec!["lark.exe".into(), "feishu.exe".into()],
+            "telegram" => vec!["telegram.exe".into()],
+            "discord" => vec!["discord.exe".into()],
+            "slack" => vec!["slack.exe".into()],
+            "wechat" => vec!["wechat.exe".into(), "weixin.exe".into()],
+            "whatsapp" => vec!["whatsapp.exe".into()],
+            "mattermost" => vec!["mattermost.exe".into()],
+            _ => vec![format!("{}.exe", name_lower)],
+        };
+        let refs: Vec<&str> = exe_candidates.iter().map(|s| s.as_str()).collect();
+        if let Some(p) = find_pid_by_exe_names(&refs) {
+            activate_window_by_pid(p);
+            return Ok(format!("Activated {}", app_name));
+        }
+        Err(format!("Could not find running process for {}", app_name))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Err(format!("activate_app not supported on this platform"))
     }
@@ -8677,6 +9523,102 @@ fn find_running_claude_desktop_pid() -> Option<u32> {
     result
 }
 
+/// Walk up the process tree from `pid` to find the nearest ancestor that owns
+/// a visible window (i.e. the terminal hosting a CLI process like gemini/hermes).
+#[cfg(target_os = "windows")]
+fn find_ancestor_window_pid(pid: u32) -> Option<u32> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible,
+    };
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    fn pid_has_visible_window(target: u32) -> bool {
+        struct Ctx { target: u32, found: bool }
+        extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            unsafe {
+                let ctx = &mut *(lparam.0 as *mut Ctx);
+                if !IsWindowVisible(hwnd).as_bool() { return BOOL(1); }
+                let mut p: u32 = 0;
+                GetWindowThreadProcessId(hwnd, Some(&mut p));
+                if p == ctx.target && GetWindowTextLengthW(hwnd) > 0 {
+                    ctx.found = true;
+                    return BOOL(0);
+                }
+                BOOL(1)
+            }
+        }
+        let mut ctx = Ctx { target, found: false };
+        unsafe { let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut Ctx as isize)); }
+        ctx.found
+    }
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entries: Vec<(u32, u32)> = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            while Process32NextW(snapshot, &mut entry).is_ok() {
+                entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+
+    let mut current = pid;
+    for _ in 0..10 {
+        let parent = entries.iter().find(|(p, _)| *p == current).map(|(_, pp)| *pp)?;
+        if parent == 0 || parent == current { return None; }
+        if pid_has_visible_window(parent) {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Find the first running process whose exe name (case-insensitive) matches
+/// any of the given names. Returns its PID so we can activate its window.
+#[cfg(target_os = "windows")]
+fn find_pid_by_exe_names(exe_names: &[&str]) -> Option<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut result = None;
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                ).to_lowercase();
+                if exe_names.iter().any(|e| name == e.to_lowercase()) {
+                    result = Some(entry.th32ProcessID);
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    result
+}
+
 /// Detect the host application for a CC process on Windows.
 /// Returns a name like "Claude Desktop", "Windows Terminal", etc.
 #[cfg(target_os = "windows")]
@@ -9006,6 +9948,7 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
     let pid = session.pid;
     let source = session.source.clone();
     let host_terminal = session.host_terminal.clone();
+    let platform = session.platform.clone();
     drop(sessions);
 
     #[cfg(target_os = "macos")]
@@ -9173,6 +10116,47 @@ end tell"#,
                 }
             }
             return Err("No PID tracked for this Codex session".to_string());
+        } else if source == "gemini" {
+            for app_name in ["Ghostty", "Terminal", "iTerm2", "iTerm", "Warp"] {
+                if try_activate_app(app_name) {
+                    return Ok(format!("Activated {}", app_name));
+                }
+            }
+            return Err("No PID tracked for this Gemini session".to_string());
+        } else if source == "hermes" {
+            // Hermes supports multiple platforms. Use the platform field to
+            // decide which application to activate, like OpenClaw does for
+            // Feishu/Lark/Discord/Slack channels.
+            let plat = platform.as_deref().unwrap_or("unknown").to_lowercase();
+            let app_name = if plat.contains("feishu") || plat.contains("lark") {
+                Some("Lark")
+            } else if plat.contains("telegram") {
+                Some("Telegram")
+            } else if plat.contains("discord") {
+                Some("Discord")
+            } else if plat.contains("slack") {
+                Some("Slack")
+            } else if plat.contains("wechat") || plat.contains("weixin") {
+                Some("WeChat")
+            } else if plat.contains("whatsapp") {
+                Some("WhatsApp")
+            } else if plat.contains("mattermost") {
+                Some("Mattermost")
+            } else {
+                None
+            };
+            if let Some(name) = app_name {
+                if try_activate_app(name) {
+                    return Ok(format!("Activated {}", name));
+                }
+            }
+            // Fallback: try common terminal apps
+            for term in ["Ghostty", "Terminal", "iTerm2", "iTerm", "Warp"] {
+                if try_activate_app(term) {
+                    return Ok(format!("Activated {}", term));
+                }
+            }
+            return Err(format!("No PID tracked for this Hermes session (platform: {})", plat));
         } else {
             return Err("No PID tracked for this session".to_string());
         };
@@ -9410,6 +10394,66 @@ end tell"#,
                 return Ok("Activated Claude Desktop window".to_string());
             }
         }
+
+        if let Some(p) = pid {
+            if let Some(parent) = find_ancestor_window_pid(p) {
+                activate_window_by_pid(parent);
+                return Ok(format!("Activated terminal for PID {}", p));
+            }
+            activate_window_by_pid(p);
+            return Ok(format!("Activated window for PID {}", p));
+        }
+
+        if source == "codex" {
+            let exe_names = &["codex.exe", "code.exe"];
+            if let Some(p) = find_pid_by_exe_names(exe_names) {
+                activate_window_by_pid(p);
+                return Ok("Activated Codex window".to_string());
+            }
+        } else if source == "gemini" {
+            let terminal_exes = &[
+                "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                "alacritty.exe", "wezterm-gui.exe", "hyper.exe",
+            ];
+            if let Some(p) = find_pid_by_exe_names(terminal_exes) {
+                activate_window_by_pid(p);
+                return Ok("Activated terminal for Gemini session".to_string());
+            }
+        } else if source == "hermes" {
+            let plat = platform.as_deref().unwrap_or("unknown").to_lowercase();
+            let app_exe: Option<&[&str]> = if plat.contains("feishu") || plat.contains("lark") {
+                Some(&["lark.exe", "feishu.exe"])
+            } else if plat.contains("telegram") {
+                Some(&["telegram.exe"])
+            } else if plat.contains("discord") {
+                Some(&["discord.exe"])
+            } else if plat.contains("slack") {
+                Some(&["slack.exe"])
+            } else if plat.contains("wechat") || plat.contains("weixin") {
+                Some(&["wechat.exe", "weixin.exe"])
+            } else if plat.contains("whatsapp") {
+                Some(&["whatsapp.exe"])
+            } else if plat.contains("mattermost") {
+                Some(&["mattermost.exe"])
+            } else {
+                None
+            };
+            if let Some(exes) = app_exe {
+                if let Some(p) = find_pid_by_exe_names(exes) {
+                    activate_window_by_pid(p);
+                    return Ok(format!("Activated {} window", plat));
+                }
+            }
+            let terminal_exes = &[
+                "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                "alacritty.exe", "wezterm-gui.exe",
+            ];
+            if let Some(p) = find_pid_by_exe_names(terminal_exes) {
+                activate_window_by_pid(p);
+                return Ok("Activated terminal for Hermes session".to_string());
+            }
+        }
+
         Ok("No action".to_string())
     }
 
@@ -9976,7 +11020,10 @@ if ($appPath) {{
 async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>, String> {
     let path = match resolve_session_jsonl_path(&session_id, None) {
         Some(p) => p,
-        None => return Ok(vec![]),
+        None => {
+            // Fallback: try Hermes state.db
+            return load_hermes_conversation(&session_id);
+        }
     };
 
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -10058,6 +11105,598 @@ async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>,
     }
 
     messages.reverse();
+    Ok(messages)
+}
+
+/// Return a summary of recent Hermes sessions for the stats detail view.
+#[tauri::command]
+async fn get_hermes_sessions_summary() -> Result<Vec<serde_json::Value>, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let db_path = home.join(".hermes").join("state.db");
+    if !db_path.exists() {
+        return Ok(vec![]);
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open state.db: {}", e))?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, source, started_at, message_count, input_tokens, output_tokens \
+         FROM sessions ORDER BY started_at DESC LIMIT 30"
+    ).map_err(|e| format!("prepare: {}", e))?;
+
+    let mut user_stmt = conn.prepare(
+        "SELECT substr(content, 1, 200) FROM messages \
+         WHERE session_id = ?1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1"
+    ).map_err(|e| format!("prepare user: {}", e))?;
+
+    let mut asst_stmt = conn.prepare(
+        "SELECT substr(content, 1, 200) FROM messages \
+         WHERE session_id = ?1 AND role = 'assistant' ORDER BY timestamp DESC LIMIT 1"
+    ).map_err(|e| format!("prepare asst: {}", e))?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1).unwrap_or_default(),
+            row.get::<_, f64>(2).unwrap_or(0.0),
+            row.get::<_, i64>(3).unwrap_or(0),
+            row.get::<_, i64>(4).unwrap_or(0),
+            row.get::<_, i64>(5).unwrap_or(0),
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        let (id, platform, started_at, msg_count, input_tok, output_tok) =
+            row.map_err(|e| format!("row: {}", e))?;
+        let last_user: String = user_stmt
+            .query_row(rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
+        let last_asst: String = asst_stmt
+            .query_row(rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
+        results.push(serde_json::json!({
+            "sessionId": id,
+            "platform": platform,
+            "startedAt": started_at,
+            "messageCount": msg_count,
+            "inputTokens": input_tok,
+            "outputTokens": output_tok,
+            "lastUserMsg": last_user,
+            "lastAssistantMsg": last_asst,
+        }));
+    }
+    Ok(results)
+}
+
+/// Return recent activity entries across all Hermes sessions for the detail view.
+/// Each entry has: type (user/assistant/tool), summary, timestamp.
+/// Results are ordered newest-first so the frontend can display them directly.
+#[tauri::command]
+async fn get_hermes_recent_activity(session_id: String) -> Result<Vec<serde_json::Value>, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let hermes_dir = home.join(".hermes");
+    let db_path = hermes_dir.join("state.db");
+
+    // 1) Read real-time events from ooclaw plugin status file (in-progress tool calls)
+    // Drop any events that happen after the last Stop of a completed turn — those
+    // are housekeeping (skill_view/skills_list/memory_view) and the visible task
+    // is already done. Use the Hermes Stop event as the authoritative boundary.
+    let mut live_results: Vec<serde_json::Value> = Vec::new();
+    let mut cutoff_ts: Option<f64> = None;  // upper bound (inclusive) when session is done
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+    if !session_id.is_empty() {
+        let mut status_paths = vec![hermes_dir.join("ooclaw-status.json")];
+        let pd = hermes_dir.join("profiles");
+        if pd.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&pd) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        status_paths.push(entry.path().join("ooclaw-status.json"));
+                    }
+                }
+            }
+        }
+        for sp in &status_paths {
+            if let Ok(data) = std::fs::read_to_string(sp) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                    if let Some(events) = parsed.get(&session_id).and_then(|v| v.as_array()) {
+                        let (stop_ts, user_ts) = session_turn_boundary(events);
+                        let session_done = stop_ts > 0.0 && stop_ts > user_ts;
+                        if session_done { cutoff_ts = Some(stop_ts); }
+                        for evt in events.iter().rev() {
+                            let ts = evt.get("timestamp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            // Live events are kept for up to 30min so the latest tool calls
+                            // (terminal/write_file/etc.) still show even if state.db hasn't
+                            // committed them yet for the current turn.
+                            if ts <= 0.0 || (now_ts - ts) > 1800.0 { continue; }
+                            // Drop housekeeping events emitted after the turn ended (Stop boundary).
+                            if let Some(c) = cutoff_ts { if ts > c { continue; } }
+                            let st = evt.get("claudeStatus").and_then(|v| v.as_str()).unwrap_or("");
+                            let tool = evt.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                            // Hide internal framework tools (skill_*/skills_*/memor_*).
+                            if is_internal_tool(tool) { continue; }
+                            if !tool.is_empty() && (st == "running_tool" || st == "processing") {
+                                live_results.push(serde_json::json!({
+                                    "type": "tool", "summary": format!("⚡ {}", tool),
+                                    "toolName": tool, "timestamp": ts, "live": true
+                                }));
+                            } else if st == "processing" {
+                                live_results.push(serde_json::json!({
+                                    "type": "thinking", "summary": "💭 thinking...",
+                                    "timestamp": ts, "live": true
+                                }));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if !db_path.exists() {
+        return Ok(live_results);
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open state.db: {}", e))?;
+
+    // Resolve session ids: main session + all descendant (subagent) sessions
+    // so that recent activity includes tool calls from delegate_task children.
+    let session_ids: Vec<String> = if session_id.is_empty() {
+        vec![]
+    } else {
+        let mut ids = vec![session_id.clone()];
+        let mut frontier = vec![session_id.clone()];
+        for _ in 0..5 {  // depth limit
+            if frontier.is_empty() { break; }
+            let placeholders = frontier.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+            let q = format!("SELECT id FROM sessions WHERE parent_session_id IN ({})", placeholders);
+            let frontier_refs: Vec<&dyn rusqlite::types::ToSql> = frontier.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+            let mut next_frontier = Vec::new();
+            if let Ok(mut stmt) = conn.prepare(&q) {
+                if let Ok(rows) = stmt.query_map(frontier_refs.as_slice(), |r| r.get::<_, String>(0)) {
+                    for row in rows.flatten() {
+                        if !ids.contains(&row) {
+                            ids.push(row.clone());
+                            next_frontier.push(row);
+                        }
+                    }
+                }
+            }
+            frontier = next_frontier;
+        }
+        ids
+    };
+
+    let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if session_ids.is_empty() {
+        (
+            "SELECT role, substr(content, 1, 200), tool_name, tool_calls, tool_call_id, timestamp \
+             FROM messages WHERE role IN ('user', 'assistant', 'tool') \
+             ORDER BY timestamp DESC LIMIT 60".to_string(),
+            vec![],
+        )
+    } else {
+        let placeholders = session_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+        let sql_str = format!(
+            "SELECT role, substr(content, 1, 200), tool_name, tool_calls, tool_call_id, timestamp \
+             FROM messages WHERE role IN ('user', 'assistant', 'tool') AND session_id IN ({}) \
+             ORDER BY timestamp DESC LIMIT 60", placeholders);
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> = session_ids.iter()
+            .map(|s| Box::new(s.clone()) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
+        (sql_str, params)
+    };
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {}", e))?;
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, f64>(5)?,
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    let truncate = |s: &str, max_chars: usize| -> String {
+        if s.chars().count() <= max_chars {
+            s.to_string()
+        } else {
+            let end: String = s.chars().take(max_chars).collect();
+            format!("{}…", end)
+        }
+    };
+
+    // First pass: collect assistant tool_calls to build a call_id -> fn_name map
+    struct RawRow {
+        role: String,
+        content: Option<String>,
+        tool_name: Option<String>,
+        tool_calls: Option<String>,
+        tool_call_id: Option<String>,
+        ts: f64,
+    }
+    let mut raw_rows = Vec::new();
+    let mut call_id_to_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for row in rows {
+        let (role, content, tool_name, tool_calls, tool_call_id, ts) = row.map_err(|e| format!("row: {}", e))?;
+        if role == "assistant" {
+            if let Some(ref tc_str) = tool_calls {
+                if let Ok(tc_arr) = serde_json::from_str::<Vec<serde_json::Value>>(tc_str) {
+                    for tc in &tc_arr {
+                        let cid = tc.get("id").or_else(|| tc.get("call_id"))
+                            .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let fname = tc.get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown").to_string();
+                        if !cid.is_empty() {
+                            call_id_to_name.insert(cid, fname);
+                        }
+                    }
+                }
+            }
+        }
+        raw_rows.push(RawRow { role, content, tool_name, tool_calls, tool_call_id, ts });
+    }
+
+    let mut results = Vec::new();
+    for r in &raw_rows {
+        // Drop DB rows that happened after the turn's Stop (housekeeping).
+        if let Some(c) = cutoff_ts { if r.ts > c { continue; } }
+        if r.role == "tool" {
+            // Resolve tool name: from tool_name field, or from call_id -> fn_name map
+            let name = r.tool_name.as_deref().unwrap_or("");
+            let resolved_name = if name.is_empty() {
+                r.tool_call_id.as_deref()
+                    .and_then(|cid| call_id_to_name.get(cid))
+                    .map(|s| s.as_str())
+                    .unwrap_or("tool")
+            } else {
+                name
+            };
+            if is_internal_tool(resolved_name) { continue; }
+            results.push(serde_json::json!({
+                "type": "tool",
+                "summary": format!("⚡ {}", resolved_name),
+                "toolName": resolved_name,
+                "timestamp": r.ts,
+            }));
+            continue;
+        }
+
+        if r.role == "assistant" {
+            // Show tool call invocations
+            if let Some(ref tc_str) = r.tool_calls {
+                if let Ok(tc_arr) = serde_json::from_str::<Vec<serde_json::Value>>(tc_str) {
+                    for tc in &tc_arr {
+                        let fn_name = tc.get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown");
+                        if is_internal_tool(fn_name) { continue; }
+                        results.push(serde_json::json!({
+                            "type": "tool",
+                            "summary": format!("⚡ {}", fn_name),
+                            "toolName": fn_name,
+                            "timestamp": r.ts,
+                        }));
+                    }
+                }
+            }
+            // Text content
+            if let Some(ref text) = r.content {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    results.push(serde_json::json!({
+                        "type": "assistant",
+                        "summary": truncate(trimmed, 60),
+                        "timestamp": r.ts,
+                    }));
+                }
+            }
+            continue;
+        }
+
+        if r.role == "user" || r.role == "human" {
+            let text = r.content.as_deref().unwrap_or("");
+            let trimmed = text.trim();
+            if trimmed.is_empty() { continue; }
+            results.push(serde_json::json!({
+                "type": "user",
+                "summary": truncate(trimmed, 60),
+                "timestamp": r.ts,
+            }));
+        }
+    }
+    // Merge live ooclaw events (newer, in-progress) in front of DB results
+    let mut merged = live_results;
+    merged.extend(results);
+    Ok(merged)
+}
+
+/// Return recent activity from a remote Hermes instance via SSH.
+#[tauri::command]
+async fn get_hermes_remote_recent_activity(ssh_host: String, ssh_user: String, session_id: String) -> Result<Vec<serde_json::Value>, String> {
+    let sid_escaped = session_id.replace('\'', "");
+    let py_script = format!(r#"
+import json, os, sqlite3, sys, time
+raw_sid = '{sid}'
+profile = 'default'
+if ':' in raw_sid:
+    profile, raw_sid = raw_sid.split(':', 1)
+if profile == 'default':
+    db = os.path.expanduser('~/.hermes/state.db')
+    status_file = os.path.expanduser('~/.hermes/ooclaw-status.json')
+else:
+    db = os.path.expanduser('~/.hermes/profiles/' + profile + '/state.db')
+    status_file = os.path.expanduser('~/.hermes/profiles/' + profile + '/ooclaw-status.json')
+
+results = []
+now = time.time()
+cutoff_ts = None  # drop events after last Stop when session is completed
+
+def _turn_boundary(evts):
+    s = 0.0
+    u = 0.0
+    for _e in evts:
+        _ts = _e.get('timestamp', 0) or 0
+        _ev = _e.get('event', '')
+        if _ev == 'Stop' and _ts > s: s = _ts
+        if _ev == 'UserPromptSubmit' and _ts > u: u = _ts
+    return s, u
+
+def _is_internal(t):
+    # Hermes framework housekeeping (skill_*/skills_*/memor_*)
+    return t.startswith('skill') or t.startswith('memor')
+
+# 1) Read real-time events from ooclaw plugin status file (tool calls in progress)
+if os.path.exists(status_file):
+    try:
+        with open(status_file) as f:
+            all_status = json.load(f)
+        events = all_status.get(raw_sid, [])
+        if events:
+            _stop_ts, _user_ts = _turn_boundary(events)
+            if _stop_ts > 0 and _stop_ts > _user_ts:
+                cutoff_ts = _stop_ts
+        for evt in reversed(events):
+            ts = evt.get('timestamp', 0)
+            # 30min window so newest tool calls show even before state.db commits
+            if (now - ts) > 1800:
+                continue
+            if cutoff_ts is not None and ts > cutoff_ts:
+                continue
+            st = evt.get('claudeStatus', '')
+            tool = evt.get('tool', '')
+            if _is_internal(tool):
+                continue
+            if tool and st in ('running_tool', 'processing'):
+                results.append({{'type':'tool','summary':'\u26a1 '+tool,'toolName':tool,'timestamp':ts,'live':True}})
+            elif st == 'processing':
+                results.append({{'type':'thinking','summary':'\U0001f4ad thinking...','timestamp':ts,'live':True}})
+    except: pass
+
+# 2) Supplement with DB history (completed turns)
+if os.path.exists(db):
+    try:
+        conn = sqlite3.connect(db)
+        def _resolve_latest_session(s):
+            cur = s
+            for _ in range(20):
+                child = conn.execute(
+                    'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
+                    (cur,)).fetchone()
+                if not child:
+                    break
+                cur = child[0]
+            row = conn.execute(
+                'SELECT id FROM sessions WHERE (id = ? OR id LIKE ? OR id = ? OR id LIKE ?) '
+                'ORDER BY started_at DESC LIMIT 1',
+                (s, s + ':%', cur, cur + ':%')
+            ).fetchone()
+            if row:
+                cur = row[0]
+            return cur
+        sid = _resolve_latest_session(raw_sid) if raw_sid else ''
+        # Collect main session + all descendant (subagent) sessions
+        all_sids = []
+        if sid:
+            all_sids = [sid]
+            frontier = [sid]
+            for _ in range(5):
+                if not frontier: break
+                placeholders = ','.join('?' * len(frontier))
+                rows = conn.execute(
+                    'SELECT id FROM sessions WHERE parent_session_id IN (' + placeholders + ')',
+                    frontier).fetchall()
+                new_frontier = []
+                for (cid,) in rows:
+                    if cid not in all_sids:
+                        all_sids.append(cid)
+                        new_frontier.append(cid)
+                frontier = new_frontier
+        _q = ('SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
+              'FROM messages WHERE role IN ("user","assistant","tool")')
+        if all_sids:
+            placeholders = ','.join('?' * len(all_sids))
+            cur = conn.execute(_q + ' AND session_id IN (' + placeholders + ') ORDER BY timestamp DESC LIMIT 30', all_sids)
+            _rows = cur.fetchall()
+        else:
+            cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
+            _rows = cur.fetchall()
+        cid_map = {{}}
+        for r in _rows:
+            role, content, tool_name, tool_calls, tool_call_id, ts = r
+            if role == 'assistant' and tool_calls:
+                try:
+                    for tc in json.loads(tool_calls):
+                        cid = tc.get('id') or tc.get('call_id','')
+                        fname = (tc.get('function') or {{}}).get('name','unknown')
+                        if cid: cid_map[cid] = fname
+                except: pass
+        def trunc(s, n=60):
+            return s[:n]+'...' if len(s)>n else s
+        for role, content, tool_name, tool_calls, tool_call_id, ts in _rows:
+            # Drop DB rows past the turn's Stop event (housekeeping).
+            if cutoff_ts is not None and ts > cutoff_ts:
+                continue
+            if role == 'tool':
+                name = tool_name or ''
+                if not name and tool_call_id:
+                    name = cid_map.get(tool_call_id, 'tool')
+                if not name: name = 'tool'
+                if _is_internal(name): continue
+                results.append({{'type':'tool','summary':'\u26a1 '+name,'toolName':name,'timestamp':ts}})
+            elif role == 'assistant':
+                if tool_calls:
+                    try:
+                        for tc in json.loads(tool_calls):
+                            fname = (tc.get('function') or {{}}).get('name','unknown')
+                            if _is_internal(fname): continue
+                            results.append({{'type':'tool','summary':'\u26a1 '+fname,'toolName':fname,'timestamp':ts}})
+                    except: pass
+                if content and content.strip():
+                    results.append({{'type':'assistant','summary':trunc(content.strip()),'timestamp':ts}})
+            elif role in ('user','human'):
+                if content and content.strip():
+                    results.append({{'type':'user','summary':trunc(content.strip()),'timestamp':ts}})
+        conn.close()
+    except: pass
+
+# Sort by timestamp desc, live events first, limit 15
+results.sort(key=lambda x: (x.get('live', False), x.get('timestamp', 0)), reverse=True)
+# Deduplicate: if a live tool event has same toolName as a DB event within 5s, keep only live
+seen_tools = set()
+deduped = []
+for r in results:
+    if r.get('live') and r.get('toolName'):
+        seen_tools.add(r['toolName'] + ':' + str(int(r.get('timestamp',0) // 5)))
+        deduped.append(r)
+    elif r.get('toolName'):
+        key = r['toolName'] + ':' + str(int(r.get('timestamp',0) // 5))
+        if key not in seen_tools:
+            deduped.append(r)
+    else:
+        deduped.append(r)
+print(json.dumps(deduped[:15]))
+"#, sid = sid_escaped);
+    let cmd = format!("python3 -c {}", shell_escape_single(&py_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+    let items: Vec<serde_json::Value> = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse hermes remote activity: {}", e))?;
+    Ok(items)
+}
+
+/// Load conversation messages for a Hermes session from ~/.hermes/state.db.
+fn load_hermes_conversation(session_id: &str) -> Result<Vec<ChatMessage>, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let db_path = home.join(".hermes").join("state.db");
+    if !db_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open hermes state.db: {}", e))?;
+
+    let mut stmt = conn.prepare(
+        "SELECT role, content, tool_name, tool_calls, timestamp \
+         FROM messages WHERE session_id = ?1 ORDER BY timestamp ASC LIMIT 500"
+    ).map_err(|e| format!("prepare: {}", e))?;
+
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, f64>(4)?,
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    let mut messages = Vec::new();
+    for row in rows {
+        let (role, content, tool_name, tool_calls, ts) = row.map_err(|e| format!("row: {}", e))?;
+
+        // Format timestamp as ISO string
+        let ts_secs = ts as i64;
+        let ts_nanos = ((ts - ts_secs as f64) * 1_000_000_000.0) as u32;
+        let timestamp = chrono::DateTime::from_timestamp(ts_secs, ts_nanos)
+            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
+
+        if role == "tool" {
+            // Tool result: show tool_name and truncated content
+            let name = tool_name.unwrap_or_default();
+            let body = content.unwrap_or_default();
+            let truncated = if body.chars().count() > 300 {
+                format!("{}…", truncate_chars(&body, 300))
+            } else {
+                body
+            };
+            let text = if name.is_empty() {
+                format!("[Tool result]\n{}", truncated)
+            } else {
+                format!("[Tool: {}]\n{}", name, truncated)
+            };
+            messages.push(ChatMessage { role: "assistant".to_string(), text, timestamp });
+            continue;
+        }
+
+        if role == "assistant" {
+            // Check for tool_calls (function calls the model wants to make)
+            if let Some(ref tc_str) = tool_calls {
+                if let Ok(tc_arr) = serde_json::from_str::<Vec<serde_json::Value>>(tc_str) {
+                    for tc in &tc_arr {
+                        let fn_name = tc.get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown");
+                        let fn_args = tc.get("function")
+                            .and_then(|f| f.get("arguments"))
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("");
+                        let args_truncated = if fn_args.chars().count() > 200 {
+                            format!("{}…", truncate_chars(fn_args, 200))
+                        } else {
+                            fn_args.to_string()
+                        };
+                        let text = format!("🔧 {}\n```\n{}\n```", fn_name, args_truncated);
+                        messages.push(ChatMessage { role: "assistant".to_string(), text, timestamp: timestamp.clone() });
+                    }
+                }
+            }
+            // Also include text content if present
+            if let Some(ref text) = content {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    messages.push(ChatMessage { role: "assistant".to_string(), text: trimmed.to_string(), timestamp: timestamp.clone() });
+                }
+            }
+            continue;
+        }
+
+        if role == "user" || role == "human" {
+            let text = content.unwrap_or_default();
+            let trimmed = text.trim();
+            if trimmed.is_empty() { continue; }
+            messages.push(ChatMessage { role: "user".to_string(), text: trimmed.to_string(), timestamp });
+            continue;
+        }
+
+        // system or other roles: skip
+    }
+
     Ok(messages)
 }
 
@@ -10840,12 +12479,9 @@ fn process_claude_event(
             .or_else(|| event.get("hook_event_name"))
             .or_else(|| event.get("codex_event_type"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
-        // Normalize Cursor's camelCase event names to CC's PascalCase.
-        // Cursor and CC have different hook event sets:
-        //   Cursor: beforeSubmitPrompt, stop, beforeShellExecution, afterShellExecution,
-        //           beforeMCPExecution, afterMCPExecution, afterFileEdit, beforeReadFile,
-        //           afterAgentThought, afterAgentResponse
-        //   CC:     UserPromptSubmit, Stop, PreToolUse, PostToolUse, SessionStart, etc.
+        // Normalize event names from various agents to CC's PascalCase.
+        // Cursor uses camelCase, Gemini CLI uses PascalCase (BeforeAgent/AfterAgent etc.),
+        // CC uses PascalCase (UserPromptSubmit, Stop, etc.).
         let hook_event = match raw_hook_event.as_str() {
             "beforeSubmitPrompt" => "UserPromptSubmit".to_string(),
             "hook-user-prompt-submit" => "UserPromptSubmit".to_string(),
@@ -10863,6 +12499,13 @@ fn process_claude_event(
             "afterShellExecution" | "afterMCPExecution" | "afterFileEdit" => "PostToolUse".to_string(),
             "afterAgentThought" | "afterAgentResponse" => "PostToolUse".to_string(),
             "stop" => "Stop".to_string(),
+            // Gemini CLI events → map to CC equivalents
+            "BeforeAgent" => "UserPromptSubmit".to_string(),
+            "AfterAgent" => "Stop".to_string(),
+            "BeforeTool" => "PreToolUse".to_string(),
+            "AfterTool" => "PostToolUse".to_string(),
+            "Notification" => "Stop".to_string(),
+            "PreCompress" => "PreCompact".to_string(),
             other => other.to_string(),
         };
 
@@ -10908,7 +12551,12 @@ fn process_claude_event(
                 // Different clients may report interactive choice tools with
                 // slightly different names. Treat both as waiting states so
                 // the selection popup can be shown consistently.
-                if tool == "AskUserQuestion" || tool == "AskQuestion" || pretool_needs_waiting {
+                // Hermes adds `clarify`/`ask_user`/`confirm` which block the
+                // agent waiting for the user to reply via the chat platform.
+                if tool == "AskUserQuestion" || tool == "AskQuestion"
+                    || is_interactive_tool(tool)
+                    || pretool_needs_waiting
+                {
                     "waiting".to_string()
                 } else {
                     "tool_running".to_string()
@@ -10953,6 +12601,8 @@ fn process_claude_event(
             was_processing = matches!(prev_status.as_str(), "processing" | "tool_running" | "compacting");
             was_compacting = prev_status == "compacting";
 
+
+
             if hook_event == "SessionEnd" {
                 let prev = sessions.get(&session_id);
                 session_source = prev.map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string());
@@ -10984,21 +12634,24 @@ fn process_claude_event(
                     permission_suggestions: None,
                     terminal_id: None,
                     host_terminal: None,
+                    platform: None,
                     cursor_port: None,
                     cursor_workspace_root: None,
                     cursor_workspace_name: None,
                     cursor_native_handle: None,
                 });
                 // Only upgrade source, never downgrade:
-                // cc < codex < cursor.
-                // Once a session is identified as codex/cursor, later generic
-                // CC events (source=cc) for the same sessionId must not
+                // cc < codex < gemini < cursor.
+                // Once a session is identified as a higher-rank source, later
+                // generic CC events (source=cc) for the same sessionId must not
                 // overwrite it, otherwise active-tab/staleness logic regresses.
                 let source_rank = |s: &str| -> u8 {
                     match s {
                         "cc" => 1,
                         "codex" => 2,
-                        "cursor" => 3,
+                        "gemini" => 3,
+                        "hermes" => 4,
+                        "cursor" => 5,
                         _ => 0,
                     }
                 };
@@ -11042,6 +12695,26 @@ fn process_claude_event(
                     if let Some(roots) = event.get("workspace_roots").and_then(|v| v.as_array()) {
                         if let Some(first) = roots.first().and_then(|v| v.as_str()) {
                             incoming_cwd = normalize_cursor_path(first);
+                        }
+                    }
+                }
+                // Last resort for Cursor: if still no cwd, probe extension
+                // ports for the focused window's workspace root.
+                if incoming_cwd.is_empty() && session.source == "cursor" && session.cwd.is_empty() {
+                    for port in 23456..=23460u16 {
+                        if let Some(meta) = get_cursor_window_meta(port) {
+                            if meta.focused {
+                                if let Some(root) = meta.workspace_roots.first() {
+                                    incoming_cwd = normalize_cursor_path(root);
+                                    log::info!(
+                                        "[cursor_cwd_probe] session={} port={} cwd={}",
+                                        &session_id[..session_id.len().min(8)],
+                                        port,
+                                        incoming_cwd,
+                                    );
+                                }
+                                break;
+                            }
                         }
                     }
                 }
@@ -11140,6 +12813,13 @@ fn process_claude_event(
                     }
                 }
 
+                // Store Hermes platform from hook event (e.g. "feishu", "slack")
+                if let Some(p) = event.get("platform").and_then(|v| v.as_str()) {
+                    if !p.is_empty() {
+                        session.platform = Some(p.to_string());
+                    }
+                }
+
                 // Read "host" field injected by the hook script (e.g. "claude_desktop")
                 if session.host_terminal.is_none() {
                     if let Some(host) = event.get("host").and_then(|v| v.as_str()) {
@@ -11218,6 +12898,17 @@ fn process_claude_event(
                     };
                     if is_tab_active || interrupted {
                         session.last_response = None;
+                    } else if session.source == "hermes" {
+                        // Hermes sessions: preserve lastResponse for inline preview
+                        // in the session list, but the completion popup is suppressed
+                        // on the frontend side (s.source !== 'hermes' guard).
+                        let resp_from_event = event.get("lastResponse")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        if resp_from_event.is_some() {
+                            session.last_response = resp_from_event;
+                        }
+                        // else: keep existing last_response from post_llm_call
                     } else {
                         // Prefer lastResponse from the event itself (CC's Stop has it),
                         // then fall back to any value pre-stored by afterAgentResponse,
@@ -11231,8 +12922,11 @@ fn process_claude_event(
                         if resp_from_event.is_some() {
                             session.last_response = resp_from_event;
                         } else if session.last_response.is_none()
-                            && (session.source == "cursor" || session.source == "codex")
+                            && (session.source == "cursor" || session.source == "codex" || session.source == "gemini")
                         {
+                            // Gemini's AfterAgent hook carries no assistant text, so fall
+                            // back to a placeholder like Cursor/Codex so the completion
+                            // popup still triggers. The frontend renders "✓" specially.
                             session.last_response = Some("✓".to_string());
                         }
                         // else: keep existing last_response from afterAgentResponse
@@ -11324,6 +13018,1744 @@ fn process_claude_event(
     None
 }
 
+// ─── Gemini CLI Integration ────────────────────────────────────────────
+
+/// Install hooks for Gemini CLI.
+/// Creates ~/.gemini/hooks/ooclaw-gemini-hook.sh and registers it in
+/// ~/.gemini/settings.json for all Gemini hook events.
+/// Gemini CLI uses PascalCase event names (SessionStart, BeforeAgent, etc.)
+/// and expects JSON stdout for gating hooks (BeforeTool/AfterTool → {"decision":"allow"}).
+#[tauri::command]
+async fn install_gemini_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let gemini_dir = home.join(".gemini");
+
+    // Skip if ~/.gemini/ doesn't exist (Gemini CLI not installed)
+    if !gemini_dir.exists() {
+        log::info!("[gemini_hooks] ~/.gemini/ not found — skipping");
+        return Ok(());
+    }
+
+    let hooks_dir = gemini_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
+
+    #[cfg(unix)]
+    let hook_path = hooks_dir.join("ooclaw-gemini-hook.sh");
+    #[cfg(windows)]
+    let hook_path = hooks_dir.join("ooclaw-gemini-hook.ps1");
+
+    #[cfg(unix)]
+    {
+        // Gemini CLI hook script: reads stdin JSON, maps event to oc-claw state,
+        // forwards to Unix socket, returns appropriate stdout for gating hooks.
+        let hook_script = r#"#!/bin/bash
+# ooclaw Gemini CLI hook - forwards events to /tmp/ooclaw-gemini.sock
+SOCKET_PATH="/tmp/ooclaw-gemini.sock"
+[ -S "$SOCKET_PATH" ] || { echo '{}'; exit 0; }
+
+# Capture Gemini CLI PID for terminal jump support
+export GEMINI_PID=$PPID
+
+# Cache Ghostty terminal ID per Gemini PID (so jump-to-terminal works).
+# IMPORTANT: must use the SAME AppleScript expression as get_active_ghostty_terminal_id()
+# (id of first terminal of selected tab of front window). A different expression
+# (e.g. "current terminal of front window") yields a non-matching id, which breaks
+# the Stop-time is_tab_active check and makes the completion popup fire even when the
+# Gemini terminal tab is active.
+_TID_CACHE="/tmp/ooclaw-gemini-tid-$PPID"
+if [ -f "$_TID_CACHE" ]; then
+    export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
+else
+    export GHOSTTY_TID=$(osascript -e 'try
+tell application "Ghostty" to return id of first terminal of selected tab of front window as text
+end try' 2>/dev/null || echo "")
+    [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
+fi
+
+/usr/bin/python3 -c "
+import json, os, socket, sys
+
+raw = sys.stdin.read()
+if not raw.strip():
+    print('{}')
+    sys.exit(0)
+
+try:
+    data = json.loads(raw)
+except:
+    print('{}')
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    print('{}')
+    sys.exit(0)
+
+hook_event = data.get('hook_event_name', '')
+mapped_event = hook_event
+
+# Notification with notification_type=ToolPermission means Gemini is
+# showing an approval prompt (e.g. 'Apply this change?').  Map it to
+# PermissionRequest so oc-claw shows the 'waiting' pet state.
+# Non-permission notifications are informational only; skip them to
+# avoid state flicker.
+if hook_event == 'Notification':
+    if data.get('notification_type') == 'ToolPermission':
+        mapped_event = 'PermissionRequest'
+    else:
+        print('{}')
+        sys.exit(0)
+
+status_map = {
+    'SessionStart': 'waiting_for_input',
+    'SessionEnd': 'ended',
+    'BeforeAgent': 'processing',
+    'AfterAgent': 'waiting_for_input',
+    'BeforeTool': 'running_tool',
+    'AfterTool': 'processing',
+    'PermissionRequest': 'waiting',
+    'PreCompress': 'compacting',
+}
+
+details = data.get('details', {}) or {}
+tool_name = details.get('tool_name', '') or data.get('tool_name', '')
+
+gemini_pid = int(os.environ.get('GEMINI_PID', '0'))
+ghostty_tid = os.environ.get('GHOSTTY_TID', '')
+
+output = {
+    'sessionId': data.get('session_id', ''),
+    'cwd': data.get('cwd', ''),
+    'event': mapped_event,
+    'claudeStatus': status_map.get(mapped_event, 'unknown'),
+    'source': 'gemini',
+}
+if tool_name:
+    output['tool'] = tool_name
+if gemini_pid:
+    output['pid'] = gemini_pid
+if ghostty_tid:
+    output['terminalId'] = ghostty_tid
+
+payload = json.dumps(output)
+
+gating_response = '{}'
+if hook_event in ('BeforeTool', 'AfterTool'):
+    gating_response = json.dumps({'decision': 'allow'})
+
+try:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect('$SOCKET_PATH')
+    sock.sendall(payload.encode('utf-8'))
+    sock.shutdown(socket.SHUT_WR)
+    sock.close()
+except:
+    pass
+
+sys.stdout.write(gating_response)
+"
+"#;
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(windows)]
+    {
+        let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+try {
+    $raw = [Console]::In.ReadToEnd()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        [Console]::Out.Write('{}')
+        exit 0
+    }
+
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json } catch {}
+
+    $hookEvent = ''
+    if ($obj -ne $null -and $obj.hook_event_name) { $hookEvent = [string]$obj.hook_event_name }
+
+    $mappedEvent = $hookEvent
+    if ($hookEvent -eq 'Notification') {
+        if ($obj.notification_type -eq 'ToolPermission') {
+            $mappedEvent = 'PermissionRequest'
+        } else {
+            [Console]::Out.Write('{}')
+            [Console]::Out.Flush()
+            exit 0
+        }
+    }
+
+    $statusMap = @{
+        'SessionStart' = 'waiting_for_input'
+        'SessionEnd' = 'ended'
+        'BeforeAgent' = 'processing'
+        'AfterAgent' = 'waiting_for_input'
+        'BeforeTool' = 'running_tool'
+        'AfterTool' = 'processing'
+        'PermissionRequest' = 'waiting'
+        'PreCompress' = 'compacting'
+    }
+
+    $toolName = ''
+    if ($obj.details -and $obj.details.tool_name) { $toolName = [string]$obj.details.tool_name }
+    if (-not $toolName -and $obj.tool_name) { $toolName = [string]$obj.tool_name }
+
+    $output = @{
+        sessionId = if ($obj.session_id) { $obj.session_id } else { '' }
+        cwd = if ($obj.cwd) { $obj.cwd } else { '' }
+        event = $mappedEvent
+        claudeStatus = if ($statusMap.ContainsKey($mappedEvent)) { $statusMap[$mappedEvent] } else { 'unknown' }
+        source = 'gemini'
+    }
+    if ($toolName) { $output['tool'] = $toolName }
+
+    $payload = $output | ConvertTo-Json -Compress -Depth 10
+
+    $gatingResponse = '{}'
+    if ($hookEvent -eq 'BeforeTool' -or $hookEvent -eq 'AfterTool') {
+        $gatingResponse = '{"decision":"allow"}'
+    }
+
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19285)
+    $stream = $client.GetStream()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush()
+    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+    $client.Close()
+
+    [Console]::Out.Write($gatingResponse)
+    [Console]::Out.Flush()
+} catch {
+    try { [Console]::Out.Write('{}'); [Console]::Out.Flush() } catch {}
+}
+"#;
+        std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
+    }
+
+    // Register hooks in ~/.gemini/settings.json
+    // Gemini CLI uses a different config format:
+    //   { "hooks": { "EventName": [{ "matcher": "*", "hooks": [{ "name": "ooclaw", "type": "command", "command": "..." }] }] } }
+    let settings_path = gemini_dir.join("settings.json");
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if settings.get("hooks").is_none() {
+        settings["hooks"] = serde_json::json!({});
+    }
+    let hooks = settings["hooks"].as_object_mut().ok_or("hooks is not an object")?;
+
+    #[cfg(windows)]
+    let hook_command = format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+        hook_path.to_string_lossy().replace('\\', "/"),
+    );
+    #[cfg(not(windows))]
+    let hook_command = hook_path.to_string_lossy().to_string();
+
+    let is_our_hook = |cmd: &str| -> bool {
+        cmd == hook_command || cmd.contains("ooclaw-gemini-hook")
+    };
+
+    let has_our_entry = |entry: &serde_json::Value| -> bool {
+        if let Some(cmd) = entry.get("command").and_then(|c| c.as_str()) {
+            if is_our_hook(cmd) { return true; }
+        }
+        if let Some(inner_hooks) = entry.get("hooks").and_then(|h| h.as_array()) {
+            return inner_hooks.iter().any(|h| {
+                h.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_our_hook(c))
+            });
+        }
+        false
+    };
+
+    let gemini_events = [
+        "SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent",
+        "BeforeTool", "AfterTool", "Notification", "PreCompress",
+    ];
+
+    let hook_entry = serde_json::json!({
+        "matcher": "*",
+        "hooks": [{ "name": "ooclaw", "type": "command", "command": hook_command }]
+    });
+
+    for event_name in gemini_events {
+        let arr = hooks.entry(event_name.to_string()).or_insert(serde_json::json!([]));
+        let list = arr.as_array_mut().ok_or("hook event is not an array")?;
+        list.retain(|entry| !has_our_entry(entry));
+        list.push(hook_entry.clone());
+    }
+
+    // Gemini CLI requires enableHooks to be true for hooks to fire
+    if settings.get("tools").is_none() {
+        settings["tools"] = serde_json::json!({});
+    }
+    settings["tools"]["enableHooks"] = serde_json::json!(true);
+
+    // Enable local telemetry so we can collect token usage stats.
+    // Uses ~/.gemini/telemetry.jsonl as the output file.
+    let telemetry = settings.get("telemetry").cloned().unwrap_or(serde_json::json!({}));
+    let already_enabled = telemetry.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !already_enabled {
+        let telem_outfile = gemini_dir.join("telemetry.jsonl").to_string_lossy().replace('\\', "/");
+        settings["telemetry"] = serde_json::json!({
+            "enabled": true,
+            "target": "local",
+            "outfile": telem_outfile,
+            "logPrompts": false,
+        });
+    } else if telemetry.get("outfile").is_none() {
+        let telem_outfile = gemini_dir.join("telemetry.jsonl").to_string_lossy().replace('\\', "/");
+        settings["telemetry"]["outfile"] = serde_json::json!(telem_outfile);
+    }
+
+    let json_str = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(&settings_path, json_str).map_err(|e| e.to_string())?;
+    log::info!("[gemini_hooks] installed hooks to {:?}", settings_path);
+
+    Ok(())
+}
+
+// ─── Hermes Agent Integration ──────────────────────────────────────────
+
+/// Install a Python plugin for Hermes Agent.
+/// Creates ~/.hermes/plugins/ooclaw/{plugin.yaml,__init__.py} that
+/// forwards lifecycle events to the oc-claw Unix socket.
+#[tauri::command]
+async fn install_hermes_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let hermes_dir = home.join(".hermes");
+
+    if !hermes_dir.exists() {
+        log::info!("[hermes_hooks] ~/.hermes/ not found — skipping");
+        return Ok(());
+    }
+
+    let plugin_yaml = r#"name: ooclaw
+version: 0.2.3
+description: "Forward Hermes Agent lifecycle events to oc-claw (local socket + status file)."
+hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_finalize
+  - on_session_reset
+  - pre_approval_request
+  - post_approval_response
+"#;
+
+    // Install plugin to all profiles (same as remote)
+    let mut install_dirs = vec![hermes_dir.clone()];
+    let profiles_dir = hermes_dir.join("profiles");
+    if profiles_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() && p.join("config.yaml").exists() {
+                    install_dirs.push(p);
+                }
+            }
+        }
+    }
+
+    // The Python plugin is written as a static string with a placeholder for
+    // the connection target (Unix socket path or TCP port).
+    #[cfg(unix)]
+    let connect_code = r#"SOCKET_PATH = "/tmp/ooclaw-hermes.sock"
+
+def _send(payload):
+    import os as _os
+    if not _os.path.exists(SOCKET_PATH):
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(SOCKET_PATH)
+        s.sendall(json.dumps(payload).encode("utf-8"))
+        s.shutdown(socket.SHUT_WR)
+        s.close()
+    except Exception:
+        pass"#;
+
+    #[cfg(windows)]
+    let connect_code = r#"TCP_PORT = 19286
+
+def _send(payload):
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(("127.0.0.1", TCP_PORT))
+        s.sendall(json.dumps(payload).encode("utf-8"))
+        s.shutdown(socket.SHUT_WR)
+        s.close()
+    except Exception:
+        pass"#;
+
+    let init_py = format!(
+        r##"# ooclaw plugin for Hermes Agent - forwards events to oc-claw.
+from __future__ import annotations
+import json, os, socket, time, threading
+from typing import Any, Dict, Tuple
+from pathlib import Path
+
+{connect_code}
+
+# Track the last session_id per thread so we can detect context-compaction
+# rollovers and emit a synthetic SessionEnd for the old session.
+# Using thread-local storage because delegate_task subagents run in separate
+# threads within the same process.
+_thread_local = threading.local()
+
+HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
+    "on_session_start": ("waiting_for_input", "SessionStart"),
+    "pre_llm_call": ("processing", "UserPromptSubmit"),
+    "post_llm_call": ("waiting_for_input", "Stop"),
+    "pre_tool_call": ("running_tool", "PreToolUse"),
+    "post_tool_call": ("processing", "PostToolUse"),
+    "on_session_end": ("waiting_for_input", "Stop"),
+    "on_session_finalize": ("ended", "SessionEnd"),
+    "on_session_reset": ("waiting_for_input", "SessionStart"),
+    "pre_approval_request": ("waiting", "PermissionRequest"),
+    "post_approval_response": ("processing", "PostToolUse"),
+}}
+
+def _status_file_path():
+    """Find the ooclaw status file path under the active profile or hermes home."""
+    hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
+    profile = os.environ.get("HERMES_PROFILE", "")
+    if profile:
+        return os.path.join(hermes_home, "profiles", profile, "ooclaw-status.json")
+    return os.path.join(hermes_home, "ooclaw-status.json")
+
+_MAX_EVENTS_PER_SESSION = 30
+_MAX_SESSIONS = 20
+
+def _write_status(payload):
+    """Append event to status file, keeping last N events per session."""
+    try:
+        status_path = _status_file_path()
+        session_id = payload.get("sessionId", "unknown")
+        data = {{}}
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {{}}
+            except Exception:
+                data = {{}}
+        if session_id not in data:
+            data[session_id] = []
+        data[session_id].append(payload)
+        if len(data[session_id]) > _MAX_EVENTS_PER_SESSION:
+            data[session_id] = data[session_id][-_MAX_EVENTS_PER_SESSION:]
+        if len(data) > _MAX_SESSIONS:
+            by_ts = sorted(data.items(), key=lambda kv: (kv[1][-1].get("timestamp", 0) if kv[1] else 0), reverse=True)
+            data = dict(by_ts[:_MAX_SESSIONS])
+        tmp_path = status_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, status_path)
+    except Exception:
+        pass
+
+def _handle(event_name, **kwargs):
+    mapping = HOOK_TO_EVENT.get(event_name)
+    if not mapping:
+        return
+    status, cc_event = mapping
+    if event_name == "post_tool_call":
+        result = kwargs.get("result")
+        if isinstance(result, dict) and (result.get("error") or
+            (isinstance(result.get("exit_code"), int) and result["exit_code"] != 0)):
+            status, cc_event = "processing", "PostToolUse"
+    session_id = kwargs.get("session_id", "") or kwargs.get("conversation_id", "")
+    # Some Hermes hook callsites don't propagate session_id:
+    #   - pre_tool_call (run_agent.py calls get_pre_tool_call_block_message
+    #     without session_id, so invoke_hook fires with session_id="")
+    #   - pre_approval_request / post_approval_response (only pass session_key)
+    # Fall back to the last session_id seen on this thread (set during
+    # pre_llm_call earlier in the same agent turn).
+    if not session_id:
+        session_id = getattr(_thread_local, "last_session_id", "") or ""
+    if not session_id:
+        return
+    tool_name = ""
+    if event_name in ("pre_tool_call", "post_tool_call", "pre_approval_request"):
+        tool_name = kwargs.get("tool_name", "") or kwargs.get("tool", "") or ""
+    platform = kwargs.get("platform", "") or ""
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = os.path.expanduser("~/.hermes")
+    if not cwd:
+        cwd = os.path.expanduser("~/.hermes")
+
+    # Detect context-compaction session rollover: if session_id changed from
+    # a previous value (same thread), emit a synthetic SessionEnd for the old
+    # session so oc-claw stops showing it as active.
+    last_sid = getattr(_thread_local, "last_session_id", "")
+    if last_sid and last_sid != session_id:
+        end_payload = {{
+            "sessionId": last_sid,
+            "cwd": cwd,
+            "event": "SessionEnd",
+            "claudeStatus": "ended",
+            "source": "hermes",
+            "pid": os.getpid(),
+            "platform": platform,
+            "timestamp": time.time(),
+        }}
+        _send(end_payload)
+        _write_status(end_payload)
+    _thread_local.last_session_id = session_id
+
+    payload = {{
+        "sessionId": session_id,
+        "cwd": cwd,
+        "event": cc_event,
+        "claudeStatus": status,
+        "source": "hermes",
+        "pid": os.getpid(),
+        "platform": platform,
+        "timestamp": time.time(),
+    }}
+    if tool_name:
+        payload["tool"] = tool_name
+    if event_name == "pre_llm_call":
+        prompt = kwargs.get("user_message", "") or kwargs.get("prompt", "") or kwargs.get("message", "")
+        if prompt and isinstance(prompt, str):
+            if "[CONTEXT COMPACTION" in prompt[:30]:
+                marker = "--- END OF CONTEXT SUMMARY"
+                idx = prompt.find(marker)
+                if idx != -1:
+                    prompt = prompt[idx + len(marker):].strip().lstrip("-").strip()
+            if prompt:
+                payload["userPrompt"] = prompt[:500]
+    elif event_name == "post_llm_call":
+        resp = kwargs.get("assistant_response", "") or kwargs.get("response", "") or kwargs.get("result", "")
+        if isinstance(resp, dict):
+            resp = resp.get("content", "") or resp.get("text", "")
+        if resp and isinstance(resp, str):
+            payload["lastResponse"] = resp[:2000]
+    _send(payload)
+    _write_status(payload)
+
+def _make_cb(event_name):
+    def cb(**kwargs):
+        try:
+            _handle(event_name, **kwargs)
+        except Exception:
+            pass
+        return None
+    cb.__name__ = "ooclaw_" + event_name
+    return cb
+
+def register(ctx):
+    for hook_name in HOOK_TO_EVENT:
+        ctx.register_hook(hook_name, _make_cb(hook_name))
+"##, connect_code = connect_code);
+
+    let hermes_bin = which_hermes();
+
+    // Install plugin + gateway hook to all profiles (same as remote)
+    for target_dir in &install_dirs {
+        let pd = target_dir.join("plugins").join("ooclaw");
+        let _ = std::fs::create_dir_all(&pd);
+        let _ = std::fs::write(pd.join("plugin.yaml"), plugin_yaml);
+        let _ = std::fs::write(pd.join("__init__.py"), &init_py);
+        // Clear pycache
+        let pc = pd.join("__pycache__");
+        if pc.exists() { let _ = std::fs::remove_dir_all(&pc); }
+        log::info!("[hermes_hooks] installed plugin to {:?}", pd);
+
+        // Gateway hook
+        let hd = target_dir.join("hooks").join("ooclaw");
+        let _ = std::fs::create_dir_all(&hd);
+        let hpc = hd.join("__pycache__");
+        if hpc.exists() { let _ = std::fs::remove_dir_all(&hpc); }
+    }
+
+    // Enable plugin via CLI for each profile
+    if let Some(ref bin) = hermes_bin {
+        let out = std::process::Command::new(bin)
+            .args(["plugins", "enable", "ooclaw"])
+            .output();
+        match out {
+            Ok(o) => log::info!("[hermes_hooks] plugins enable: {}", String::from_utf8_lossy(&o.stdout)),
+            Err(e) => log::warn!("[hermes_hooks] plugins enable failed: {}", e),
+        }
+        for target_dir in &install_dirs {
+            if target_dir == &hermes_dir { continue; }
+            if let Some(profile_name) = target_dir.file_name().and_then(|n| n.to_str()) {
+                let _ = std::process::Command::new(bin)
+                    .args(["--profile", profile_name, "plugins", "enable", "ooclaw"])
+                    .output();
+            }
+        }
+    } else {
+        // Fallback: patch config.yaml for each profile
+        for target_dir in &install_dirs {
+            let config_path = target_dir.join("config.yaml");
+            if config_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    if !content.contains("ooclaw") {
+                        let patched = if content.contains("plugins:") {
+                            content.replace(
+                                "plugins:\n  enabled: []",
+                                "plugins:\n  enabled:\n  - ooclaw",
+                            ).replace(
+                                "plugins:\n  enabled:",
+                                "plugins:\n  enabled:\n  - ooclaw",
+                            )
+                        } else {
+                            format!("{}\nplugins:\n  enabled:\n  - ooclaw\n  disabled: []\n", content.trim_end())
+                        };
+                        let _ = std::fs::write(&config_path, patched);
+                        log::info!("[hermes_hooks] patched config.yaml to enable ooclaw plugin");
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Gateway hook (for Feishu / Telegram / Slack / etc.) ──
+    let hook_yaml = r#"name: ooclaw
+description: Forward Hermes gateway events to oc-claw desktop pet
+events:
+  - session:start
+  - agent:start
+  - agent:end
+  - session:end
+  - session:reset
+"#;
+
+    #[cfg(unix)]
+    let gw_connect_code = r#"SOCKET_PATH = "/tmp/ooclaw-hermes.sock"
+
+def _send_to_ooclaw(payload):
+    raw = json.dumps(payload) + "\n"
+    if not os.path.exists(SOCKET_PATH):
+        _log("socket not found: " + SOCKET_PATH)
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(2)
+        s.connect(SOCKET_PATH)
+        s.sendall(raw.encode("utf-8"))
+        s.close()
+        _log(f"sent OK: {payload.get('event')} status={payload.get('claudeStatus')}")
+    except Exception as e:
+        _log(f"send FAILED: {e}")"#;
+
+    #[cfg(windows)]
+    let gw_connect_code = r#"TCP_PORT = 19286
+
+def _send_to_ooclaw(payload):
+    raw = json.dumps(payload) + "\n"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2)
+        s.connect(("127.0.0.1", TCP_PORT))
+        s.sendall(raw.encode("utf-8"))
+        s.close()
+        _log(f"sent OK: {payload.get('event')} status={payload.get('claudeStatus')}")
+    except Exception as e:
+        _log(f"send FAILED: {e}")"#;
+
+    let handler_py = format!(
+        r##""""
+Gateway hook handler for oc-claw integration.
+Forwards Hermes gateway lifecycle events to oc-claw via socket + status file.
+"""
+import json, os, socket, sys, datetime, time
+
+LOG_DIR = os.path.expanduser("~/.hermes/logs")
+LOG_FILE = os.path.join(LOG_DIR, "ooclaw-hook.log")
+
+def _log(msg):
+    os.makedirs(LOG_DIR, exist_ok=True)
+    ts = datetime.datetime.now().isoformat()
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{{ts}}] {{msg}}\n")
+
+{gw_connect_code}
+
+def _status_file_path():
+    hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
+    profile = os.environ.get("HERMES_PROFILE", "")
+    if profile:
+        return os.path.join(hermes_home, "profiles", profile, "ooclaw-status.json")
+    return os.path.join(hermes_home, "ooclaw-status.json")
+
+_MAX_EVENTS_PER_SESSION = 30
+_MAX_SESSIONS = 20
+
+def _write_status(payload):
+    try:
+        status_path = _status_file_path()
+        session_id = payload.get("sessionId", "unknown")
+        data = {{}}
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {{}}
+            except Exception:
+                data = {{}}
+        if session_id not in data:
+            data[session_id] = []
+        data[session_id].append(payload)
+        if len(data[session_id]) > _MAX_EVENTS_PER_SESSION:
+            data[session_id] = data[session_id][-_MAX_EVENTS_PER_SESSION:]
+        if len(data) > _MAX_SESSIONS:
+            by_ts = sorted(data.items(), key=lambda kv: (kv[1][-1].get("timestamp", 0) if kv[1] else 0), reverse=True)
+            data = dict(by_ts[:_MAX_SESSIONS])
+        tmp_path = status_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, status_path)
+    except Exception:
+        pass
+
+EVENT_MAP = {{
+    "session:start": ("SessionStart", "waiting_for_input"),
+    "agent:start":   ("UserPromptSubmit", "processing"),
+    "agent:end":     ("Stop", "waiting_for_input"),
+    "session:end":   ("Stop", "waiting_for_input"),
+    "session:reset": ("SessionStart", "waiting_for_input"),
+}}
+
+def handle(event_type, context):
+    _log(f"hook called: {{event_type}} context_keys={{list(context.keys())}}")
+    mapping = EVENT_MAP.get(event_type)
+    if not mapping:
+        _log(f"unmapped event: {{event_type}}")
+        return
+    oc_event, claude_status = mapping
+    platform = context.get("platform", "")
+    user_id = context.get("user_id", "")
+    session_id = context.get("session_id", "")
+    if not session_id:
+        session_id = f"gw_{{platform}}_{{user_id}}" if user_id else f"gw_{{platform}}"
+    payload = {{
+        "sessionId": session_id,
+        "cwd": os.path.expanduser("~/.hermes"),
+        "event": oc_event,
+        "claudeStatus": claude_status,
+        "source": "hermes",
+        "pid": os.getpid(),
+        "platform": platform or "gateway",
+        "timestamp": time.time(),
+    }}
+    if event_type == "agent:start":
+        msg = context.get("message", "")
+        if msg:
+            payload["userPrompt"] = msg[:500]
+    elif event_type == "agent:end":
+        resp = context.get("response", "")
+        if resp:
+            payload["lastResponse"] = resp[:2000]
+    _log(f"payload: {{json.dumps(payload)}}")
+    _send_to_ooclaw(payload)
+    _write_status(payload)
+"##, gw_connect_code = gw_connect_code);
+
+    // Write gateway hook to default + all profiles
+    for target_dir in &install_dirs {
+        let hd = target_dir.join("hooks").join("ooclaw");
+        let _ = std::fs::create_dir_all(&hd);
+        let _ = std::fs::write(hd.join("HOOK.yaml"), &hook_yaml);
+        let _ = std::fs::write(hd.join("handler.py"), &handler_py);
+        let hpc = hd.join("__pycache__");
+        if hpc.exists() { let _ = std::fs::remove_dir_all(&hpc); }
+        log::info!("[hermes_hooks] installed gateway hook to {:?}", hd);
+    }
+
+    // Restart local gateway (all profiles, same as remote)
+    if let Some(bin) = hermes_bin {
+        let profile_names: Vec<String> = install_dirs.iter()
+            .filter(|d| *d != &hermes_dir)
+            .filter_map(|d| d.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()))
+            .collect();
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("pkill")
+                .args(["-f", "hermes.*gateway"])
+                .output();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            // Start default profile gateway
+            let _ = std::process::Command::new(&bin)
+                .args(["gateway", "run"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            // Start named profile gateways
+            for pname in &profile_names {
+                let _ = std::process::Command::new(&bin)
+                    .args(["--profile", pname, "gateway", "run"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+            log::info!("[hermes_hooks] restarted local gateway (default + {} profiles)", profile_names.len());
+        });
+    }
+
+    Ok(())
+}
+
+/// Try to find the hermes binary on PATH or known locations.
+fn which_hermes() -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    let which_cmd = "which";
+    #[cfg(windows)]
+    let which_cmd = "where.exe";
+
+    if let Ok(output) = std::process::Command::new(which_cmd).arg("hermes").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
+            if !path.is_empty() {
+                return Some(std::path::PathBuf::from(path));
+            }
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        #[cfg(unix)]
+        let candidates = vec![
+            home.join(".local/bin/hermes"),
+            home.join(".hermes/hermes-agent/venv/bin/hermes"),
+        ];
+        #[cfg(windows)]
+        let candidates = vec![
+            home.join(".local\\bin\\hermes.exe"),
+            home.join(".hermes\\hermes-agent\\venv\\Scripts\\hermes.exe"),
+            home.join("AppData\\Local\\Programs\\hermes\\hermes.exe"),
+            home.join("scoop\\shims\\hermes.exe"),
+        ];
+
+        for c in &candidates {
+            if c.exists() {
+                return Some(c.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Diagnose the Hermes integration by checking plugin installation,
+/// enabled state, and sending a test event through the socket.
+/// Returns a structured JSON result so the frontend can display status.
+#[tauri::command]
+async fn test_hermes_hook() -> Result<serde_json::Value, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let hermes_dir = home.join(".hermes");
+    let mut checks: Vec<serde_json::Value> = Vec::new();
+
+    // 1. Check if ~/.hermes exists
+    if !hermes_dir.exists() {
+        checks.push(serde_json::json!({"step": "hermes_dir", "ok": false, "msg": "~/.hermes not found — Hermes Agent is not installed"}));
+        return Ok(serde_json::json!({"ok": false, "checks": checks}));
+    }
+    checks.push(serde_json::json!({"step": "hermes_dir", "ok": true, "msg": "~/.hermes exists"}));
+
+    // 2. Check plugin files
+    let plugin_dir = hermes_dir.join("plugins").join("ooclaw");
+    let has_yaml = plugin_dir.join("plugin.yaml").exists();
+    let has_py = plugin_dir.join("__init__.py").exists();
+    if has_yaml && has_py {
+        checks.push(serde_json::json!({"step": "plugin_files", "ok": true, "msg": "Plugin files installed"}));
+    } else {
+        checks.push(serde_json::json!({"step": "plugin_files", "ok": false, "msg": format!("Missing: {}", if !has_yaml && !has_py { "plugin.yaml + __init__.py" } else if !has_yaml { "plugin.yaml" } else { "__init__.py" })}));
+    }
+
+    // 3. Check plugin enabled in config.yaml
+    let config_path = hermes_dir.join("config.yaml");
+    let enabled = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        content.contains("ooclaw")
+    } else {
+        false
+    };
+    if enabled {
+        checks.push(serde_json::json!({"step": "plugin_enabled", "ok": true, "msg": "Plugin enabled in config.yaml"}));
+    } else {
+        checks.push(serde_json::json!({"step": "plugin_enabled", "ok": false, "msg": "Plugin not enabled — run: hermes plugins enable ooclaw"}));
+    }
+
+    // 4. Check socket exists
+    #[cfg(unix)]
+    let socket_ok = std::path::Path::new("/tmp/ooclaw-hermes.sock").exists();
+    #[cfg(windows)]
+    let socket_ok = std::net::TcpStream::connect("127.0.0.1:19286").is_ok();
+
+    if socket_ok {
+        checks.push(serde_json::json!({"step": "socket", "ok": true, "msg": "Socket server running"}));
+    } else {
+        checks.push(serde_json::json!({"step": "socket", "ok": false, "msg": "Socket not found — oc-claw server may not be running"}));
+    }
+
+    // 5. Send a test event through the socket to verify end-to-end
+    let test_session_id = format!("hermes-test-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+    let test_payload = serde_json::json!({
+        "sessionId": test_session_id,
+        "cwd": hermes_dir.to_string_lossy(),
+        "event": "UserPromptSubmit",
+        "claudeStatus": "processing",
+        "source": "hermes",
+        "pid": std::process::id(),
+    });
+
+    #[cfg(unix)]
+    {
+        match std::os::unix::net::UnixStream::connect("/tmp/ooclaw-hermes.sock") {
+            Ok(mut stream) => {
+                use std::io::Write;
+                let data = serde_json::to_string(&test_payload).unwrap();
+                let _ = stream.write_all(data.as_bytes());
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                checks.push(serde_json::json!({"step": "test_event", "ok": true, "msg": format!("Test event sent (session: {})", &test_session_id[..20])}));
+
+                // Wait a tiny bit, then send stop to clean up
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let stop_payload = serde_json::json!({
+                    "sessionId": test_session_id,
+                    "cwd": hermes_dir.to_string_lossy(),
+                    "event": "Stop",
+                    "claudeStatus": "waiting_for_input",
+                    "source": "hermes",
+                    "pid": std::process::id(),
+                });
+                if let Ok(mut s2) = std::os::unix::net::UnixStream::connect("/tmp/ooclaw-hermes.sock") {
+                    let d2 = serde_json::to_string(&stop_payload).unwrap();
+                    let _ = s2.write_all(d2.as_bytes());
+                    let _ = s2.shutdown(std::net::Shutdown::Write);
+                }
+            }
+            Err(e) => {
+                checks.push(serde_json::json!({"step": "test_event", "ok": false, "msg": format!("Socket connect failed: {}", e)}));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        match std::net::TcpStream::connect("127.0.0.1:19286") {
+            Ok(mut stream) => {
+                use std::io::Write;
+                let data = serde_json::to_string(&test_payload).unwrap();
+                let _ = stream.write_all(data.as_bytes());
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                checks.push(serde_json::json!({"step": "test_event", "ok": true, "msg": format!("Test event sent (session: {})", &test_session_id[..20])}));
+
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let stop_payload = serde_json::json!({
+                    "sessionId": test_session_id,
+                    "cwd": hermes_dir.to_string_lossy(),
+                    "event": "Stop",
+                    "claudeStatus": "waiting_for_input",
+                    "source": "hermes",
+                    "pid": std::process::id(),
+                });
+                if let Ok(mut s2) = std::net::TcpStream::connect("127.0.0.1:19286") {
+                    let d2 = serde_json::to_string(&stop_payload).unwrap();
+                    let _ = s2.write_all(d2.as_bytes());
+                    let _ = s2.shutdown(std::net::Shutdown::Write);
+                }
+            }
+            Err(e) => {
+                checks.push(serde_json::json!({"step": "test_event", "ok": false, "msg": format!("TCP connect failed: {}", e)}));
+            }
+        }
+    }
+
+    let all_ok = checks.iter().all(|c| c["ok"].as_bool().unwrap_or(false));
+    Ok(serde_json::json!({"ok": all_ok, "checks": checks}))
+}
+
+// ─── Hermes SSH Remote ────────────────────────────────────────────────
+
+/// Read Hermes stats from a remote server's ~/.hermes/state.db via SSH.
+/// Uses python3 on the remote to query SQLite (avoids sqlite3 CLI dependency).
+#[tauri::command]
+async fn get_hermes_remote_stats(ssh_host: String, ssh_user: String) -> Result<ClaudeStats, String> {
+    let py_script = r#"
+import json, sqlite3, time, os
+db = os.path.expanduser('~/.hermes/state.db')
+if not os.path.exists(db):
+    print('{"error":"no_db"}')
+    exit(0)
+conn = sqlite3.connect(db)
+cutoff = time.time() - 14*86400
+cur = conn.execute(
+    'SELECT started_at, input_tokens, output_tokens, cache_read_tokens, '
+    'cache_write_tokens, message_count, model '
+    'FROM sessions WHERE started_at > ? ORDER BY started_at DESC',
+    (cutoff,))
+rows = [dict(zip(['ts','inp','out','cr','cw','msgs','model'], r)) for r in cur.fetchall()]
+conn.close()
+print(json.dumps(rows))
+"#;
+    let cmd = format!("python3 -c {}", shell_escape_single(py_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+
+    if trimmed.contains("\"error\"") && trimmed.contains("no_db") {
+        return Ok(empty_claude_stats());
+    }
+
+    let rows: Vec<serde_json::Value> = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse hermes remote stats: {} (output: {})", e, truncate_chars(trimmed, 200)))?;
+
+    let now = chrono::Local::now();
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    for i in (0..14).rev() {
+        let day = (now - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        daily_map.insert(day.clone(), ClaudeDailyStats {
+            date: day, input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0, messages: 0, sessions: 0,
+        });
+    }
+
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_cache_write = 0u64;
+    let mut total_messages = 0u64;
+    let mut total_sessions = 0u64;
+    let mut model = String::new();
+
+    for row in &rows {
+        let ts = row["ts"].as_f64().unwrap_or(0.0);
+        let inp = row["inp"].as_i64().unwrap_or(0) as u64;
+        let out = row["out"].as_i64().unwrap_or(0) as u64;
+        let cr = row["cr"].as_i64().unwrap_or(0) as u64;
+        let cw = row["cw"].as_i64().unwrap_or(0) as u64;
+        let msgs = row["msgs"].as_i64().unwrap_or(0) as u64;
+        let mdl = row["model"].as_str().unwrap_or("");
+
+        let day = chrono::DateTime::from_timestamp(ts as i64, 0)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+
+        if let Some(entry) = daily_map.get_mut(&day) {
+            entry.input_tokens += inp;
+            entry.output_tokens += out;
+            entry.cache_read_tokens += cr;
+            entry.cache_write_tokens += cw;
+            entry.messages += msgs;
+            entry.sessions += 1;
+        }
+
+        total_input += inp;
+        total_output += out;
+        total_cache_read += cr;
+        total_cache_write += cw;
+        total_messages += msgs;
+        total_sessions += 1;
+        if model.is_empty() && !mdl.is_empty() {
+            model = mdl.to_string();
+        }
+    }
+
+    let daily_stats: Vec<ClaudeDailyStats> = daily_map.into_values().collect();
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
+        total_messages: total_messages,
+        total_sessions: total_sessions,
+        daily_stats,
+        model,
+    })
+}
+
+/// Poll active Hermes sessions on a remote server via SSH.
+/// Reads ~/.hermes/sessions/sessions.json for gateway session list,
+/// and checks gateway.log for recent activity.
+#[tauri::command]
+async fn get_hermes_remote_sessions(ssh_host: String, ssh_user: String) -> Result<Vec<serde_json::Value>, String> {
+    let py_script = r#"
+import json, os, time, glob, datetime
+hermes_home = os.path.expanduser('~/.hermes')
+# Collect all profile paths: default + named profiles
+profile_dirs = [hermes_home]
+profiles_root = os.path.join(hermes_home, 'profiles')
+if os.path.isdir(profiles_root):
+    for name in os.listdir(profiles_root):
+        p = os.path.join(profiles_root, name)
+        if os.path.isdir(p):
+            profile_dirs.append(p)
+seen = set()
+results = []
+now = time.time()
+# Read ooclaw plugin status files — single source of truth.
+# No ooclaw-status.json → no sessions shown (plugin not installed).
+_ooclaw_status = {}  # profile_name -> {session_id: [events]}
+_all_known_sids = set()  # all session ids known to ooclaw plugin
+for _pdir in profile_dirs:
+    _pname = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
+    _sf = os.path.join(_pdir, 'ooclaw-status.json')
+    if not os.path.exists(_sf):
+        _sf = os.path.join(hermes_home, 'ooclaw-status.json') if _pname == 'default' else _sf
+    try:
+        if os.path.exists(_sf):
+            with open(_sf) as _f:
+                _st = json.load(_f)
+            if isinstance(_st, dict):
+                _filtered = {}
+                for _sid, _evts in _st.items():
+                    if isinstance(_evts, list) and _evts:
+                        # Skip sub-agents (only emit PostToolUse + SubagentStop).
+                        # The 30-event buffer is large enough that real user turns
+                        # will always retain at least one of these markers.
+                        _has_user = any(_e.get('event') in ('UserPromptSubmit', 'SessionStart', 'Stop') for _e in _evts)
+                        if not _has_user: continue
+                        _filtered[_sid] = _evts
+                        _all_known_sids.add(_sid)
+                if _filtered:
+                    _ooclaw_status[_pname] = _filtered
+    except: pass
+
+def _turn_boundary(evts):
+    """Return (last Stop ts, last UserPromptSubmit ts)."""
+    _stop_ts = 0.0
+    _user_ts = 0.0
+    for _e in evts:
+        _ts = _e.get('timestamp', 0) or 0
+        _ev = _e.get('event', '')
+        if _ev == 'Stop' and _ts > _stop_ts: _stop_ts = _ts
+        if _ev == 'UserPromptSubmit' and _ts > _user_ts: _user_ts = _ts
+    return _stop_ts, _user_ts
+
+def _is_internal_tool(t):
+    """Hermes framework housekeeping tools (skill/memory management)."""
+    return t.startswith('skill') or t.startswith('memor')
+
+_INTERACTIVE_TOOLS = ('clarify', 'ask_user', 'confirm')
+def _is_interactive_tool(t):
+    """Tools that block the agent waiting for user reply (clarify, etc)."""
+    return t in _INTERACTIVE_TOOLS
+# No plugin data at all → return empty
+if not _all_known_sids:
+    print(json.dumps([]))
+    import sys; sys.exit(0)
+for _pdir in profile_dirs:
+    sj = os.path.join(_pdir, 'sessions', 'sessions.json')
+    db = os.path.join(_pdir, 'state.db')
+    _profile_name = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
+    db_conn = None
+    if os.path.exists(db):
+        try:
+            import sqlite3
+            db_conn = sqlite3.connect(db)
+        except: pass
+    def _find_latest_session(sid):
+        """Resolve newest session id for this logical thread."""
+        current = sid
+        for _ in range(20):
+            child = db_conn.execute(
+                'SELECT id FROM sessions WHERE parent_session_id=? ORDER BY started_at DESC LIMIT 1',
+                (current,)).fetchone()
+            if not child:
+                break
+            current = child[0]
+        row = db_conn.execute(
+            'SELECT id FROM sessions WHERE (id = ? OR id LIKE ? OR id = ? OR id LIKE ?) '
+            'ORDER BY started_at DESC LIMIT 1',
+            (sid, sid + ':%', current, current + ':%')
+        ).fetchone()
+        if row:
+            current = row[0]
+        return current
+    def check_status(sid):
+        """Returns ('stopped' | 'waiting' | 'processing', is_active_bool).
+        'waiting' means the agent is blocked on user input (PermissionRequest
+        or an interactive tool like clarify) — distinct from 'processing' so
+        the frontend can render a separate pet/state.
+        """
+        _prof_status = _ooclaw_status.get(_profile_name, {})
+        _sid_events = _prof_status.get(sid, [])
+        if not _sid_events:
+            return ('stopped', False)
+        # Safety net: completed when last Stop is newer than last UserPromptSubmit.
+        _stop_ts, _user_ts = _turn_boundary(_sid_events)
+        if _stop_ts > 0 and _stop_ts > _user_ts:
+            return ('stopped', False)
+        # Pick last non-internal event (skip skill_*/memor_* housekeeping).
+        _last_evt = None
+        for _e in reversed(_sid_events):
+            if not _is_internal_tool(_e.get('tool', '')):
+                _last_evt = _e
+                break
+        if _last_evt is None:
+            _last_evt = _sid_events[-1]
+        _ev = _last_evt.get('event', '')
+        if _ev == 'PermissionRequest':
+            return ('waiting', False)
+        if _ev == 'PreToolUse' and _is_interactive_tool(_last_evt.get('tool', '')):
+            return ('waiting', False)
+        st = _last_evt.get('claudeStatus', '')
+        if st in ('processing', 'running_tool', 'waiting'):
+            return ('processing', True)
+        return ('stopped', False)
+    def check_active(sid):
+        return check_status(sid)[1]
+    _pfx = '' if _profile_name == 'default' else _profile_name + ':'
+    def _fetch_prompt_response(_real_sid):
+        """Fetch latest user prompt + assistant response from state.db.
+        Falls back across descendant sessions (compaction children)."""
+        if not (db_conn and _real_sid): return ('', '')
+        _up = ''
+        _lr = ''
+        try:
+            row = db_conn.execute(
+                "SELECT substr(content,1,200) FROM messages WHERE session_id=? AND role='user' "
+                "ORDER BY timestamp DESC LIMIT 1", (_real_sid,)).fetchone()
+            if row and row[0]: _up = row[0]
+        except: pass
+        try:
+            row = db_conn.execute(
+                "SELECT substr(content,1,200) FROM messages WHERE session_id=? AND role='assistant' "
+                "AND content IS NOT NULL AND content <> '' ORDER BY timestamp DESC LIMIT 1", (_real_sid,)).fetchone()
+            if row and row[0]: _lr = row[0]
+        except: pass
+        return (_up, _lr)
+    def _scan_ooclaw_text(sid):
+        """Scan ooclaw events backward for latest non-empty userPrompt/lastResponse."""
+        _up = ''
+        _lr = ''
+        for _e in reversed(_ooclaw_status.get(_profile_name, {}).get(sid, [])):
+            if not _up:
+                _v = _e.get('userPrompt') or ''
+                if _v: _up = _v
+            if not _lr:
+                _v = _e.get('lastResponse') or ''
+                if _v: _lr = _v
+            if _up and _lr: break
+        return (_up, _lr)
+    if os.path.exists(sj):
+        try:
+            data = json.load(open(sj))
+            for key, v in data.items():
+                sid = v.get('session_id','')
+                if sid: seen.add(_pfx + sid)
+                # Only show sessions known to ooclaw plugin
+                if sid not in _all_known_sids: continue
+                plat = v.get('platform','')
+                if plat in ('cron',): continue
+                updated = v.get('updated_at','')
+                sess_status, active = (check_status(sid) if sid else ('stopped', False))
+                label = plat
+                if _profile_name != 'default': label = _profile_name + ('/' + plat if plat else '')
+                last_ts = now
+                _real_sid = sid
+                if db_conn and sid:
+                    try:
+                        _real_sid = _find_latest_session(sid)
+                        lts = db_conn.execute("SELECT MAX(timestamp) FROM messages WHERE session_id=? AND role NOT IN ('session_meta','system','metadata')", (_real_sid,)).fetchone()[0]
+                        if lts: last_ts = lts
+                    except: pass
+                # Plugin event timestamps are written synchronously on every
+                # hook, so they reflect activity (UserPromptSubmit, PreToolUse,
+                # PostToolUse...) before state.db has caught up.
+                _evts = _ooclaw_status.get(_profile_name, {}).get(sid, [])
+                if _evts:
+                    _evt_max = max((_e.get('timestamp', 0) or 0) for _e in _evts)
+                    if _evt_max and _evt_max > last_ts:
+                        last_ts = _evt_max
+                # Prefer ooclaw plugin's recorded prompt/response, fall back to state.db
+                _up, _lr = _scan_ooclaw_text(sid)
+                if not _up or not _lr:
+                    _db_up, _db_lr = _fetch_prompt_response(_real_sid)
+                    if not _up: _up = _db_up
+                    if not _lr: _lr = _db_lr
+                results.append({'sessionId': _pfx + sid, 'platform': label, 'updatedAt': updated,
+                                'displayName': v.get('display_name',''), 'active': active,
+                                'status': sess_status, 'source': 'hermes',
+                                'startedAt': last_ts,
+                                'userPrompt': _up, 'lastResponse': _lr,
+                                'ooclaw': _ooclaw_status.get(_profile_name, {}).get(sid)})
+        except: pass
+    if db_conn:
+        try:
+            cutoff = now - 7200
+            cur = db_conn.execute(
+                'SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens '
+                'FROM sessions WHERE started_at > ? AND parent_session_id IS NULL ORDER BY started_at DESC LIMIT 20', (cutoff,))
+            for r in cur.fetchall():
+                sid = r[0]
+                if (_pfx + sid) in seen: continue
+                # Only show sessions known to ooclaw plugin
+                if sid not in _all_known_sids: continue
+                plat_db = r[1] or ''
+                if plat_db in ('cron',): continue
+                seen.add(_pfx + sid)
+                latest_sid = _find_latest_session(sid)
+                sess_status, active = check_status(sid)
+                label = plat_db
+                if _profile_name != 'default': label = _profile_name + ('/' + plat_db if plat_db else '')
+                db_last_ts = r[3]
+                try:
+                    lts = db_conn.execute("SELECT MAX(timestamp) FROM messages WHERE session_id=? AND role NOT IN ('session_meta','system','metadata')", (latest_sid,)).fetchone()[0]
+                    if lts: db_last_ts = lts
+                except: pass
+                # Prefer freshest ooclaw plugin event timestamp over state.db.
+                _evts2 = _ooclaw_status.get(_profile_name, {}).get(sid, [])
+                if _evts2:
+                    _evt_max2 = max((_e.get('timestamp', 0) or 0) for _e in _evts2)
+                    if _evt_max2 and (not db_last_ts or _evt_max2 > db_last_ts):
+                        db_last_ts = _evt_max2
+                _up, _lr = _scan_ooclaw_text(sid)
+                if not _up or not _lr:
+                    _db_up, _db_lr = _fetch_prompt_response(latest_sid)
+                    if not _up: _up = _db_up
+                    if not _lr: _lr = _db_lr
+                results.append({'sessionId': _pfx + sid, 'platform': label, 'model': r[2] or '',
+                                'userPrompt': _up, 'lastResponse': _lr,
+                                'startedAt': db_last_ts, 'messageCount': r[5] or 0,
+                                'inputTokens': r[6] or 0, 'outputTokens': r[7] or 0,
+                                'active': active, 'status': sess_status, 'source': 'hermes'})
+        except: pass
+    if db_conn:
+        try: db_conn.close()
+        except: pass
+print(json.dumps(results))
+"#;
+    let cmd = format!("python3 -c {}", shell_escape_single(py_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse hermes remote sessions: {}", e))?;
+    Ok(sessions)
+}
+
+/// Test Hermes SSH connectivity: check if ~/.hermes exists, state.db readable,
+/// gateway is running.
+#[tauri::command]
+async fn test_hermes_ssh(ssh_host: String, ssh_user: String) -> Result<serde_json::Value, String> {
+    let py_script = r#"
+import json, os, subprocess, glob
+checks = {}
+hermes_dir = os.path.expanduser('~/.hermes')
+checks['hermes_installed'] = os.path.isdir(hermes_dir)
+checks['state_db'] = os.path.exists(os.path.join(hermes_dir, 'state.db'))
+checks['sessions_json'] = os.path.exists(os.path.join(hermes_dir, 'sessions', 'sessions.json'))
+checks['config_yaml'] = os.path.exists(os.path.join(hermes_dir, 'config.yaml'))
+# Check gateway process
+try:
+    out = subprocess.check_output(['pgrep', '-f', 'hermes gateway'], stderr=subprocess.DEVNULL).decode().strip()
+    checks['gateway_running'] = len(out.split()) > 0
+    checks['gateway_pids'] = out.split()
+except: checks['gateway_running'] = False
+# Check ooclaw plugin status — check all profile dirs
+checks['plugin_installed'] = False
+checks['plugin_enabled'] = False
+_check_dirs = [hermes_dir] + glob.glob(os.path.join(hermes_dir, 'profiles', '*'))
+for _cd in _check_dirs:
+    _pd = os.path.join(_cd, 'plugins', 'ooclaw')
+    if os.path.exists(os.path.join(_pd, '__init__.py')):
+        checks['plugin_installed'] = True
+        # Check if enabled via hermes CLI (look for enabled marker or config reference)
+        _cfg = os.path.join(_cd, 'config.yaml')
+        if os.path.exists(_cfg):
+            try:
+                with open(_cfg) as f:
+                    content = f.read()
+                if 'ooclaw' in content:
+                    checks['plugin_enabled'] = True
+            except: pass
+        # Also check plugins state file
+        _state = os.path.join(_cd, 'plugins', '.enabled')
+        if os.path.exists(_state):
+            try:
+                with open(_state) as f:
+                    if 'ooclaw' in f.read():
+                        checks['plugin_enabled'] = True
+            except: pass
+        break
+# Check profiles
+profiles = ['default']
+profiles_root = os.path.join(hermes_dir, 'profiles')
+if os.path.isdir(profiles_root):
+    for name in os.listdir(profiles_root):
+        if os.path.isdir(os.path.join(profiles_root, name)):
+            profiles.append(name)
+checks['profiles'] = profiles
+# Check ooclaw-status.json presence per profile
+status_files = {}
+for p in profiles:
+    if p == 'default':
+        sf = os.path.join(hermes_dir, 'ooclaw-status.json')
+    else:
+        sf = os.path.join(profiles_root, p, 'ooclaw-status.json')
+    status_files[p] = os.path.exists(sf)
+checks['status_files'] = status_files
+# Check session count in state.db
+if checks['state_db']:
+    try:
+        import sqlite3, time
+        conn = sqlite3.connect(os.path.join(hermes_dir, 'state.db'))
+        cutoff = time.time() - 14*86400
+        cnt = conn.execute('SELECT COUNT(*) FROM sessions WHERE started_at > ?', (cutoff,)).fetchone()[0]
+        checks['sessions_14d'] = cnt
+        total = conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
+        checks['sessions_total'] = total
+        conn.close()
+    except Exception as e: checks['db_error'] = str(e)
+print(json.dumps(checks))
+"#;
+    let cmd = format!("python3 -c {}", shell_escape_single(py_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+    let result: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse hermes ssh test: {}", e))?;
+    Ok(result)
+}
+
+/// Install the ooclaw plugin on a remote Hermes instance via SSH.
+/// Pushes the plugin files and enables it in config.
+#[tauri::command]
+async fn install_hermes_remote_plugin(ssh_host: String, ssh_user: String) -> Result<serde_json::Value, String> {
+    // Generate the same plugin code as install_hermes_hooks but for remote
+    let plugin_yaml = r#"name: ooclaw
+version: 0.2.3
+description: "Forward Hermes Agent lifecycle events to oc-claw (local socket + status file)."
+hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_finalize
+  - on_session_reset
+  - pre_approval_request
+  - post_approval_response
+"#;
+
+    // Unix socket connect code for remote (Linux servers)
+    let connect_code = r#"SOCKET_PATH = "/tmp/ooclaw-hermes.sock"
+
+def _send(payload):
+    import os as _os
+    if not _os.path.exists(SOCKET_PATH):
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(SOCKET_PATH)
+        s.sendall(json.dumps(payload).encode("utf-8"))
+        s.shutdown(socket.SHUT_WR)
+        s.close()
+    except Exception:
+        pass"#;
+
+    let init_py = format!(r##"# ooclaw plugin for Hermes Agent - forwards events to oc-claw.
+from __future__ import annotations
+import json, os, socket, time
+from typing import Any, Dict, Tuple
+from pathlib import Path
+
+{connect_code}
+
+# Track the last session_id so we can detect context-compaction rollovers
+# and emit a synthetic SessionEnd for the old session.
+_last_session_id: str = ""
+
+HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
+    "on_session_start": ("waiting_for_input", "SessionStart"),
+    "pre_llm_call": ("processing", "UserPromptSubmit"),
+    "post_llm_call": ("waiting_for_input", "Stop"),
+    "pre_tool_call": ("running_tool", "PreToolUse"),
+    "post_tool_call": ("processing", "PostToolUse"),
+    "on_session_end": ("waiting_for_input", "Stop"),
+    "on_session_finalize": ("ended", "SessionEnd"),
+    "on_session_reset": ("waiting_for_input", "SessionStart"),
+    "pre_approval_request": ("waiting", "PermissionRequest"),
+    "post_approval_response": ("processing", "PostToolUse"),
+}}
+
+def _status_file_path():
+    """Find the ooclaw status file path under the active profile or hermes home."""
+    hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
+    profile = os.environ.get("HERMES_PROFILE", "")
+    if profile:
+        return os.path.join(hermes_home, "profiles", profile, "ooclaw-status.json")
+    return os.path.join(hermes_home, "ooclaw-status.json")
+
+_MAX_EVENTS_PER_SESSION = 30
+_MAX_SESSIONS = 20
+
+def _write_status(payload):
+    """Append event to status file, keeping last N events per session."""
+    try:
+        status_path = _status_file_path()
+        session_id = payload.get("sessionId", "unknown")
+        data = {{}}
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {{}}
+            except Exception:
+                data = {{}}
+        if session_id not in data:
+            data[session_id] = []
+        data[session_id].append(payload)
+        if len(data[session_id]) > _MAX_EVENTS_PER_SESSION:
+            data[session_id] = data[session_id][-_MAX_EVENTS_PER_SESSION:]
+        if len(data) > _MAX_SESSIONS:
+            by_ts = sorted(data.items(), key=lambda kv: (kv[1][-1].get("timestamp", 0) if kv[1] else 0), reverse=True)
+            data = dict(by_ts[:_MAX_SESSIONS])
+        tmp_path = status_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, status_path)
+    except Exception:
+        pass
+
+def _handle(event_name, **kwargs):
+    global _last_session_id
+    mapping = HOOK_TO_EVENT.get(event_name)
+    if not mapping:
+        return
+    status, cc_event = mapping
+    if event_name == "post_tool_call":
+        result = kwargs.get("result")
+        if isinstance(result, dict) and (result.get("error") or
+            (isinstance(result.get("exit_code"), int) and result["exit_code"] != 0)):
+            status, cc_event = "processing", "PostToolUse"
+    session_id = kwargs.get("session_id", "") or kwargs.get("conversation_id", "")
+    # Some Hermes hooks (pre_tool_call, pre_approval_request,
+    # post_approval_response) don't pass session_id. Fall back to the last
+    # session_id seen this process (set during pre_llm_call earlier in the
+    # same agent turn).
+    if not session_id:
+        session_id = _last_session_id or ""
+    if not session_id:
+        return
+    tool_name = ""
+    if event_name in ("pre_tool_call", "post_tool_call", "pre_approval_request"):
+        tool_name = kwargs.get("tool_name", "") or kwargs.get("tool", "") or ""
+    platform = kwargs.get("platform", "") or ""
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = os.path.expanduser("~/.hermes")
+    if not cwd:
+        cwd = os.path.expanduser("~/.hermes")
+
+    # Detect context-compaction session rollover: if session_id changed from
+    # a previous value (same process), emit a synthetic SessionEnd for the old
+    # session so oc-claw stops showing it as active.
+    if _last_session_id and _last_session_id != session_id:
+        end_payload = {{
+            "sessionId": _last_session_id,
+            "cwd": cwd,
+            "event": "SessionEnd",
+            "claudeStatus": "ended",
+            "source": "hermes",
+            "pid": os.getpid(),
+            "platform": platform,
+            "timestamp": time.time(),
+        }}
+        _send(end_payload)
+        _write_status(end_payload)
+    _last_session_id = session_id
+
+    payload = {{
+        "sessionId": session_id,
+        "cwd": cwd,
+        "event": cc_event,
+        "claudeStatus": status,
+        "source": "hermes",
+        "pid": os.getpid(),
+        "platform": platform,
+        "timestamp": time.time(),
+    }}
+    if tool_name:
+        payload["tool"] = tool_name
+    if event_name == "pre_llm_call":
+        prompt = kwargs.get("user_message", "") or kwargs.get("prompt", "") or kwargs.get("message", "")
+        if prompt and isinstance(prompt, str):
+            if "[CONTEXT COMPACTION" in prompt[:30]:
+                marker = "--- END OF CONTEXT SUMMARY"
+                idx = prompt.find(marker)
+                if idx != -1:
+                    prompt = prompt[idx + len(marker):].strip().lstrip("-").strip()
+            if prompt:
+                payload["userPrompt"] = prompt[:500]
+    elif event_name == "post_llm_call":
+        resp = kwargs.get("assistant_response", "") or kwargs.get("response", "") or kwargs.get("result", "")
+        if isinstance(resp, dict):
+            resp = resp.get("content", "") or resp.get("text", "")
+        if resp and isinstance(resp, str):
+            payload["lastResponse"] = resp[:2000]
+    _send(payload)
+    _write_status(payload)
+
+def _make_cb(event_name):
+    def cb(**kwargs):
+        try:
+            _handle(event_name, **kwargs)
+        except Exception:
+            pass
+        return None
+    cb.__name__ = "ooclaw_" + event_name
+    return cb
+
+def register(ctx):
+    for hook_name in HOOK_TO_EVENT:
+        ctx.register_hook(hook_name, _make_cb(hook_name))
+"##, connect_code = connect_code);
+
+    // Build a Python script that writes the plugin files and enables it
+    let install_script = format!(r#"
+import json, os, subprocess, glob
+
+hermes_dir = os.path.expanduser('~/.hermes')
+
+# Install to ALL profiles + hermes root (for default profile)
+# This ensures every gateway instance gets the plugin.
+install_targets = [hermes_dir]  # hermes root = default profile
+profiles_root = os.path.join(hermes_dir, 'profiles')
+if os.path.isdir(profiles_root):
+    for pd in glob.glob(os.path.join(profiles_root, '*')):
+        if os.path.isdir(pd) and os.path.exists(os.path.join(pd, 'config.yaml')):
+            install_targets.append(pd)
+
+result = {{"installed": True, "enabled": False, "method": "none", "targets": []}}
+import shutil
+hermes_bin = shutil.which('hermes')
+if not hermes_bin:
+    for p in [os.path.expanduser('~/.local/bin/hermes'),
+              os.path.expanduser('~/.local/share/uv/tools/hermes-agent/bin/hermes'),
+              '/usr/local/bin/hermes']:
+        if os.path.exists(p):
+            hermes_bin = p
+            break
+
+for target_dir in install_targets:
+    plugin_dir = os.path.join(target_dir, 'plugins', 'ooclaw')
+    os.makedirs(plugin_dir, exist_ok=True)
+    with open(os.path.join(plugin_dir, 'plugin.yaml'), 'w') as f:
+        f.write('''{plugin_yaml}''')
+    with open(os.path.join(plugin_dir, '__init__.py'), 'w') as f:
+        f.write('''{init_py}''')
+    result["targets"].append(target_dir)
+
+# Enable via hermes CLI for each profile
+if hermes_bin:
+    # Enable for default
+    try:
+        out = subprocess.run([hermes_bin, 'plugins', 'enable', 'ooclaw'],
+                            capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            result["enabled"] = True
+            result["method"] = "cli"
+    except: pass
+    # Enable for each named profile
+    for pd in install_targets:
+        if pd == hermes_dir: continue
+        profile_name = os.path.basename(pd)
+        try:
+            subprocess.run([hermes_bin, '--profile', profile_name, 'plugins', 'enable', 'ooclaw'],
+                          capture_output=True, text=True, timeout=5)
+        except: pass
+if not result["enabled"]:
+    # Fallback: patch config.yaml
+    config_path = os.path.join(hermes_dir, 'config.yaml')
+    if os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                content = f.read()
+            if 'ooclaw' not in content:
+                if 'plugins:' in content:
+                    content = content.replace('enabled: []', 'enabled:\n  - ooclaw')
+                    if 'enabled: []' not in content:
+                        content = content.replace('enabled:', 'enabled:\n  - ooclaw', 1)
+                else:
+                    content += '\nplugins:\n  enabled:\n  - ooclaw\n  disabled: []\n'
+                with open(config_path, 'w') as f:
+                    f.write(content)
+                result["enabled"] = True
+                result["method"] = "config_patch"
+            else:
+                result["enabled"] = True
+                result["method"] = "already_enabled"
+        except Exception as e:
+            result["error"] = str(e)
+
+# Restart all gateway processes so they load the new plugin
+result["restarted"] = []
+if hermes_bin:
+    # Just kill existing gateways — they will be auto-restarted by systemd/supervisor
+    # or the user can restart manually. We use a separate nohup command so it
+    # doesn't interfere with this SSH session.
+    try:
+        restart_script = '''
+import subprocess, glob, os, sys, time
+hermes_bin = sys.argv[1]
+# Kill old gateways
+subprocess.run(["pkill", "-f", "hermes.*gateway"], capture_output=True, timeout=3)
+time.sleep(2)
+# Start default
+subprocess.Popen([hermes_bin, "gateway", "run"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+# Start named profiles
+profiles_root = os.path.expanduser("~/.hermes/profiles")
+if os.path.isdir(profiles_root):
+    for pd in glob.glob(os.path.join(profiles_root, "*")):
+        if os.path.isdir(pd) and os.path.exists(os.path.join(pd, "config.yaml")):
+            pname = os.path.basename(pd)
+            subprocess.Popen([hermes_bin, "--profile", pname, "gateway", "run"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+'''
+        # Write restart script and run it detached (won't block or kill our session)
+        restart_path = '/tmp/_ooclaw_restart_gw.py'
+        with open(restart_path, 'w') as f:
+            f.write(restart_script)
+        subprocess.Popen(['nohup', 'python3', restart_path, hermes_bin],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        start_new_session=True)
+        result["restarted"].append("scheduled")
+    except: pass
+
+print(json.dumps(result))
+"#, plugin_yaml = plugin_yaml.replace("'''", "\\'''"), init_py = init_py.replace("'''", "\\'''"));
+
+    let cmd = format!("python3 -c {}", shell_escape_single(&install_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+    let result: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse remote plugin install: {} (output: {})", e, truncate_chars(trimmed, 300)))?;
+    Ok(result)
+}
+
+/// Escape a string for use inside single quotes in a shell command.
+fn shell_escape_single(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Truncate a string to at most `max_chars` characters for diagnostics.
+/// Uses char boundaries (not byte indices) so multibyte text (e.g. Chinese)
+/// in error messages never panics on a non-boundary slice.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
 // ─── Cursor Integration ───────────────────────────────────────────────
 
 /// Install hooks for Cursor IDE.
@@ -11374,6 +14806,10 @@ output['event'] = hook_event
 output['source'] = 'cursor'
 if cwd:
     output['cwd'] = cwd
+else:
+    roots = input_data.get('workspace_roots', [])
+    if roots:
+        output['workspace_roots'] = roots
 
 # Map tool info — Cursor events use different field names than CC:
 #   beforeShellExecution: command, cwd
@@ -11872,6 +15308,161 @@ fn start_cursor_socket_server(
     }
 }
 
+/// Start the Gemini CLI IPC server.
+/// On macOS/Linux: Unix domain socket at /tmp/ooclaw-gemini.sock
+/// On Windows: TCP server on localhost:19285
+fn start_gemini_socket_server(
+    claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    app: tauri::AppHandle,
+) {
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/ooclaw-gemini.sock";
+        let _ = std::fs::remove_file(socket_path);
+        let listener = match std::os::unix::net::UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[gemini_socket] bind failed: {}", e); return; }
+        };
+        log::info!("[gemini_socket] listening on {}", socket_path);
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            // Gemini events never block (no PermissionRequest)
+                            process_claude_event(&buf, &state, &app, Some("gemini"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:19285") {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[gemini_socket] TCP bind failed: {}", e); return; }
+        };
+        log::info!("[gemini_socket] listening on 127.0.0.1:19285");
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            process_claude_event(&buf, &state, &app, Some("gemini"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
+/// Start the Hermes Agent IPC server.
+/// On macOS/Linux: Unix domain socket at /tmp/ooclaw-hermes.sock
+/// On Windows: TCP server on localhost:19286
+fn start_hermes_socket_server(
+    claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    dismissed: Arc<Mutex<std::collections::HashSet<String>>>,
+    app: tauri::AppHandle,
+) {
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/ooclaw-hermes.sock";
+        let _ = std::fs::remove_file(socket_path);
+        let listener = match std::os::unix::net::UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[hermes_socket] bind failed: {}", e); return; }
+        };
+        log::info!("[hermes_socket] listening on {}", socket_path);
+
+        let state = Arc::clone(&claude_state);
+        let dismissed = Arc::clone(&dismissed);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let state = Arc::clone(&state);
+                    let dismissed = Arc::clone(&dismissed);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            // Re-admit dismissed sessions on new activity
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&buf) {
+                                if let Some(sid) = parsed.get("sessionId").and_then(|v| v.as_str()) {
+                                    if let Ok(mut d) = dismissed.lock() {
+                                        d.remove(sid);
+                                    }
+                                }
+                            }
+                            process_claude_event(&buf, &state, &app, Some("hermes"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:19286") {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[hermes_socket] TCP bind failed: {}", e); return; }
+        };
+        log::info!("[hermes_socket] listening on 127.0.0.1:19286");
+
+        let state = Arc::clone(&claude_state);
+        let dismissed = Arc::clone(&dismissed);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let state = Arc::clone(&state);
+                    let dismissed = Arc::clone(&dismissed);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&buf) {
+                                if let Some(sid) = parsed.get("sessionId").and_then(|v| v.as_str()) {
+                                    if let Ok(mut d) = dismissed.lock() {
+                                        d.remove(sid);
+                                    }
+                                }
+                            }
+                            process_claude_event(&buf, &state, &app, Some("hermes"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
 /// Start the Claude IPC server.
 /// On macOS/Linux: Unix domain socket at /tmp/ooclaw-claude.sock
 /// On Windows: TCP server on localhost:19283
@@ -12323,6 +15914,12 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(install_cursor_hooks()) {
                 log::warn!("Failed to install Cursor hooks on startup: {}", e);
             }
+            // Install Gemini CLI hooks on startup (idempotent, skips if ~/.gemini/ missing)
+            if let Err(e) = tauri::async_runtime::block_on(install_gemini_hooks()) {
+                log::warn!("Failed to install Gemini hooks on startup: {}", e);
+            }
+            // Hermes plugin is NOT auto-installed on startup because it restarts
+            // the gateway. User must manually install via Settings UI.
 
             // One log file per app run, named with a startup timestamp so we
             // never lose the previous session's logs to rotation. Goes to the
@@ -12553,6 +16150,23 @@ pub fn run() {
                 start_cursor_socket_server(sessions_arc, app.handle().clone());
             }
 
+            // Start Gemini CLI socket server (shares ClaudeState for unified session tracking).
+            // Unix uses /tmp/ooclaw-gemini.sock, Windows uses TCP 127.0.0.1:19285.
+            {
+                let claude_state = app.state::<ClaudeState>();
+                let sessions_arc = Arc::clone(&claude_state.sessions);
+                start_gemini_socket_server(sessions_arc, app.handle().clone());
+            }
+
+            // Start Hermes Agent socket server.
+            // Unix uses /tmp/ooclaw-hermes.sock, Windows uses TCP 127.0.0.1:19286.
+            {
+                let claude_state = app.state::<ClaudeState>();
+                let sessions_arc = Arc::clone(&claude_state.sessions);
+                let dismissed_arc = Arc::clone(&claude_state.dismissed);
+                start_hermes_socket_server(sessions_arc, dismissed_arc, app.handle().clone());
+            }
+
             // System tray — use saved language, fallback to system language
             let initial_lang = {
                 let store_path = app.path().app_data_dir().ok().map(|p| p.join("settings.json"));
@@ -12621,9 +16235,9 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, set_outside_click_watch, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
-        .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
+        .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

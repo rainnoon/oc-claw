@@ -109,11 +109,10 @@ const MASCOT_BASE_SIZE = 43
 // cells scaled down to ~43px). These multipliers blow them up only at the
 // rendering layer, leaving the underlying window/hitbox math untouched so
 // large-mode video sizing keeps working.
-const MINI_SPRITE_DISPLAY_MULTIPLIER = 2
 const SESSION_SPRITE_DISPLAY_MULTIPLIER = 0.88
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
-type ClaudeStatsSource = 'cc' | 'codex' | 'cursor'
+type ClaudeStatsSource = 'cc' | 'codex' | 'cursor' | 'gemini' | 'hermes'
 const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'spin', 'milktea', 'walkout']
 
 // Priority: higher number = harder to interrupt
@@ -368,6 +367,24 @@ export default function Mini() {
   const lastConnSnapshotRef = useRef<string>('')
   const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dismissedSessionsRef = useRef<Map<string, number>>(new Map())
+  // Stable Hermes title numbering: map each hermes sessionId to a sequence
+  // number assigned on first sight, so a session keeps the same `#N` even as
+  // the list re-sorts by active/updatedAt across 2s polls.
+  const hermesSeqMapRef = useRef<Map<string, number>>(new Map())
+  const hermesSeqNextRef = useRef(1)
+  const getHermesSeq = useCallback((sessionId: string) => {
+    const existing = hermesSeqMapRef.current.get(sessionId)
+    if (existing !== undefined) return existing
+    const seq = hermesSeqNextRef.current++
+    hermesSeqMapRef.current.set(sessionId, seq)
+    return seq
+  }, [])
+  // Frontend dismissal for remote (ssh:) Hermes sessions. The backend dismissed
+  // set only covers sessions that flow through get_claude_sessions; remote
+  // sessions are merged in on the frontend, so they need their own filter.
+  // Value is the wall-clock ms at dismiss time; a session revives if newer
+  // activity arrives after that.
+  const remoteDismissedRef = useRef<Map<string, number>>(new Map())
 
   // Agent detail
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
@@ -429,6 +446,8 @@ export default function Mini() {
   const [claudeConversation, setClaudeConversation] = useState<any[]>([])
   const [showClaudeStats, setShowClaudeStats] = useState(false)
   const [claudeStatsSource, setClaudeStatsSource] = useState<ClaudeStatsSource>('cc')
+  const [claudeStatsSsh, setClaudeStatsSsh] = useState<{ host: string; user: string } | null>(null)
+  const [claudeStatsSessionId, setClaudeStatsSessionId] = useState<string | null>(null)
   const [sessionNicknames, setSessionNicknames] = useState<Record<string, string>>({})
   const [editingSessionTitle, setEditingSessionTitle] = useState<string | null>(null)
   const editingTitleValueRef = useRef('')
@@ -468,6 +487,8 @@ export default function Mini() {
   const resolveClaudeStatsSource = useCallback((source?: string): ClaudeStatsSource => {
     if (source === 'cursor') return 'cursor'
     if (source === 'codex') return 'codex'
+    if (source === 'gemini') return 'gemini'
+    if (source === 'hermes') return 'hermes'
     return 'cc'
   }, [])
   const resolveClaudeStatsSourceBySession = useCallback(
@@ -488,9 +509,16 @@ export default function Mini() {
   const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
   const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
   const [enableCursor, setEnableCursor] = useState(true)
+  const [enableGemini, setEnableGemini] = useState(true)
+  const [hermesConns, setHermesConns] = useState<{ id: string; type: 'local' | 'remote'; host?: string; user?: string }[]>([])
+  // Hermes is enabled whenever at least one connection is configured, mirroring
+  // the OpenClaw model (presence of a connection implies it is enabled).
+  const enableHermes = hermesConns.length > 0
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
+  const [geminiSoundEnabled, setGeminiSoundEnabled] = useState(true)
+  const [hermesSoundEnabled, setHermesSoundEnabled] = useState(false)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
   const [autoCloseCompletion, setAutoCloseCompletion] = useState(false)
@@ -1316,16 +1344,8 @@ export default function Mini() {
       // First time entering coding mode (no persisted preference): default
       // to the large mascot so new users see it out of the box. Existing
       // users who have explicitly toggled the size are left alone.
-      if (mode === 'coding') {
-        const store = await load('settings.json', { defaults: {}, autoSave: true })
-        const existingLM = await store.get('large_mascot')
-        if (typeof existingLM !== 'boolean') {
-          setLargeMascot(true)
-          largeMascotRef.current = true
-          await store.set('large_mascot', true)
-          await store.save()
-        }
-      }
+      setLargeMascot(true)
+      largeMascotRef.current = true
       // When switching mode from inside Settings, keep the settings window
       // completely untouched. enterSettings already disabled pet pass-
       // through, and any extra native resize/move call (even an
@@ -1339,7 +1359,7 @@ export default function Mini() {
       await invoke('set_pet_mode_window', { active: false, mascotScale: mascotScaleRef.current, largeMascotScale: largeMascotScaleRef.current }).catch(() => {})
       // Restore window back to collapsed mascot size
       try {
-        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current })
       } catch {}
     }
   }, [])
@@ -1527,24 +1547,15 @@ export default function Mini() {
       const initialMascotPosition = storedPosition === 'left' || storedPosition === 'right' ? storedPosition : 'right'
       const storedMascotScale = await store.get('mascot_scale')
       const initialMascotScale = typeof storedMascotScale === 'number' ? clampMascotScale(storedMascotScale) : 1
-      const storedLargeMascot = await store.get('large_mascot')
       const storedLargeMascotScale = await store.get('large_mascot_scale')
-      const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(4, storedLargeMascotScale)) : 5
+      const initialLargeMascotScale = typeof storedLargeMascotScale === 'number' ? Math.min(6, Math.max(1, storedLargeMascotScale)) : 5
       const existingMode = await loadAppMode()
       // Avoid startup flicker: decide large/small mascot from the persisted mode
       // BEFORE applying initial React/native window state. Otherwise we briefly
       // render the stored small mascot and then switch to large in pet mode.
       // Default to large mascot for both pet and coding modes when the user
       // has no explicit preference yet; respect the stored boolean otherwise.
-      let initialLargeMascot: boolean
-      if (typeof storedLargeMascot === 'boolean') {
-        initialLargeMascot = storedLargeMascot
-      } else {
-        initialLargeMascot = existingMode === 'coding' || existingMode === 'pet'
-      }
-      if (existingMode === 'pet') {
-        initialLargeMascot = true
-      }
+      const initialLargeMascot = true
       setMascotPosition(initialMascotPosition)
       setMascotScale(initialMascotScale)
       setLargeMascot(initialLargeMascot)
@@ -1577,7 +1588,7 @@ export default function Mini() {
           position: initialMascotPosition,
           efficiency: true,
           mascotScale: initialMascotScale,
-          largeMascot: existingMode === 'pet' ? true : initialLargeMascot,
+          largeMascot: true,
           largeMascotScale: initialLargeMascotScale,
         }).catch(() => {})
         if (existingMode === 'pet') {
@@ -2031,6 +2042,14 @@ export default function Mini() {
       const curEnabled = cur !== false
       setEnableCursor(curEnabled)
       if (curEnabled) invoke('install_cursor_hooks').catch(() => {})
+      const gem = await store.get('enable_gemini')
+      const gemEnabled = gem !== false
+      setEnableGemini(gemEnabled)
+      if (gemEnabled) invoke('install_gemini_hooks').catch(() => {})
+      // Hermes plugin install is user-triggered only (restarts gateway).
+      // Enablement now follows whether any connection is configured.
+      const hermConns = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
+      if (hermConns) setHermesConns(hermConns)
       if (isWindowsPlatform) {
         // Codex is not yet supported on Windows; keep it forced off.
         await store.set('enable_codex', false)
@@ -2042,6 +2061,10 @@ export default function Mini() {
       if (typeof codsnd === 'boolean') setCodexSoundEnabled(codsnd)
       const csnd = await store.get('cursor_sound_enabled')
       if (typeof csnd === 'boolean') setCursorSoundEnabled(csnd)
+      const gsnd = await store.get('gemini_sound_enabled')
+      if (typeof gsnd === 'boolean') setGeminiSoundEnabled(gsnd)
+      const hsnd = await store.get('hermes_sound_enabled')
+      if (typeof hsnd === 'boolean') setHermesSoundEnabled(hsnd)
       const ns = (await store.get('notify_sound')) as string
       if (ns === 'default' || ns === 'manbo') setNotifySound(ns)
       const ws = await store.get('waiting_sound')
@@ -2068,7 +2091,7 @@ export default function Mini() {
       }
       const lms = await store.get('large_mascot_scale')
       if (typeof lms === 'number') {
-        const clamped = Math.min(6, Math.max(4, lms))
+        const clamped = Math.min(6, Math.max(1, lms))
         setLargeMascotScale(clamped)
         largeMascotScaleRef.current = clamped
       }
@@ -2107,12 +2130,11 @@ export default function Mini() {
   // Poll Claude/Codex/Cursor sessions
   useEffect(() => {
     if (appMode !== 'coding') { setClaudeSessions([]); return }
-    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor)) {
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini || enableHermes)) {
       setClaudeSessions([])
       return
     }
-    // Track which sessions already had lastResponse so we only auto-expand once.
-    const seenCompletions = new Set<string>()
+    const seenCompletions = new Set<string>(shownCompletionsRef.current)
     // Track previously logged session statuses so we only emit a backend log
     // line when something actually changes — keeps oc-claw.log readable.
     const lastLoggedStatus = new Map<string, string>()
@@ -2158,33 +2180,139 @@ export default function Mini() {
         // In efficiency mode, auto-expand panel when a session just completed
         // with an AI response (lastResponse appeared for the first time).
         // Mark all newly completed sessions as seen, but only auto-expand
-        // if the session's terminal tab is not currently active.
+        // if the session's terminal tab is not currently active AND the user
+        // is not actively typing (keyboard idle > 3s to avoid interruption).
+        const newCompletions: any[] = []
         for (const s of sessions) {
-          if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId)) {
+          if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId) && s.source !== 'hermes') {
             seenCompletions.add(s.sessionId)
-            // Only auto-expand if tab not active and panel is collapsed
-            if (
-              autoExpandOnTaskRef.current &&
-              !updateModalOpenRef.current &&
-              !s.isActiveTab &&
-              viewModeRef.current === 'efficiency' &&
-              !expandedRef.current &&
-              !expandingRef.current &&
-              !collapsingRef.current
-            ) {
-              hoverExpandedRef.current = true
-              setCompletionSessionId(s.sessionId)
-              expandFnRef.current?.()
+            newCompletions.push(s)
+          }
+        }
+        // Decide whether to pop the completion popup, but DO NOT commit
+        // setCompletionSessionId yet. We need to batch it with
+        // setClaudeSessions(sessions) below so the panel's first frame
+        // already has both the new session list and the new filter state.
+        // Otherwise React renders once with new completionSessionId + stale
+        // claudeSessions (lastResponse not yet present) → user sees the
+        // full session list (image 2) flash before it collapses to the
+        // single completed session (image 1).
+        let completionCandidate: any = null
+        if (newCompletions.length > 0) {
+          let shouldExpand = autoExpandOnTaskRef.current &&
+            !updateModalOpenRef.current &&
+            viewModeRef.current === 'efficiency' &&
+            !expandedRef.current &&
+            !expandingRef.current &&
+            !collapsingRef.current
+          if (shouldExpand) {
+            try {
+              const kbIdle = await invoke('get_keyboard_idle_secs') as number
+              if (kbIdle < 3) shouldExpand = false
+            } catch {}
+          }
+          if (shouldExpand) {
+            const candidate = newCompletions.find(s => !s.isActiveTab) || newCompletions[0]
+            if (candidate && !candidate.isActiveTab) {
+              completionCandidate = candidate
             }
           }
         }
-        // Keep seenCompletions in sync: remove sessions that no longer have lastResponse
+        // Keep seenCompletions in sync: remove sessions that no longer have
+        // lastResponse (user started a new turn), so the NEXT completion in
+        // the same session can trigger the popup again.
         for (const sid of seenCompletions) {
           if (!sessions.find((s: any) => s.sessionId === sid && s.lastResponse)) {
             seenCompletions.delete(sid)
+            shownCompletionsRef.current.delete(sid)
           }
         }
+        // Filter out local Hermes sessions if no local connection is configured
+        const hasLocalHermes = hermesConns.some(c => c.type === 'local')
+        if (!hasLocalHermes) {
+          for (let i = sessions.length - 1; i >= 0; i--) {
+            if (sessions[i].source === 'hermes' && !sessions[i].sessionId?.startsWith('ssh:')) {
+              sessions.splice(i, 1)
+            }
+          }
+        }
+        // Merge remote Hermes sessions from SSH connections
+        const remoteHermesConns = hermesConns.filter(c => c.type === 'remote' && c.host && c.user)
+        if (enableHermes && remoteHermesConns.length > 0) {
+          try {
+            const remoteResults = await Promise.allSettled(
+              remoteHermesConns.map(c => invoke('get_hermes_remote_sessions', { sshHost: c.host, sshUser: c.user }) as Promise<any[]>)
+            )
+            for (let ci = 0; ci < remoteResults.length; ci++) {
+              const r = remoteResults[ci]
+              if (r.status !== 'fulfilled' || !Array.isArray(r.value)) continue
+              const conn = remoteHermesConns[ci]
+              const label = `${conn.user}@${conn.host}`
+              for (const rs of r.value) {
+                if (!rs.active && !rs.updatedAt && !rs.startedAt) continue
+                // Respect frontend dismissal for remote sessions (backend
+                // dismissed never sees these). Revive only when newer activity
+                // arrives after the dismiss time.
+                const sshSid = `ssh:${conn.host}:${rs.sessionId}`
+                const remoteDismissedAt = remoteDismissedRef.current.get(sshSid)
+                if (remoteDismissedAt !== undefined) {
+                  const rsMs = rs.updatedAt ? Date.parse(rs.updatedAt) : (rs.startedAt ? rs.startedAt * 1000 : 0)
+                  if (rsMs > remoteDismissedAt) {
+                    remoteDismissedRef.current.delete(sshSid)
+                  } else {
+                    continue
+                  }
+                }
+                const userPrompt = rs.userPrompt || (rs.messageCount ? `${rs.messageCount} msgs` : '')
+                // Prefer explicit status from remote (distinguishes waiting from stopped),
+                // fall back to active flag for older remote scripts.
+                const remoteStatus: string = rs.status || (rs.active ? 'processing' : 'stopped')
+                sessions.push({
+                  sessionId: sshSid,
+                  status: remoteStatus,
+                  source: 'hermes',
+                  platform: rs.platform || '',
+                  cwd: '',
+                  tool: '',
+                  model: rs.model || '',
+                  hostTerminal: label,
+                  updatedAt: rs.startedAt ? new Date(rs.startedAt * 1000).toISOString() : rs.updatedAt || '',
+                  // Set both shapes: backend Rust uses camelCase via serde rename,
+                  // but a few frontend sites still read snake_case for fallback titles.
+                  userPrompt,
+                  user_prompt: userPrompt,
+                  lastResponse: rs.lastResponse || '',
+                  isActiveTab: false,
+                })
+              }
+            }
+          } catch (e) {
+            console.warn('[hermes-remote] poll error:', e)
+          }
+        }
+
+        // If the completion popup's session disappeared from the poll results,
+        // clear it so the UI doesn't fall back to the full session list.
+        const cid = completionSessionIdRef.current
+        if (cid && !sessions.find((s: any) => s.sessionId === cid && s.lastResponse && s.status === 'stopped')) {
+          completionSessionIdRef.current = null
+          _setCompletionSessionId(null)
+          setEffListCollapsed(false)
+          if (hoverExpandedRef.current) {
+            hoverExpandedRef.current = false
+            collapseFnRef.current?.()
+          }
+        }
+        // Commit sessions + completion popup state in the same sync block so
+        // React batches them: the panel's first render after expand already
+        // has the filtered single-session view, no full-list flash.
         setClaudeSessions(sessions)
+        if (completionCandidate) {
+          shownCompletionsRef.current.add(completionCandidate.sessionId)
+          hoverExpandedRef.current = true
+          setCompletionSessionId(completionCandidate.sessionId)
+          expandFnRef.current?.()
+        }
       } catch {
         /* ignore */
       }
@@ -2192,7 +2320,7 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableHermes, hermesConns, appMode])
 
   // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
@@ -2201,6 +2329,10 @@ export default function Mini() {
   codexSoundEnabledRef.current = codexSoundEnabled
   const cursorSoundEnabledRef = useRef(cursorSoundEnabled)
   cursorSoundEnabledRef.current = cursorSoundEnabled
+  const geminiSoundEnabledRef = useRef(geminiSoundEnabled)
+  geminiSoundEnabledRef.current = geminiSoundEnabled
+  const hermesSoundEnabledRef = useRef(hermesSoundEnabled)
+  hermesSoundEnabledRef.current = hermesSoundEnabled
   const notifySoundRef = useRef(notifySound)
   notifySoundRef.current = notifySound
   const waitingSoundRef = useRef(waitingSound)
@@ -2217,14 +2349,16 @@ export default function Mini() {
   enableClaudeDesktopRef.current = enableClaudeDesktop
   useEffect(() => {
     if (appMode !== 'coding') return
-    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor)) return
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini || enableHermes)) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
       const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
       const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
       const isCodex = ev.payload?.source === 'codex' || currentSession?.source === 'codex'
+      const isGemini = ev.payload?.source === 'gemini' || currentSession?.source === 'gemini'
+      const isHermes = ev.payload?.source === 'hermes' || currentSession?.source === 'hermes'
       const hostTerminal = ev.payload?.hostTerminal || currentSession?.hostTerminal
-      const isClaudeDesktop = !isCursor && !isCodex && hostTerminal === 'Claude Desktop'
-      const isClaudeCli = !isCursor && !isCodex && !isClaudeDesktop
+      const isClaudeDesktop = !isCursor && !isCodex && !isGemini && !isHermes && hostTerminal === 'Claude Desktop'
+      const isClaudeCli = !isCursor && !isCodex && !isGemini && !isHermes && !isClaudeDesktop
       // Drop the event entirely if the matching listener toggle is off, so
       // muted streams never trigger auto-expand or completion popups either.
       if (isClaudeDesktop && !enableClaudeDesktopRef.current) return
@@ -2235,7 +2369,7 @@ export default function Mini() {
           expandFnRef.current()
         }
       }
-      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : soundEnabledRef.current
+      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : isGemini ? geminiSoundEnabledRef.current : isHermes ? hermesSoundEnabledRef.current : soundEnabledRef.current
       if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
       if (notifySoundRef.current === 'manbo') {
@@ -2247,7 +2381,7 @@ export default function Mini() {
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableHermes, appMode])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
@@ -2349,6 +2483,8 @@ export default function Mini() {
   const visibleClaudeSessions = claudeSessions.filter((cs) => {
     if (cs.source === 'cursor') return enableCursor
     if (cs.source === 'codex') return enableCodex
+    if (cs.source === 'gemini') return enableGemini
+    if (cs.source === 'hermes') return enableHermes
     const isDesktop = cs.hostTerminal === 'Claude Desktop'
     return isDesktop ? enableClaudeDesktop : enableClaudeCode
   })
@@ -2379,10 +2515,34 @@ export default function Mini() {
   const [completionSessionId, _setCompletionSessionId] = useState<string | null>(null)
   const completionSessionIdRef = useRef<string | null>(null)
   const [effListCollapsed, setEffListCollapsed] = useState(false)
+  const collapseFnRef = useRef<(() => void) | null>(null)
+  const shownCompletionsRef = useRef(new Set<string>())
+  // Sessions whose permission/clarify popup the user dismissed via "稍后处理".
+  // The session itself stays in the waiting state, but we hide the action
+  // buttons until it leaves waiting and re-enters (next request).
+  const [dismissedWaitingIds, setDismissedWaitingIds] = useState<Set<string>>(new Set())
+  // Clear dismissals once the session is no longer waiting, so the next
+  // permission/clarify cycle re-shows the buttons.
+  useEffect(() => {
+    if (dismissedWaitingIds.size === 0) return
+    const stillWaiting = new Set(
+      claudeSessions.filter((s: any) => s.status === 'waiting').map((s: any) => s.sessionId)
+    )
+    let changed = false
+    const next = new Set(dismissedWaitingIds)
+    for (const id of dismissedWaitingIds) {
+      if (!stillWaiting.has(id)) {
+        next.delete(id)
+        changed = true
+      }
+    }
+    if (changed) setDismissedWaitingIds(next)
+  }, [claudeSessions, dismissedWaitingIds])
   const setCompletionSessionId = useCallback((id: string | null) => {
     completionSessionIdRef.current = id
     _setCompletionSessionId(id)
     if (id) setEffListCollapsed(true)
+    if (!id) setEffListCollapsed(false)
     if (autoCloseTimerRef.current) {
       clearTimeout(autoCloseTimerRef.current)
       autoCloseTimerRef.current = null
@@ -2391,7 +2551,12 @@ export default function Mini() {
       autoCloseTimerRef.current = setTimeout(() => {
         completionSessionIdRef.current = null
         _setCompletionSessionId(null)
+        setEffListCollapsed(false)
         autoCloseTimerRef.current = null
+        if (hoverExpandedRef.current) {
+          hoverExpandedRef.current = false
+          collapseFnRef.current?.()
+        }
       }, 5000)
     }
   }, [])
@@ -2484,7 +2649,7 @@ export default function Mini() {
         expandedRef.current = true
         setShowPanel(true)
       } else {
-        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+        await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current })
         await restoreCollapsedMascotPosition()
         setExpanded(false)
         expandedRef.current = false
@@ -3069,7 +3234,13 @@ export default function Mini() {
     debugToTerminal('close', 'collapse proceed')
     collapsingRef.current = true
     hoverExpandedRef.current = false
-    setCompletionSessionId(null)
+    // Intentionally DO NOT clear completionSessionId / effListCollapsed here.
+    // While the panel fades out (opacity 1 → 0 over panelChromeTransition),
+    // the content is still mounted. Clearing the popup state mid-fade would
+    // re-render the panel back to the full session list under the fading
+    // overlay — visible as a "list flash" before the panel actually goes
+    // away. We reset both inside the setTimeout below, after setExpanded
+    // unmounts the panel content.
     if (hoverCloseTimerRef.current) {
       clearTimeout(hoverCloseTimerRef.current)
       hoverCloseTimerRef.current = null
@@ -3106,6 +3277,10 @@ export default function Mini() {
           setEnableCodex(isWindowsPlatform ? false : cod !== false)
           const cur = await store.get('enable_cursor')
           setEnableCursor(cur !== false)
+          const gem = await store.get('enable_gemini')
+          setEnableGemini(gem !== false)
+          const hcn = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
+          if (hcn) setHermesConns(hcn)
         } catch {}
         // Trigger immediate refresh so config changes are reflected right away.
         fetchAgents()
@@ -3117,6 +3292,11 @@ export default function Mini() {
       setExpanded(false)
       expandedRef.current = false
       expandedWindowModeRef.current = null
+      // Now that the expanded panel is unmounted, it's safe to clear the
+      // completion popup state (which also resets effListCollapsed → false).
+      // Doing it earlier would cause the fading panel to flash the full
+      // session list before going away.
+      setCompletionSessionId(null)
       // Hide the entire document during the resize→reposition pair below.
       // `set_mini_expanded(expanded:false)` first parks the window at the
       // default collapsed slot (right-near-notch); only the follow-up
@@ -3136,7 +3316,7 @@ export default function Mini() {
             petOriginBeforeSettingsRef.current = null
           }
         } else if (wasSettings) {
-          await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: largeMascotRef.current, largeMascotScale: largeMascotScaleRef.current })
+          await invoke('set_mini_size', { restore: true, position: mascotPositionRef.current, mascotScale: mascotScaleRef.current, largeMascot: true, largeMascotScale: largeMascotScaleRef.current })
           await restoreCollapsedMascotPosition()
         } else {
           await invoke('set_mini_expanded', {
@@ -3144,7 +3324,7 @@ export default function Mini() {
             position: mascotPositionRef.current,
             efficiency: viewModeRef.current === 'efficiency',
             mascotScale: mascotScaleRef.current,
-            largeMascot: largeMascotRef.current,
+            largeMascot: true,
             largeMascotScale: largeMascotScaleRef.current,
           })
           await restoreCollapsedMascotPosition()
@@ -3172,6 +3352,7 @@ export default function Mini() {
       }, 300)
     }, delay)
   }, [fetchAgents, restoreCollapsedMascotPosition, debugToTerminal, isSettingsPickerBlockingClose])
+  collapseFnRef.current = collapse
 
   // ── Efficiency-mode notch hover tracking (native cursor polling) ──
   // On macOS the mini window sits in the menu-bar / notch area where the
@@ -3404,13 +3585,17 @@ export default function Mini() {
         setEnableCodex(isWindowsPlatform ? false : cod !== false)
         const cur = await store.get('enable_cursor')
         setEnableCursor(cur !== false)
+        const gem = await store.get('enable_gemini')
+        setEnableGemini(gem !== false)
+        const hcn2 = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
+        if (hcn2) setHermesConns(hcn2)
         fetchAgents()
         try {
           await invoke('set_mini_size', {
             restore: true,
             position: mascotPositionRef.current,
             mascotScale: mascotScaleRef.current,
-            largeMascot: largeMascotRef.current,
+            largeMascot: true,
             largeMascotScale: largeMascotScaleRef.current,
           })
           await restoreCollapsedMascotPosition()
@@ -3442,6 +3627,31 @@ export default function Mini() {
     }
     window.addEventListener('mousedown', onClick)
     return () => window.removeEventListener('mousedown', onClick)
+  }, [expanded, pinned, settingsMode, settingsTransitioning, updateModalOpen, collapse, debugToTerminal, isSettingsPickerBlockingClose])
+
+  // Windows: an auto-expanded completion popup never takes OS focus, so the
+  // window-blur close path never fires and clicking another app won't close
+  // the panel. A Rust-side global mouse watcher emits `mini-outside-click`
+  // when the user clicks outside the mini window — collapse on that.
+  useEffect(() => {
+    if (!isWindowsPlatform) return
+    if (!expanded || pinned || settingsMode || settingsTransitioning || updateModalOpen) {
+      invoke('set_outside_click_watch', { active: false }).catch(() => {})
+      return
+    }
+    invoke('set_outside_click_watch', { active: true }).catch(() => {})
+    const unlisten = listen('mini-outside-click', () => {
+      if (pinnedRef.current || settingsModeRef.current) return
+      if (isCreateModalOpenRef.current) return
+      if (filePickerOpenRef.current) return
+      if (isSettingsPickerBlockingClose()) return
+      debugToTerminal('outside', 'mini-outside-click -> collapse')
+      collapse()
+    })
+    return () => {
+      invoke('set_outside_click_watch', { active: false }).catch(() => {})
+      unlisten.then((fn) => fn())
+    }
   }, [expanded, pinned, settingsMode, settingsTransitioning, updateModalOpen, collapse, debugToTerminal, isSettingsPickerBlockingClose])
 
   // Window blur: collapse when user clicks outside the app (when not pinned, or in settings mode)
@@ -3544,7 +3754,18 @@ export default function Mini() {
         focusExpandTimerRef.current = null
         if (collapsingRef.current || moveModeRef.current || mascotDragActiveRef.current) return
         if (largeMascotRef.current) return
-        expand()
+        // The mini window is always-on-top, so Windows hands it focus when any
+        // other window is minimized. Only auto-expand when the cursor is
+        // actually over the mascot — i.e. a real click — not an incidental
+        // focus grab from minimizing another app.
+        invoke('cursor_over_mini_window')
+          .then((over) => {
+            if (!over) return
+            if (collapsingRef.current || moveModeRef.current || mascotDragActiveRef.current) return
+            if (largeMascotRef.current) return
+            expand()
+          })
+          .catch(() => {})
       }, 80)
     }
     window.addEventListener('focus', onFocus)
@@ -3867,8 +4088,8 @@ export default function Mini() {
   const collapsedMascotSize = Math.round(MASCOT_BASE_SIZE * mascotScale)
   const collapsedPlaceholderRadius = Math.round(10 * mascotScale)
   const collapsedPlaceholderFontSize = Math.max(16, Math.round(16 * mascotScale))
-  const collapsedStatusSize = largeMascot ? 5 : 6
-  const collapsedStatusBorder = largeMascot ? 1.1 : 1.2
+  const collapsedStatusSize = 5
+  const collapsedStatusBorder = 1.1
   const largeMascotVisualSize = collapsedMascotSize * largeMascotScale
 
   useEffect(() => {
@@ -4108,14 +4329,14 @@ export default function Mini() {
               <div
                 style={{
                   position: 'relative',
-                  width: collapsedMascotSize * MINI_SPRITE_DISPLAY_MULTIPLIER,
-                  height: Math.round(collapsedMascotSize * MINI_SPRITE_DISPLAY_MULTIPLIER * (208 / 192)),
+                  width: largeMascotVisualSize,
+                  height: Math.round(largeMascotVisualSize * (208 / 192)),
                 }}
               >
                 <MiniPetMascot
                   pet={miniPet}
                   baseState={mainSpriteState}
-                  size={collapsedMascotSize * MINI_SPRITE_DISPLAY_MULTIPLIER}
+                  size={largeMascotVisualSize}
                   enableHoverJump
                   externalHover={mascotHover}
                   useExternalHover={!isWindowsPlatform}
@@ -4125,8 +4346,8 @@ export default function Mini() {
             ) : (
               <div
                 style={{
-                  width: collapsedMascotSize,
-                  height: collapsedMascotSize,
+                  width: largeMascotVisualSize,
+                  height: largeMascotVisualSize,
                   borderRadius: collapsedPlaceholderRadius,
                   background: 'rgba(0,0,0,0.3)',
                   display: 'flex',
@@ -4253,7 +4474,15 @@ export default function Mini() {
             transform: 'translateX(-50%)',
             transformOrigin: 'top center',
             zoom: uiScale !== 1 ? uiScale : undefined,
-            width: panelW,
+            // On Windows high-DPI / >100% scaling, the native window's CSS
+            // viewport width doesn't reliably equal the fixed panelW (Tauri vs
+            // WebView2 DPI mapping mismatch), leaving a grey gap on the right.
+            // Fill the actual viewport instead (compensating for `zoom`, since
+            // vw is relative to the window, not the zoomed element). macOS and
+            // the collapsed state keep the fixed panelW.
+            width: isWindowsPlatform && showPanel
+              ? (uiScale !== 1 ? `calc(100vw / ${uiScale})` : '100vw')
+              : panelW,
             height: 'auto',
             maxHeight: inDetailPage ? detailPageMaxHeight : panelMaxHeight,
             overflowY: 'hidden',
@@ -4425,7 +4654,7 @@ export default function Mini() {
                               data: cs,
                               claudeIdx: ci,
                               active: cs.status === 'processing' || cs.status === 'tool_running',
-                              updatedAt: cs.updatedAt || 0,
+                              updatedAt: cs.updatedAt ? new Date(cs.updatedAt).getTime() : 0,
                             }))
                             // Sort: waiting first, then everything else by recency.
                             const getPriority = (item: (typeof unified)[0] | (typeof claudeUnified)[0]) => {
@@ -4449,6 +4678,8 @@ export default function Mini() {
                                 ...(isWindowsPlatform && enableClaudeDesktop ? ['Claude Code Desktop'] : []),
                                 ...(enableCodex ? ['Codex'] : []),
                                 ...(enableCursor ? ['Cursor'] : []),
+                                ...(enableGemini ? ['Gemini'] : []),
+                                ...(enableHermes ? ['Hermes'] : []),
                               ]
                               return (
                                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 px-4 flex flex-col items-center gap-2.5">
@@ -4634,7 +4865,7 @@ export default function Mini() {
                                         />
                                       ) : (
                                         <span
-                                          className={`min-w-0 max-w-[40%] truncate text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                          className={`shrink-0 text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
                                           onClick={(e) => e.stopPropagation()}
                                           onDoubleClick={(e) => {
                                             e.stopPropagation()
@@ -4644,11 +4875,11 @@ export default function Mini() {
                                           {sessionNicknames[`oc:${s.agentId}:${s.key}`] || title}
                                         </span>
                                       )}
-                                      {subtitle && <span className="min-w-0 max-w-[45%] truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
-                                      {s.lastAssistantMsg && <span className="min-w-0 flex-1 truncate text-[11px] text-white/40">· {s.lastAssistantMsg}</span>}
+                                      {subtitle && <span className="min-w-0 max-w-[25%] truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
+                                      {s.lastAssistantMsg && <span className="min-w-0 max-w-[30%] truncate text-[11px] text-white/40">· {s.lastAssistantMsg}</span>}
                                     </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300">{formatChannelLabel(s.channel)}</span>}
+                                    <div className="flex items-center gap-2 shrink-0 ml-auto">
+                                      {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300 whitespace-nowrap">{formatChannelLabel(s.channel)}</span>}
                                       <div className="w-8 flex items-center justify-center">
                                         <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
                                         <button
@@ -4669,7 +4900,11 @@ export default function Mini() {
                                 )
                               } else {
                                 const cs = item.data
-                                const defaultProjectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                const isHermesSrc = cs.source === 'hermes'
+                                // Hermes title mirrors OpenClaw: a stable identity + sequence,
+                                // never the question (which only goes to the subtitle below).
+                                const hermesTitle = `Hermes #${getHermesSeq(cs.sessionId)}`
+                                const defaultProjectName = isHermesSrc ? hermesTitle : (cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : 'unknown')
                                 const projectName = sessionNicknames[cs.sessionId] || defaultProjectName
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
@@ -4680,16 +4915,29 @@ export default function Mini() {
                                 const petState: PetState = isWaiting ? 'waiting' : isCompacting ? 'compacting' : isActive ? 'working' : 'idle'
                                 const claudeSpriteState: CodexPetState = petStateToCodexState(petState)
                                 const subtitle = cs.userPrompt || ''
-                                const timeAgo = formatTimeAgo(cs.updatedAt || 0)
+                                const timeAgo = formatTimeAgo(cs.updatedAt ? (typeof cs.updatedAt === 'string' ? new Date(cs.updatedAt).getTime() : cs.updatedAt) : 0)
                                 const isCursorSource = cs.source === 'cursor'
                                 const isCodexSource = cs.source === 'codex'
-                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : 'Claude'
-                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : 'bg-[#3f211d] text-[#e87a65]'
+                                const isGeminiSource = cs.source === 'gemini'
+                                const isHermesSource = cs.source === 'hermes'
+                                const isRemoteHermes = isHermesSource && cs.sessionId?.startsWith('ssh:')
+                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : isHermesSource ? 'Hermes' : 'Claude'
+                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : isGeminiSource ? 'bg-[#1d2736] text-[#8ab4f8]' : isHermesSource ? 'bg-[#2d1f3f] text-[#c084fc]' : 'bg-[#3f211d] text-[#e87a65]'
                                 const openClaudeDetail = () => {
                                   setSelectedAgentId(null)
                                   setSelectedSessionKey(null)
                                   setSelectedClaudeSession(null)
                                   setClaudeStatsSource(resolveClaudeStatsSource(cs.source))
+                                  if (isRemoteHermes && cs.sessionId) {
+                                    const sshHost = cs.sessionId.split(':')[1] || ''
+                                    const matchedConn = hermesConns.find(c => c.type === 'remote' && c.host === sshHost)
+                                    setClaudeStatsSsh(matchedConn?.host && matchedConn?.user ? { user: matchedConn.user, host: matchedConn.host } : null)
+                                    const rawId = cs.sessionId?.replace(/^ssh:[^:]+:/, '') || null
+                                    setClaudeStatsSessionId(rawId)
+                                  } else {
+                                    setClaudeStatsSsh(null)
+                                    setClaudeStatsSessionId(isHermesSource ? (cs.sessionId || null) : null)
+                                  }
                                   setShowClaudeStats(true)
                                 }
                                 return (
@@ -4702,7 +4950,21 @@ export default function Mini() {
                                     transition={{ duration: 0.2, delay: index * 0.05 }}
                                     data-no-drag
                                     onClick={() => {
-                                      if (!isWaiting) {
+                                      if (isHermesSource) {
+                                        const p = (cs.platform || '').toLowerCase()
+                                        const appName = p.includes('feishu') || p.includes('lark') ? 'Lark'
+                                          : p.includes('telegram') ? 'Telegram'
+                                          : p.includes('discord') ? 'Discord'
+                                          : p.includes('slack') ? 'Slack'
+                                          : p.includes('wechat') || p.includes('weixin') ? 'WeChat'
+                                          : p.includes('whatsapp') ? 'WhatsApp'
+                                          : null
+                                        if (appName) {
+                                          invoke('activate_app', { appName }).catch(() => {})
+                                        }
+                                        return
+                                      }
+                                      if (!isWaiting || isGeminiSource) {
                                         if (cs.source === 'cursor') {
                                           invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
                                         } else {
@@ -4710,7 +4972,7 @@ export default function Mini() {
                                         }
                                       }
                                     }}
-                                    className={`group hover:bg-white/[0.04] transition-colors ${isWaiting ? '' : 'cursor-pointer'}`}
+                                    className={`group hover:bg-white/[0.04] transition-colors ${(!isWaiting || isGeminiSource || isHermesSource) ? 'cursor-pointer' : ''}`}
                                     style={{ padding: '10px 16px' }}
                                   >
                                     <div className="flex min-w-0 w-full items-center gap-3">
@@ -4800,7 +5062,7 @@ export default function Mini() {
                                           />
                                         ) : (
                                           <span
-                                            className={`min-w-0 max-w-[42%] truncate text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
+                                            className={`min-w-0 max-w-[55%] truncate text-[13px] font-bold cursor-text ${isWorking ? 'text-white' : 'text-slate-300'}`}
                                             onClick={(e) => {
                                               // Keep title area reserved for rename interaction.
                                               // Clicking title should not trigger jump.
@@ -4814,10 +5076,11 @@ export default function Mini() {
                                             {projectName}
                                           </span>
                                         )}
-                                        {subtitle && <span className="min-w-0 flex-1 truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
+                                        {subtitle && <span className="min-w-0 max-w-[25%] truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
+                                        {cs.lastResponse && <span className="min-w-0 max-w-[30%] truncate text-[11px] text-white/40">· {cs.lastResponse}</span>}
                                       </div>
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal ${sourceBadgeClass}`}>{sourceLabel}</span>
+                                      <div className="flex items-center gap-2 shrink-0 ml-auto">
+                                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-normal whitespace-nowrap ${sourceBadgeClass}`}>{sourceLabel}</span>
                                         <div className="w-8 flex items-center justify-center">
                                           <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
                                           <button
@@ -4825,6 +5088,9 @@ export default function Mini() {
                                             onClick={(e) => {
                                               e.stopPropagation()
                                               invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {})
+                                              // Remote (ssh:) sessions bypass the backend dismissed
+                                              // filter, so also record the dismissal on the frontend.
+                                              if (cs.sessionId.startsWith('ssh:')) remoteDismissedRef.current.set(cs.sessionId, Date.now())
                                               setClaudeSessions((prev) => prev.filter((s) => s.sessionId !== cs.sessionId))
                                             }}
                                             className="hidden group-hover:flex items-center justify-center text-slate-600 hover:text-rose-500 transition-colors outline-none"
@@ -4842,7 +5108,7 @@ export default function Mini() {
                                        此面板。包含四个操作按钮：拒绝、允许一次、
                                        全部允许、自动批准。
                                        用途：让用户无需切换到终端即可快速处理权限请求。 */}
-                                    {isWaiting && cs.source !== 'cursor' && (
+                                    {isWaiting && cs.source !== 'cursor' && !dismissedWaitingIds.has(cs.sessionId) && (
                                       <div className="mt-2 flex flex-col" style={{ maxHeight: panelMaxHeight - 140 }}>
                                         {cs.tool && (
                                           <div className="flex items-center gap-1.5 mb-2">
@@ -4857,7 +5123,7 @@ export default function Mini() {
                                               const input = JSON.parse(cs.toolInput)
                                               // Write/Edit: show file name + numbered code lines
                                               if ((cs.tool === 'Write' || cs.tool === 'Edit') && (input.file_path || input.content)) {
-                                                const fileName = input.file_path ? input.file_path.split('/').pop() : ''
+                                                const fileName = input.file_path ? input.file_path.replace(/\\/g, '/').split('/').pop() : ''
                                                 const isNew = cs.tool === 'Write'
                                                 const content = input.content || input.new_string || input.old_string || ''
                                                 const lines = content.split('\n')
@@ -4924,28 +5190,72 @@ export default function Mini() {
                                               hoverExpandedRef.current = false
                                               collapse()
                                             }
-                                            // Codex approval should be made in Codex's own UI.
+                                            // Codex / Gemini approval should be made in their own UI.
                                             // oc-claw only surfaces a reminder and a jump action
                                             // so the user can approve there.
-                                            if (cs.source === 'codex') {
+                                            if (cs.source === 'codex' || cs.source === 'gemini' || cs.source === 'hermes') {
+                                              const hermesPlatLabel = (() => {
+                                                if (cs.source !== 'hermes' || !cs.platform) return ''
+                                                const p = (cs.platform || '').toLowerCase()
+                                                if (p.includes('feishu') || p.includes('lark')) return 'Feishu'
+                                                if (p.includes('telegram')) return 'Telegram'
+                                                if (p.includes('discord')) return 'Discord'
+                                                if (p.includes('slack')) return 'Slack'
+                                                return ''
+                                              })()
+                                              const isWinGemini = isWindowsPlatform && cs.source === 'gemini'
+                                              if (isWinGemini) {
+                                                return (
+                                                  <span className="text-[11px] text-white/40 text-center py-1">
+                                                    {t('mini.goToTerminal', 'Please approve in the terminal')}
+                                                  </span>
+                                                )
+                                              }
+                                              const jumpLabel = cs.source === 'hermes'
+                                                ? (hermesPlatLabel ? t('mini.viewInHermes', 'Go to Hermes').replace('Hermes', hermesPlatLabel) : t('mini.viewInHermes', 'Go to Hermes'))
+                                                : cs.source === 'gemini'
+                                                ? t('mini.viewInGemini', '前往 Gemini')
+                                                : t('mini.viewInCodex', '前往 Codex')
                                               return (
                                                 <>
                                                   <button
                                                     data-no-drag
                                                     onClick={(e) => {
                                                       e.stopPropagation()
-                                                      invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                                      if (cs.source === 'hermes' && cs.platform) {
+                                                        const p = (cs.platform || '').toLowerCase()
+                                                        const appName =
+                                                          p.includes('feishu') || p.includes('lark') ? 'Lark'
+                                                          : p.includes('telegram') ? 'Telegram'
+                                                          : p.includes('discord') ? 'Discord'
+                                                          : p.includes('slack') ? 'Slack'
+                                                          : null
+                                                        if (appName) {
+                                                          invoke('activate_app', { appName }).catch(() => {})
+                                                        } else {
+                                                          invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                                        }
+                                                      } else {
+                                                        invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
+                                                      }
                                                       hoverExpandedRef.current = false
                                                       collapse()
                                                     }}
                                                     className="flex-1 py-1.5 rounded-md text-[12px] font-normal bg-[#27272a] text-slate-300 hover:bg-[#303033] transition-colors"
                                                   >
-                                                    {t('mini.viewInCodex', '前往 Codex')}
+                                                    {jumpLabel}
                                                   </button>
                                                   <button
                                                     data-no-drag
                                                     onClick={(e) => {
                                                       e.stopPropagation()
+                                                      // Hide buttons for this session's current waiting cycle.
+                                                      // Cleared automatically when session leaves waiting state.
+                                                      setDismissedWaitingIds((prev) => {
+                                                        const next = new Set(prev)
+                                                        next.add(cs.sessionId)
+                                                        return next
+                                                      })
                                                       hoverExpandedRef.current = false
                                                       collapse()
                                                     }}
@@ -5015,12 +5325,21 @@ export default function Mini() {
                                           className="flex items-center justify-between px-3 py-2 border-b border-[#2a2a2e] cursor-pointer hover:bg-[#222226] transition-colors"
                                           onClick={(e) => {
                                             e.stopPropagation()
-                                            setCompletionSessionId(null)
+                                            // Fire the jump first so focus shifts to the target app
+                                            // immediately, then close the mini panel directly.
+                                            // Going through collapse() (instead of just clearing
+                                            // completionSessionId) avoids the flash where the panel
+                                            // stays open re-rendered with the full session list
+                                            // until focus blur eventually triggers a close.
                                             if (cs.source === 'cursor') {
                                               invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
-                                            } else {
+                                            } else if (!(isWindowsPlatform && cs.source === 'gemini')) {
+                                              // Gemini on Windows runs in a terminal whose window can't be
+                                              // reliably targeted from the detached process tree, so don't
+                                              // attempt to jump — just dismiss the popup.
                                               invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch(() => {})
                                             }
+                                            collapseFnRef.current?.()
                                           }}
                                         >
                                           <span className="text-[12px] text-slate-300 truncate">
@@ -5036,11 +5355,15 @@ export default function Mini() {
                                           <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
                                         </div>
                                         <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin text-[12px] text-slate-400 leading-[1.6] markdown-content">
-                                          {(cs.source === 'cursor' || cs.source === 'codex') && cs.lastResponse === '✓' ? (
+                                          {(cs.source === 'cursor' || cs.source === 'codex' || cs.source === 'gemini') && cs.lastResponse === '✓' ? (
                                             <p>
                                               {cs.source === 'codex'
                                                 ? t('mini.codeDone', 'Code has finished working. Click to view.')
-                                                : t('mini.cursorDone', 'Cursor has finished working. Click to view.')}
+                                                : cs.source === 'gemini'
+                                                  ? (isWindowsPlatform
+                                                      ? t('mini.geminiDoneNoJump', 'Gemini has finished working.')
+                                                      : t('mini.geminiDone', 'Gemini has finished working. Click to view.'))
+                                                  : t('mini.cursorDone', 'Cursor has finished working. Click to view.')}
                                             </p>
                                           ) : (
                                             <ReactMarkdown>{cs.lastResponse}</ReactMarkdown>
@@ -5292,6 +5615,8 @@ export default function Mini() {
                               ...(isWindowsPlatform && enableClaudeDesktop ? ['Claude Code Desktop'] : []),
                               ...(enableCodex ? ['Codex'] : []),
                               ...(enableCursor ? ['Cursor'] : []),
+                              ...(enableGemini ? ['Gemini'] : []),
+                              ...(enableHermes ? ['Hermes'] : []),
                             ]
                             return targets.length > 0 ? <p className="text-slate-500 text-sm font-medium">{t('mini.startTracking', { targets: targets.join(' / ') })}</p> : null
                           })()}
@@ -5322,7 +5647,7 @@ export default function Mini() {
                               data: cs,
                               claudeIdx: ci,
                               active: cs.status === 'processing' || cs.status === 'tool_running',
-                              updatedAt: cs.updatedAt || 0,
+                              updatedAt: cs.updatedAt ? new Date(cs.updatedAt).getTime() : 0,
                             }))
                             const merged = [...unified, ...claudeUnified].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
 
@@ -5376,7 +5701,10 @@ export default function Mini() {
                                 )
                               } else {
                                 const cs = item.data
-                                const projectName = cs.cwd ? cs.cwd.split('/').pop() : 'unknown'
+                                // Hermes title mirrors OpenClaw: stable identity + sequence,
+                                // never the question (the question is appended separately below).
+                                const hermesTitle = `Hermes #${getHermesSeq(cs.sessionId)}`
+                                const projectName = cs.source === 'hermes' ? hermesTitle : (cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : 'unknown')
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
                                 const statusText = cs.tool
@@ -5424,6 +5752,9 @@ export default function Mini() {
                                       onClick={(e) => {
                                         e.stopPropagation()
                                         invoke('remove_claude_session', { sessionId: cs.sessionId }).catch(() => {})
+                                        // Remote (ssh:) sessions bypass the backend dismissed
+                                        // filter, so also record the dismissal on the frontend.
+                                        if (cs.sessionId.startsWith('ssh:')) remoteDismissedRef.current.set(cs.sessionId, Date.now())
                                         setClaudeSessions((prev) => prev.filter((s) => s.sessionId !== cs.sessionId))
                                       }}
                                       className="shrink-0 text-slate-600 hover:text-rose-500 transition-colors outline-none"
@@ -5494,7 +5825,29 @@ export default function Mini() {
                   exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
                   transition={{ duration: 0.25, delay: 0.05 }}
                 >
-                  <ClaudeStatsView source={claudeStatsSource} />
+                  <ClaudeStatsView
+                    source={claudeStatsSource}
+                    isActive={claudeStatsSource === 'hermes' ? (() => {
+                      const sid = claudeStatsSessionId
+                      if (sid && claudeStatsSsh) {
+                        const fullSid = `ssh:${claudeStatsSsh.host}:${sid}`
+                        const s = claudeSessions.find(s => s.sessionId === fullSid)
+                        return s ? s.status === 'processing' || s.status === 'tool_running' : false
+                      }
+                      const s = claudeSessions.find(s => s.source === 'hermes' && s.sessionId === sid)
+                      return s ? s.status === 'processing' || s.status === 'tool_running' : false
+                    })() : undefined}
+                    channel={claudeStatsSource === 'hermes' ? (() => {
+                      const sid = claudeStatsSessionId
+                      if (sid && claudeStatsSsh) {
+                        const fullSid = `ssh:${claudeStatsSsh.host}:${sid}`
+                        return claudeSessions.find(s => s.sessionId === fullSid)?.platform || undefined
+                      }
+                      return claudeSessions.find(s => s.source === 'hermes' && s.sessionId === sid)?.platform || undefined
+                    })() : undefined}
+                    sshConn={claudeStatsSsh ?? undefined}
+                    hermesSessionId={claudeStatsSessionId ?? undefined}
+                  />
                 </motion.div>
               ) : (
                 /* ===== Agent detail panel (ui-2 style) ===== */
@@ -5743,6 +6096,20 @@ export default function Mini() {
                           await store.set('cursor_sound_enabled', v)
                           await store.save()
                         }}
+                        geminiSoundEnabled={geminiSoundEnabled}
+                        onToggleGeminiSoundEnabled={async (v) => {
+                          setGeminiSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('gemini_sound_enabled', v)
+                          await store.save()
+                        }}
+                        hermesSoundEnabled={hermesSoundEnabled}
+                        onToggleHermesSoundEnabled={async (v) => {
+                          setHermesSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('hermes_sound_enabled', v)
+                          await store.save()
+                        }}
                         waitingSound={waitingSound}
                         onToggleWaitingSound={async (v) => {
                           setWaitingSound(v)
@@ -5796,7 +6163,7 @@ export default function Mini() {
                         }}
                         largeMascotScale={largeMascotScale}
                         onChangeLargeMascotScale={async (v) => {
-                          const clamped = Math.min(6, Math.max(4, v))
+                          const clamped = Math.min(6, Math.max(1, v))
                           setLargeMascotScale(clamped)
                           largeMascotScaleRef.current = clamped
                           const store = await getStore()
