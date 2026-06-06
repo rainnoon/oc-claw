@@ -1,27 +1,27 @@
 {
   "platforms": {
     "macos": {
-      "version": "1.8.4",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.4/oc-claw_1.8.4_aarch64.dmg",
+      "version": "1.8.5",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.5/oc-claw_1.8.5_aarch64.dmg",
       "notes_i18n": {
-        "zh": "支持 Windows 上的 Cursor，双端 Claude Code Desktop，新增开机自启动",
-        "en": "Cursor on Windows, Claude Code Desktop on macOS and Windows, launch-on-login",
-        "ja": "Windows での Cursor、macOS / Windows 両対応の Claude Code Desktop、ログイン時に自動起動",
-        "ko": "Windows 에서 Cursor 지원, macOS / Windows 양쪽 Claude Code Desktop 지원, 로그인 시 자동 실행",
-        "es": "Cursor en Windows, Claude Code Desktop en macOS y Windows, inicio al iniciar sesión",
-        "fr": "Cursor sous Windows, Claude Code Desktop sur macOS et Windows, démarrage à la connexion"
+        "zh": "新增 Gemini CLI 与 Hermes Agent 集成；多项 Windows 与稳定性修复",
+        "en": "Gemini CLI and Hermes Agent integrations; various Windows and stability fixes",
+        "ja": "Gemini CLI と Hermes Agent の統合を追加、Windows と安定性の各種修正",
+        "ko": "Gemini CLI 및 Hermes Agent 통합 추가, 다양한 Windows 및 안정성 수정",
+        "es": "Integraciones de Gemini CLI y Hermes Agent; varias correcciones de Windows y estabilidad",
+        "fr": "Intégrations Gemini CLI et Hermes Agent ; diverses corrections Windows et de stabilité"
       }
     },
     "windows": {
-      "version": "1.8.4",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.4/oc-claw_1.8.4_x64-setup.exe",
+      "version": "1.8.5",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.5/oc-claw_1.8.5_x64-setup.exe",
       "notes_i18n": {
-        "zh": "支持 Windows 上的 Cursor，双端 Claude Code Desktop，新增开机自启动",
-        "en": "Cursor on Windows, Claude Code Desktop on macOS and Windows, launch-on-login",
-        "ja": "Windows での Cursor、macOS / Windows 両対応の Claude Code Desktop、ログイン時に自動起動",
-        "ko": "Windows 에서 Cursor 지원, macOS / Windows 양쪽 Claude Code Desktop 지원, 로그인 시 자동 실행",
-        "es": "Cursor en Windows, Claude Code Desktop en macOS y Windows, inicio al iniciar sesión",
-        "fr": "Cursor sous Windows, Claude Code Desktop sur macOS et Windows, démarrage à la connexion"
+        "zh": "新增 Gemini CLI 与 Hermes Agent 集成；多项 Windows 与稳定性修复",
+        "en": "Gemini CLI and Hermes Agent integrations; various Windows and stability fixes",
+        "ja": "Gemini CLI と Hermes Agent の統合を追加、Windows と安定性の各種修正",
+        "ko": "Gemini CLI 및 Hermes Agent 통합 추가, 다양한 Windows 및 안정성 수정",
+        "es": "Integraciones de Gemini CLI y Hermes Agent; varias correcciones de Windows y estabilidad",
+        "fr": "Intégrations Gemini CLI et Hermes Agent ; diverses corrections Windows et de stabilité"
       }
     }
   },
