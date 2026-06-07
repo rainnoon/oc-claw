@@ -7180,8 +7180,12 @@ fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
 
 fn collect_codex_session_jsonl_files() -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
-    let codex_sessions = home.join(".Codex").join("sessions");
-    collect_jsonl_files_recursive(&codex_sessions)
+    let mut out = collect_jsonl_files_recursive(&home.join(".codex").join("sessions"));
+    let legacy_sessions = home.join(".Codex").join("sessions");
+    if legacy_sessions.exists() {
+        out.extend(collect_jsonl_files_recursive(&legacy_sessions));
+    }
+    out
 }
 
 fn find_claude_session_file(session_id: &str) -> Option<PathBuf> {
@@ -7196,7 +7200,7 @@ fn find_claude_session_file(session_id: &str) -> Option<PathBuf> {
 
 fn find_codex_session_file(session_id: &str) -> Option<PathBuf> {
     // Codex stores sessions as:
-    //   ~/.Codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl
+    //   ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl
     // so we cannot derive the path from cwd; we must scan for a filename
     // containing the session id.
     for path in collect_codex_session_jsonl_files() {
@@ -7208,6 +7212,62 @@ fn find_codex_session_file(session_id: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn ensure_codex_hooks_feature_enabled(codex_dir: &std::path::Path) -> Result<(), String> {
+    let config_path = codex_dir.join("config.toml");
+    let mut content = if config_path.exists() {
+        std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+
+    let mut lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+    let mut features_start: Option<usize> = None;
+    let mut features_end = lines.len();
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "[features]" {
+            features_start = Some(idx);
+            continue;
+        }
+        if features_start.is_some()
+            && idx > features_start.unwrap_or(0)
+            && trimmed.starts_with('[')
+            && trimmed.ends_with(']')
+        {
+            features_end = idx;
+            break;
+        }
+    }
+
+    if let Some(start) = features_start {
+        let mut found = false;
+        for line in lines.iter_mut().take(features_end).skip(start + 1) {
+            let trimmed = line.trim_start();
+            if (trimmed.starts_with("hooks ")
+                || trimmed.starts_with("hooks=")
+                || trimmed.starts_with("hooks\t"))
+                && trimmed.contains('=')
+            {
+                *line = "hooks = true".to_string();
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            lines.insert(start + 1, "hooks = true".to_string());
+        }
+        content = lines.join("\n");
+    } else {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str("\n[features]\nhooks = true\n");
+    }
+
+    std::fs::write(&config_path, content).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn resolve_session_jsonl_path(session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
@@ -12006,78 +12066,120 @@ try {
     std::fs::write(&settings_path, serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
 
-    // Keep Codex desktop integration in sync with Claude integration.
-    // Frontend still invokes `install_claude_hooks`, so we install both
-    // hook systems here to avoid requiring frontend API changes.
-    install_codex_hooks().await?;
-
     Ok(())
 }
 
+#[tauri::command]
 async fn install_codex_hooks() -> Result<(), String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
-    let codex_dir = home.join(".Codex");
+    let codex_dir = home.join(".codex");
     let hooks_dir = codex_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
 
-    // Codex support is dropped on Windows. Same as the cursor branch above:
-    // proactively delete any previously-installed hook script and strip our
-    // entries from hooks.json so the codex CLI cannot reach the oc-claw
-    // socket on this machine anymore.
+    #[cfg(windows)]
+    let hook_path = hooks_dir.join("ooclaw-codex-hook.ps1");
+    #[cfg(not(windows))]
+    let hook_path = hooks_dir.join("ooclaw-codex-hook.sh");
+
     #[cfg(windows)]
     {
-        let _ = std::fs::remove_file(hooks_dir.join("ooclaw-codex-hook.ps1"));
-        // Codex's home is conventionally `.codex` on Windows but the install
-        // path used `.Codex` historically — the file system is case-
-        // insensitive so we clean the same dir, but also catch the
-        // lowercase variant explicitly in case both ever exist.
-        let alt = home.join(".codex").join("hooks").join("ooclaw-codex-hook.ps1");
-        if alt.exists() {
-            let _ = std::fs::remove_file(&alt);
+        let hook_script = r#"$ErrorActionPreference = 'SilentlyContinue'
+param([string]$HookEvent = '')
+try {
+    $stdin = [System.Console]::OpenStandardInput()
+    $ms = New-Object System.IO.MemoryStream
+    $buffer = New-Object byte[] 8192
+    while (($n = $stdin.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        $ms.Write($buffer, 0, $n)
+    }
+    $bytes = $ms.ToArray()
+    if ($bytes.Length -eq 0) { [Console]::Out.Write('{}'); exit 0 }
+
+    $offset = 0
+    $count = $bytes.Length
+    if ($count -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $offset = 3
+        $count = $count - 3
+    }
+
+    $raw = [System.Text.Encoding]::UTF8.GetString($bytes, $offset, $count)
+    if ([string]::IsNullOrWhiteSpace($raw)) { [Console]::Out.Write('{}'); exit 0 }
+    try {
+        if ($env:OC_CLAW_DEBUG_CODEX_HOOK -eq '1') {
+            $debugPath = Join-Path $env:TEMP 'oc-claw-codex-hook-last.json'
+            ('event=' + $HookEvent + "`n" + $raw) | Set-Content -LiteralPath $debugPath -Encoding UTF8
         }
-        for hooks_json_path in [codex_dir.join("hooks.json"), home.join(".codex").join("hooks.json")] {
-            if !hooks_json_path.exists() { continue; }
-            let Ok(content) = std::fs::read_to_string(&hooks_json_path) else { continue; };
-            let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) else { continue; };
-            if let Some(hooks) = config.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-                let event_names: Vec<String> = hooks.keys().cloned().collect();
-                for name in event_names {
-                    if let Some(arr) = hooks.get_mut(&name).and_then(|v| v.as_array_mut()) {
-                        arr.retain(|entry| {
-                            let cmd_match = entry.get("command").and_then(|c| c.as_str())
-                                .map(|c| c.contains("ooclaw-codex-hook"))
-                                .unwrap_or(false);
-                            let nested_match = entry.get("hooks").and_then(|hs| hs.as_array())
-                                .map(|hs| hs.iter().any(|inner| {
-                                    inner.get("command").and_then(|c| c.as_str())
-                                        .map(|c| c.contains("ooclaw-codex-hook"))
-                                        .unwrap_or(false)
-                                }))
-                                .unwrap_or(false);
-                            !(cmd_match || nested_match)
-                        });
-                        if arr.is_empty() {
-                            hooks.remove(&name);
-                        }
+    } catch {}
+
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json } catch {}
+    if ($obj -ne $null) {
+        if (-not $obj.source) { $obj | Add-Member -NotePropertyName source -NotePropertyValue 'codex' -Force }
+        if (-not $obj.hook_event_name) {
+            $eventName = ''
+            if ($obj.event) { $eventName = [string]$obj.event }
+            elseif ($obj.codex_event_type) { $eventName = [string]$obj.codex_event_type }
+            elseif ($HookEvent) { $eventName = $HookEvent }
+            if ($eventName) { $obj | Add-Member -NotePropertyName hook_event_name -NotePropertyValue $eventName -Force }
+        }
+        if (-not $obj.cwd -and -not $obj.workdir) {
+            try { $obj | Add-Member -NotePropertyName cwd -NotePropertyValue (Get-Location).Path -Force } catch {}
+        }
+        if (-not $obj.pid) {
+            try {
+                $current = $PID
+                for ($i = 0; $i -lt 10; $i++) {
+                    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$current"
+                    if (-not $proc) { break }
+                    $parentId = $proc.ParentProcessId
+                    if (-not $parentId -or $parentId -eq 0 -or $parentId -eq $current) { break }
+                    $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId"
+                    if (-not $parent) { break }
+                    $exe = ''
+                    if ($parent.ExecutablePath) { $exe = $parent.ExecutablePath.ToLower() }
+                    if ($exe -and ($exe.EndsWith('\codex.exe') -or $exe.EndsWith('\node.exe') -or $exe.EndsWith('\powershell.exe') -or $exe.EndsWith('\pwsh.exe'))) {
+                        $obj | Add-Member -NotePropertyName pid -NotePropertyValue ([int]$parent.ProcessId) -Force
+                        break
                     }
+                    $current = $parentId
                 }
-            }
-            if let Ok(json_str) = serde_json::to_string_pretty(&config) {
-                let _ = std::fs::write(&hooks_json_path, json_str);
-            }
+            } catch {}
         }
-        log::info!("[codex_hooks] codex support disabled on windows; cleaned previously installed hooks");
-        return Ok(());
+        $raw = $obj | ConvertTo-Json -Compress -Depth 30
+    }
+
+    $hookName = ''
+    if ($obj -ne $null -and $obj.hook_event_name) { $hookName = [string]$obj.hook_event_name }
+    if (-not $hookName -and $HookEvent) { $hookName = $HookEvent }
+
+    try {
+        $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
+        $stream = $client.GetStream()
+        $payload = [System.Text.Encoding]::UTF8.GetBytes($raw)
+        $stream.Write($payload, 0, $payload.Length)
+        $stream.Flush()
+        $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+
+        if ($hookName -eq 'PermissionRequest') {
+            $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+            $response = $reader.ReadToEnd()
+            if ($response) { [Console]::Out.Write($response) } else { [Console]::Out.Write('{}') }
+            $reader.Close()
+        } else {
+            [Console]::Out.Write('{}')
+        }
+        $client.Close()
+    } catch {
+        [Console]::Out.Write('{}')
+    }
+} catch {
+    try { [Console]::Out.Write('{}') } catch {}
+}
+"#;
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
     }
 
     #[cfg(not(windows))]
-    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
-
-    #[cfg(unix)]
-    let hook_path = hooks_dir.join("ooclaw-codex-hook.sh");
-    #[cfg(windows)]
-    let hook_path = hooks_dir.join("ooclaw-codex-hook.ps1");
-
-    #[cfg(unix)]
     {
         let hook_script = r#"#!/bin/bash
 # ooclaw Codex hook - forwards events to /tmp/ooclaw-claude.sock
@@ -12176,58 +12278,6 @@ except:
             .map_err(|e| e.to_string())?;
     }
 
-    #[cfg(windows)]
-    {
-        // On Windows, keep the hook simple: forward Codex JSON to the existing
-        // oc-claw TCP hook server. `process_claude_event` handles both Codex
-        // and Claude field variants.
-        let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
-[Console]::InputEncoding = [System.Text.Encoding]::UTF8
-try {
-    $raw = [Console]::In.ReadToEnd()
-    if ([string]::IsNullOrWhiteSpace($raw)) {
-        [Console]::Out.Write('{}')
-        exit 0
-    }
-
-    $obj = $null
-    try { $obj = $raw | ConvertFrom-Json } catch {}
-    if ($obj -ne $null) {
-        $ccPid = $null; try { $cur = $PID; for ($i = 0; $i -lt 8; $i++) { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$cur"; if (-not $p) { break }; $cur = $p.ParentProcessId; if ($cur -le 0) { break }; $pp = Get-CimInstance Win32_Process -Filter "ProcessId=$cur"; if ($pp -and $pp.Name -eq 'claude.exe' -and $pp.ExecutablePath -and $pp.ExecutablePath.ToLower().Contains('windowsapps')) { $ccPid = $cur; break } } } catch {}
-        if (-not $obj.source) { $obj.source = 'codex' }
-        if ($ccPid -and -not $obj.pid) { $obj | Add-Member -NotePropertyName pid -NotePropertyValue $ccPid -Force }
-        if (-not $obj.hook_event_name -and $obj.codex_event_type) { $obj.hook_event_name = $obj.codex_event_type }
-        if (-not $obj.cwd -and -not $obj.workdir) { $obj.cwd = (Get-Location).Path }
-        $raw = $obj | ConvertTo-Json -Compress -Depth 20
-    }
-
-    $hookName = ''
-    if ($obj -ne $null -and $obj.hook_event_name) { $hookName = [string]$obj.hook_event_name }
-
-    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
-    $stream = $client.GetStream()
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Flush()
-    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
-
-    if ($hookName -eq 'PermissionRequest') {
-        $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
-        $response = $reader.ReadToEnd()
-        if ($response) { [Console]::Out.Write($response) } else { [Console]::Out.Write('{}') }
-        $reader.Close()
-    } else {
-        [Console]::Out.Write('{}')
-    }
-    [Console]::Out.Flush()
-    $client.Close()
-} catch {
-    try { [Console]::Out.Write('{}'); [Console]::Out.Flush() } catch {}
-}
-"#;
-        std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
-    }
-
     let hooks_json_path = codex_dir.join("hooks.json");
     let mut config: serde_json::Value = if hooks_json_path.exists() {
         let content = std::fs::read_to_string(&hooks_json_path).map_err(|e| e.to_string())?;
@@ -12241,44 +12291,87 @@ try {
     let hooks = config["hooks"].as_object_mut().ok_or("hooks is not an object")?;
 
     #[cfg(windows)]
-    let hook_command = format!(
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+    let hook_command_windows_base = format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
         hook_path.to_string_lossy().replace('\\', "/"),
     );
     #[cfg(not(windows))]
-    let hook_command = hook_path.to_string_lossy().to_string();
+    let hook_command_base = hook_path.to_string_lossy().to_string();
 
     let has_our_hook = |entry: &serde_json::Value| -> bool {
         let is_ours = |cmd: &str| -> bool {
-            cmd == hook_command || cmd.contains("ooclaw-codex-hook")
+            cmd.contains("ooclaw-codex-hook")
         };
         entry.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c))
+            || entry
+                .get("command_windows")
+                .and_then(|c| c.as_str())
+                .map_or(false, |c| is_ours(c))
             || entry.get("hooks").and_then(|hs| hs.as_array()).map_or(false, |hs| {
-                hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c)))
+                hs.iter().any(|inner| {
+                    inner
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .map_or(false, |c| is_ours(c))
+                        || inner
+                            .get("command_windows")
+                            .and_then(|c| c.as_str())
+                            .map_or(false, |c| is_ours(c))
+                })
             })
     };
 
-    let hook_def = serde_json::json!({"type": "command", "command": hook_command});
-    let event_names = [
-        "SessionStart",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PermissionRequest",
-        "Stop",
-        "StopFailure",
-        "SubagentStop",
+    for event_hooks in hooks.values_mut() {
+        if let Some(list) = event_hooks.as_array_mut() {
+            list.retain(|entry| !has_our_hook(entry));
+        }
+    }
+
+    #[cfg(windows)]
+    let make_hook_def = |event_name: &str| {
+        let hook_command = format!("{} {}", hook_command_windows_base, event_name);
+        serde_json::json!({
+            "type": "command",
+            "command": hook_command.clone(),
+            "command_windows": hook_command,
+            "timeoutSec": 5,
+        })
+    };
+    #[cfg(not(windows))]
+    let make_hook_def = |_event_name: &str| {
+        serde_json::json!({
+            "type": "command",
+            "command": hook_command_base.clone(),
+            "timeoutSec": 5,
+        })
+    };
+
+    let hook_configs = vec![
+        ("SessionStart", false),
+        ("UserPromptSubmit", false),
+        ("PreToolUse", true),
+        ("PostToolUse", true),
+        ("PermissionRequest", true),
+        ("Stop", false),
+        ("StopFailure", false),
+        ("SubagentStop", false),
     ];
-    for event_name in event_names {
+    for (event_name, needs_matcher) in hook_configs {
+        let hook_def = make_hook_def(event_name);
         let arr = hooks.entry(event_name.to_string()).or_insert(serde_json::json!([]));
         let list = arr.as_array_mut().ok_or("hook event is not an array")?;
-        list.retain(|entry| !has_our_hook(entry));
-        list.push(serde_json::json!({"hooks": [hook_def.clone()]}));
+        if needs_matcher {
+            list.push(serde_json::json!({"matcher": "*", "hooks": [hook_def.clone()]}));
+        } else {
+            list.push(serde_json::json!({"hooks": [hook_def.clone()]}));
+        }
     }
 
     let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(&hooks_json_path, json_str).map_err(|e| e.to_string())?;
+    ensure_codex_hooks_feature_enabled(&codex_dir)?;
 
+    log::info!("[codex_hooks] installed hooks to {:?}", hooks_json_path);
     Ok(())
 }
 
@@ -15594,14 +15687,6 @@ fn start_claude_socket_server(
                                 );
                                 return;
                             }
-                            // Codex on Windows is still unsupported; keep the
-                            // drop guard until that integration is ported.
-                            if text.contains("\"source\":\"codex\"")
-                                || text.contains("\"source\": \"codex\"")
-                            {
-                                log::info!("[claude_tcp] dropping codex-originated event on windows (len={})", text.len());
-                                return;
-                            }
                             if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
                                     let source = {
@@ -15909,6 +15994,9 @@ pub fn run() {
             // Install Claude + Codex hooks on every startup (idempotent)
             if let Err(e) = tauri::async_runtime::block_on(install_claude_hooks()) {
                 log::warn!("Failed to install Claude hooks on startup: {}", e);
+            }
+            if let Err(e) = tauri::async_runtime::block_on(install_codex_hooks()) {
+                log::warn!("Failed to install Codex hooks on startup: {}", e);
             }
             // Install Cursor hooks + terminal-focus extension on startup (idempotent)
             if let Err(e) = tauri::async_runtime::block_on(install_cursor_hooks()) {
@@ -16235,7 +16323,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, set_outside_click_watch, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, set_outside_click_watch, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_codex_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())

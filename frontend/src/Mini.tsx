@@ -507,7 +507,7 @@ export default function Mini() {
   // currently fold both flows into `enableClaudeCode`, so this defaults to
   // mirror that flag everywhere except Windows.
   const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
-  const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
+  const [enableCodex, setEnableCodex] = useState(true)
   const [enableCursor, setEnableCursor] = useState(true)
   const [enableGemini, setEnableGemini] = useState(true)
   const [hermesConns, setHermesConns] = useState<{ id: string; type: 'local' | 'remote'; host?: string; user?: string }[]>([])
@@ -2033,11 +2033,12 @@ export default function Mini() {
       const ccDesktopEnabled = typeof ccDesktop === 'boolean' ? ccDesktop : true
       setEnableClaudeDesktop(ccDesktopEnabled)
       const cod = await store.get('enable_codex')
-      const codEnabled = isWindowsPlatform ? false : cod !== false
+      const codEnabled = cod !== false
       setEnableCodex(codEnabled)
       // Hook script is shared between CC CLI and CC Desktop, so install when
       // any of the Claude listeners are on.
-      if (cc !== false || codEnabled || ccDesktopEnabled) invoke('install_claude_hooks').catch(() => {})
+      if (cc !== false || ccDesktopEnabled) invoke('install_claude_hooks').catch(() => {})
+      if (codEnabled) invoke('install_codex_hooks').catch(() => {})
       const cur = await store.get('enable_cursor')
       const curEnabled = cur !== false
       setEnableCursor(curEnabled)
@@ -2050,11 +2051,6 @@ export default function Mini() {
       // Enablement now follows whether any connection is configured.
       const hermConns = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
       if (hermConns) setHermesConns(hermConns)
-      if (isWindowsPlatform) {
-        // Codex is not yet supported on Windows; keep it forced off.
-        await store.set('enable_codex', false)
-        await store.save()
-      }
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
       const codsnd = await store.get('codex_sound_enabled')
@@ -3274,7 +3270,7 @@ export default function Mini() {
           const ccDesktop = await store.get('enable_claude_desktop')
           setEnableClaudeDesktop(ccDesktop !== false)
           const cod = await store.get('enable_codex')
-          setEnableCodex(isWindowsPlatform ? false : cod !== false)
+          setEnableCodex(cod !== false)
           const cur = await store.get('enable_cursor')
           setEnableCursor(cur !== false)
           const gem = await store.get('enable_gemini')
@@ -3582,7 +3578,7 @@ export default function Mini() {
         const ccDesktop = await store.get('enable_claude_desktop')
         setEnableClaudeDesktop(ccDesktop !== false)
         const cod = await store.get('enable_codex')
-        setEnableCodex(isWindowsPlatform ? false : cod !== false)
+        setEnableCodex(cod !== false)
         const cur = await store.get('enable_cursor')
         setEnableCursor(cur !== false)
         const gem = await store.get('enable_gemini')

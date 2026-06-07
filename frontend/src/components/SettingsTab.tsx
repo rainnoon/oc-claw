@@ -688,7 +688,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
   const [hookStatus, setHookStatus] = useState('')
   const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
   const [claudeDesktopHookStatus, setClaudeDesktopHookStatus] = useState('')
-  const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
+  const [enableCodex, setEnableCodex] = useState(true)
   const [codexHookStatus, setCodexHookStatus] = useState('')
   const [enableCursor, setEnableCursor] = useState(true)
   const [cursorHookStatus, setCursorHookStatus] = useState('')
@@ -754,11 +754,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       const ccDesktop = await store.get('enable_claude_desktop')
       if (typeof ccDesktop === 'boolean') setEnableClaudeDesktop(ccDesktop)
       const cod = await store.get('enable_codex')
-      if (isWindowsPlatform) {
-        setEnableCodex(false)
-        await store.set('enable_codex', false)
-        await store.save()
-      } else if (typeof cod === 'boolean') setEnableCodex(cod)
+      setEnableCodex(cod !== false)
       const cur = await store.get('enable_cursor')
       if (typeof cur === 'boolean') setEnableCursor(cur)
       const gem = await store.get('enable_gemini')
@@ -940,7 +936,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     await store.save()
     if (val) {
       try {
-        await invoke('install_claude_hooks')
+        await invoke('install_codex_hooks')
         setCodexHookStatus(t('settings.hookInstalled'))
       } catch (e: any) {
         setCodexHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
@@ -1145,8 +1141,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </div>
       </section>
 
-      {!isWindowsPlatform && (
-      /* Codex (not yet supported on Windows) */
+      {/* Codex */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.codex', 'Codex')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -1160,7 +1155,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           </div>
         </div>
       </section>
-      )}
 
       {/* Cursor */}
       <section className="flex flex-col gap-4">
@@ -1371,7 +1365,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
           </div>
-          {!isWindowsPlatform && (
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.codexSound', 'Codex Completion Sound')}</span>
@@ -1379,7 +1372,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={codexSoundEnabled} onChange={onToggleCodexSoundEnabled} />
           </div>
-          )}
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.cursorSound', 'Cursor Completion Sound')}</span>
