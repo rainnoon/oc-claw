@@ -806,6 +806,21 @@ function ExtraMascotControls({
     [picker, handlePick, handleChangeExtra, onChangePrimary],
   )
 
+  // A special mascot (e.g. WebM 香企鹅) can only be the main one. In "add" mode
+  // treat picking it as adding a mascot at slot 1: demote the current codex
+  // main into the extras list first (nothing lost), then make the special pet
+  // the main. In "main"/"extra" edit modes it just becomes the main.
+  const handlePickSpecial = useCallback(
+    async (sp: SpecialPet) => {
+      if (picker?.mode === 'add' && primaryPet) {
+        await handlePick(primaryPet.id)
+      }
+      onChangePrimarySpecial?.(sp.id)
+      setPicker(null)
+    },
+    [picker, primaryPet, handlePick, onChangePrimarySpecial],
+  )
+
   const inner = (
     <div className={bare ? 'p-3 space-y-2' : 'border-t border-white/5 p-3 space-y-2'}>
         {primaryId && (
@@ -905,16 +920,13 @@ function ExtraMascotControls({
                 : t('petPicker.changeMascotHint')}
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {picker.mode === 'main' &&
+              {(picker.mode === 'main' || picker.mode === 'add') &&
                 (specialPets ?? []).map((sp) => (
                   <button
                     data-no-drag
                     key={sp.id}
                     disabled={busy}
-                    onClick={() => {
-                      onChangePrimarySpecial?.(sp.id)
-                      setPicker(null)
-                    }}
+                    onClick={() => void handlePickSpecial(sp)}
                     className="flex items-center gap-2 p-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-transparent hover:border-white/10 transition-colors disabled:opacity-60"
                   >
                     <div
