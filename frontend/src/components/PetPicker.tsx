@@ -20,7 +20,7 @@ import {
   loadCustomCodexPets,
   type CodexPet,
 } from '../lib/codexPet'
-import { saveExtraMascots } from '../lib/petStore'
+import { saveExtraMascots, loadMultiMascotMode, saveMultiMascotMode } from '../lib/petStore'
 
 // Non-codex entries shown at the top of the 看板娘 list (e.g. the legacy
 // WebM 香企鹅 character that doesn't have a sprite atlas). These render
@@ -84,6 +84,7 @@ export function PetPicker({
   petdexUrl,
   petdexFailed,
 }: PetPickerProps) {
+  const { t } = useTranslation()
   // Validate one more time before trusting the URL — the parent
   // already validates but a defensive check keeps a malformed string
   // from sneaking into open_url.
@@ -96,6 +97,21 @@ export function PetPicker({
   const [petsOpen, setPetsOpen] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
   const [queueAddOpen, setQueueAddOpen] = useState(false)
+  // Multi-mascot mode: when on, the picker body shows the extra-mascots
+  // manager instead of the single-select list (persisted).
+  const [multiMascot, setMultiMascot] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    void loadMultiMascotMode().then((v) => { if (!cancelled) setMultiMascot(v) })
+    return () => { cancelled = true }
+  }, [])
+  const toggleMultiMascot = useCallback(() => {
+    setMultiMascot((prev) => {
+      const next = !prev
+      void saveMultiMascotMode(next)
+      return next
+    })
+  }, [])
   // Anchors the bottom 创建 section so the header button can scroll it
   // into view when expanded from the top.
   const createSectionRef = useRef<HTMLDivElement | null>(null)
@@ -217,12 +233,35 @@ export function PetPicker({
   return (
     <div className="space-y-4">
       <PetSection
-        title="看板娘"
-        subtitle={selectedDisplayName ? `已选择 ${selectedDisplayName}` : null}
+        title={t('petPicker.mascots')}
+        subtitle={selectedDisplayName ? t('petPicker.selectedMascot', { name: selectedDisplayName }) : null}
         open={petsOpen}
         onToggle={() => setPetsOpen((v) => !v)}
         actions={
           <>
+            {showQueue && (
+              <button
+                data-no-drag
+                onClick={(e) => {
+                  e.stopPropagation()
+                  toggleMultiMascot()
+                }}
+                aria-pressed={multiMascot}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] text-white/45 hover:text-white/75 hover:bg-white/[0.04] transition-colors"
+                title={t('petPicker.multiMascotMode')}
+              >
+                <span>{t('petPicker.multiMascotMode')}</span>
+                <span
+                  className={`relative inline-flex items-center rounded-full transition-colors ${multiMascot ? 'bg-emerald-500/70' : 'bg-white/[0.12]'}`}
+                  style={{ width: 30, height: 17, padding: 2 }}
+                >
+                  <span
+                    className="bg-white rounded-full shadow-sm transition-transform"
+                    style={{ width: 13, height: 13, transform: multiMascot ? 'translateX(13px)' : 'translateX(0px)' }}
+                  />
+                </span>
+              </button>
+            )}
             <button
               data-no-drag
               onClick={(e) => {
@@ -249,34 +288,53 @@ export function PetPicker({
           </>
         }
       >
-        {(specialPets ?? []).map((pet) => (
-          <SpecialPetRow
-            key={pet.id}
-            pet={pet}
-            selected={pet.id === selectedId}
-            onSelect={() => onSelectSpecial?.(pet)}
+        {showQueue && multiMascot ? (
+          <ExtraMascotControls
+            bare
+            allPets={allPets}
+            onNativeDialogStart={onNativeDialogStart}
+            onNativeDialogEnd={onNativeDialogEnd}
+            primaryId={selectedId}
+            primaryName={selectedDisplayName}
+            primaryPet={selectedPet}
+            primaryAvatar={selectedSpecial?.avatar}
+            onChangePrimary={(id) => {
+              const p = findPet(id)
+              if (p) void onSelect(p)
+            }}
           />
-        ))}
-        {builtins.length === 0 && customs.length === 0 && (specialPets?.length ?? 0) === 0 ? (
-          <div className="text-xs text-white/30 px-4 py-6 text-center">没有看板娘</div>
         ) : (
           <>
-            {builtins.map((pet) => (
-              <PetRow
+            {(specialPets ?? []).map((pet) => (
+              <SpecialPetRow
                 key={pet.id}
                 pet={pet}
                 selected={pet.id === selectedId}
-                onSelect={() => onSelect(pet)}
+                onSelect={() => onSelectSpecial?.(pet)}
               />
             ))}
-            {customs.map((pet) => (
-              <PetRow
-                key={pet.id}
-                pet={pet}
-                selected={pet.id === selectedId}
-                onSelect={() => onSelect(pet)}
-              />
-            ))}
+            {builtins.length === 0 && customs.length === 0 && (specialPets?.length ?? 0) === 0 ? (
+              <div className="text-xs text-white/30 px-4 py-6 text-center">{t('petPicker.noMascots')}</div>
+            ) : (
+              <>
+                {builtins.map((pet) => (
+                  <PetRow
+                    key={pet.id}
+                    pet={pet}
+                    selected={pet.id === selectedId}
+                    onSelect={() => onSelect(pet)}
+                  />
+                ))}
+                {customs.map((pet) => (
+                  <PetRow
+                    key={pet.id}
+                    pet={pet}
+                    selected={pet.id === selectedId}
+                    onSelect={() => onSelect(pet)}
+                  />
+                ))}
+              </>
+            )}
           </>
         )}
       </PetSection>
@@ -379,14 +437,6 @@ export function PetPicker({
             )}
           </div>
         </div>
-      )}
-
-      {showQueue && (
-        <ExtraMascotControls
-          allPets={allPets}
-          onNativeDialogStart={onNativeDialogStart}
-          onNativeDialogEnd={onNativeDialogEnd}
-        />
       )}
 
       {showQueue && import.meta.env.DEV && (
@@ -579,13 +629,37 @@ function ExtraMascotControls({
   allPets,
   onNativeDialogStart,
   onNativeDialogEnd,
+  bare,
+  primaryId,
+  primaryName,
+  primaryPet,
+  primaryAvatar,
+  onChangePrimary,
 }: {
   allPets: CodexPet[]
   onNativeDialogStart?: () => void
   onNativeDialogEnd?: () => void
+  // When true, render only the inner list/add UI (no outer card or header),
+  // so it can sit inside the pet picker section under its shared header.
+  bare?: boolean
+  // The always-present main mascot (the mini window itself). Listed as the
+  // first row so every on-screen mascot shows up, and rendered/edited exactly
+  // like the extra ones (change pet in place, remove by promoting an extra).
+  primaryId?: string | null
+  primaryName?: string | null
+  primaryPet?: CodexPet | null
+  primaryAvatar?: React.ReactNode
+  // Change the main mascot's pet (maps to the single-select onSelect in the
+  // parent), so the first row is editable without leaving multi-mascot mode.
+  onChangePrimary?: (petId: string) => void
 }) {
+  const { t } = useTranslation()
   const [entries, setEntries] = useState<DemoEntry[]>([])
-  const [addOpen, setAddOpen] = useState(false)
+  // Which slot the pet grid is currently editing: add a new extra, swap the
+  // main mascot, or swap a specific extra (by window label). null = closed.
+  const [picker, setPicker] = useState<
+    { mode: 'add' } | { mode: 'main' } | { mode: 'extra'; label: string } | null
+  >(null)
   const [busy, setBusy] = useState(false)
 
   const findPet = useCallback(
@@ -635,7 +709,34 @@ function ExtraMascotControls({
         console.warn('[extra-mascot] spawn failed:', e)
       } finally {
         setBusy(false)
-        setAddOpen(false)
+        setPicker(null)
+        setTimeout(() => onNativeDialogEnd?.(), 600)
+      }
+    },
+    [busy, onNativeDialogStart, onNativeDialogEnd, persist],
+  )
+
+  // Swap an existing extra mascot's pet in place: close its window, spawn a
+  // new one with the chosen pet, and replace it at the same list position so
+  // ordering (and persisted respawn order) is preserved.
+  const handleChangeExtra = useCallback(
+    async (label: string, petId: string) => {
+      if (busy) return
+      setBusy(true)
+      onNativeDialogStart?.()
+      try {
+        try { await invoke('close_extra_mascot', { label }) } catch {}
+        const newLabel = (await invoke('spawn_extra_mascot', { petId })) as string
+        setEntries((prev) => {
+          const next = prev.map((e) => (e.label === label ? { label: newLabel, petId } : e))
+          void persist(next)
+          return next
+        })
+      } catch (e) {
+        console.warn('[extra-mascot] change failed:', e)
+      } finally {
+        setBusy(false)
+        setPicker(null)
         setTimeout(() => onNativeDialogEnd?.(), 600)
       }
     },
@@ -658,31 +759,90 @@ function ExtraMascotControls({
     [persist],
   )
 
-  return (
-    <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 overflow-hidden">
-      <div className="px-5 py-3 flex items-center gap-2">
-        <Sparkles className="w-3.5 h-3.5 text-white/40" strokeWidth={2} />
-        <span className="text-xs font-bold text-white/30 uppercase tracking-widest">
-          多看板娘
-        </span>
-        <span className="text-[11px] text-white/30">可以出现更多的看板娘</span>
-      </div>
-      <div className="border-t border-white/5 p-3 space-y-2">
-        {entries.length === 0 ? (
-          <div className="text-[11px] text-white/30 px-1 py-1.5">
-            点 "添加看板娘" 在桌面上多挂一个，可单独拖动，点击它会展开面板
-          </div>
-        ) : (
-          entries.map((entry, i) => {
-            const meta = findPet(entry.petId)
-            return (
+  // "Remove" the main mascot: the mini window can't be closed, so promote the
+  // first extra into it (main adopts that pet) and drop that extra window.
+  // Disabled when there are no extras (the main must always exist).
+  const handleRemovePrimary = useCallback(() => {
+    const first = entries[0]
+    if (!first) return
+    onChangePrimary?.(first.petId)
+    void handleRemove(first.label)
+  }, [entries, onChangePrimary, handleRemove])
+
+  // Route a pet pick from the shared grid to the slot currently being edited.
+  const pickPet = useCallback(
+    (petId: string) => {
+      if (!picker) return
+      if (picker.mode === 'add') {
+        void handlePick(petId)
+      } else if (picker.mode === 'main') {
+        onChangePrimary?.(petId)
+        setPicker(null)
+      } else {
+        void handleChangeExtra(picker.label, petId)
+      }
+    },
+    [picker, handlePick, handleChangeExtra, onChangePrimary],
+  )
+
+  const inner = (
+    <div className={bare ? 'p-3 space-y-2' : 'border-t border-white/5 p-3 space-y-2'}>
+        {primaryId && (
+          <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white/[0.04] border border-white/5">
+            <span className="text-[11px] text-white/30 w-5 text-center shrink-0">1</span>
+            <button
+              data-no-drag
+              onClick={() => setPicker({ mode: 'main' })}
+              disabled={busy}
+              className="flex items-center gap-3 flex-1 min-w-0 text-left disabled:opacity-60"
+            >
               <div
-                key={entry.label}
-                className="flex items-center gap-3 p-2.5 rounded-xl bg-white/[0.04] border border-white/5"
+                className="shrink-0 rounded-md bg-black/40 border border-white/10 overflow-hidden flex items-center justify-center"
+                style={{ width: 32, height: 32 }}
               >
-                <span className="text-[11px] text-white/30 w-5 text-center shrink-0">
-                  {i + 1}
-                </span>
+                {primaryPet ? (
+                  <SpritePet pet={primaryPet} state="idle" size={32} />
+                ) : primaryAvatar ? (
+                  primaryAvatar
+                ) : (
+                  <span className="text-[10px] text-white/30">?</span>
+                )}
+              </div>
+              <span className="text-sm text-white/80 truncate flex-1">
+                {primaryName ?? primaryId}
+              </span>
+            </button>
+            <button
+              data-no-drag
+              onClick={handleRemovePrimary}
+              disabled={entries.length === 0}
+              className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
+            >
+              <XIcon className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+        {!primaryId && entries.length === 0 && (
+          <div className="text-[11px] text-white/30 px-1 py-1.5">
+            {t('petPicker.extraMascotsEmpty')}
+          </div>
+        )}
+        {entries.map((entry, i) => {
+          const meta = findPet(entry.petId)
+          return (
+            <div
+              key={entry.label}
+              className="flex items-center gap-3 p-2.5 rounded-xl bg-white/[0.04] border border-white/5"
+            >
+              <span className="text-[11px] text-white/30 w-5 text-center shrink-0">
+                {primaryId ? i + 2 : i + 1}
+              </span>
+              <button
+                data-no-drag
+                onClick={() => setPicker({ mode: 'extra', label: entry.label })}
+                disabled={busy}
+                className="flex items-center gap-3 flex-1 min-w-0 text-left disabled:opacity-60"
+              >
                 <div
                   className="shrink-0 rounded-md bg-black/40 border border-white/10 overflow-hidden flex items-center justify-center"
                   style={{ width: 32, height: 32 }}
@@ -696,36 +856,40 @@ function ExtraMascotControls({
                 <span className="text-sm text-white/80 truncate flex-1">
                   {meta?.displayName ?? entry.petId}
                 </span>
-                <button
-                  data-no-drag
-                  onClick={() => handleRemove(entry.label)}
-                  className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
-                >
-                  <XIcon className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )
-          })
-        )}
+              </button>
+              <button
+                data-no-drag
+                onClick={() => handleRemove(entry.label)}
+                className="w-6 h-6 flex items-center justify-center rounded text-white/40 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+              >
+                <XIcon className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )
+        })}
         <button
           data-no-drag
-          onClick={() => setAddOpen((v) => !v)}
+          onClick={() => setPicker((p) => (p && p.mode === 'add' ? null : { mode: 'add' }))}
           disabled={busy}
           className="flex items-center gap-2 w-full p-2.5 rounded-xl border border-dashed border-white/10 text-white/40 hover:text-white/70 hover:border-white/20 hover:bg-white/[0.02] disabled:opacity-60 transition-colors"
         >
           <Plus className="w-4 h-4" />
-          <span className="text-sm">添加看板娘</span>
+          <span className="text-sm">{t('petPicker.addMascot')}</span>
         </button>
-        {addOpen && (
+        {picker && (
           <div className="rounded-xl border border-white/10 bg-black/30 p-3 max-h-[260px] overflow-y-auto scrollbar-hidden">
-            <div className="text-[11px] text-white/30 mb-2 px-1">点击宠物在桌面上多挂一个</div>
+            <div className="text-[11px] text-white/30 mb-2 px-1">
+              {picker.mode === 'add'
+                ? t('petPicker.extraMascotsPickHint')
+                : t('petPicker.changeMascotHint')}
+            </div>
             <div className="grid grid-cols-2 gap-2">
               {allPets.map((pet) => (
                 <button
                   data-no-drag
                   key={pet.id}
                   disabled={busy}
-                  onClick={() => handlePick(pet.id)}
+                  onClick={() => pickPet(pet.id)}
                   className="flex items-center gap-2 p-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-transparent hover:border-white/10 transition-colors disabled:opacity-60"
                 >
                   <div
@@ -743,6 +907,18 @@ function ExtraMascotControls({
           </div>
         )}
       </div>
+  )
+  if (bare) return inner
+  return (
+    <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 overflow-hidden">
+      <div className="px-5 py-3 flex items-center gap-2">
+        <Sparkles className="w-3.5 h-3.5 text-white/40" strokeWidth={2} />
+        <span className="text-xs font-bold text-white/30 uppercase tracking-widest">
+          {t('petPicker.extraMascots')}
+        </span>
+        <span className="text-[11px] text-white/30">{t('petPicker.extraMascotsDesc')}</span>
+      </div>
+      {inner}
     </div>
   )
 }
@@ -756,6 +932,7 @@ function DemoMascotControls({
   onNativeDialogStart?: () => void
   onNativeDialogEnd?: () => void
 }) {
+  const { t } = useTranslation()
   const [enabled, setEnabled] = useState(false)
   const [entries, setEntries] = useState<DemoEntry[]>([])
   const [addOpen, setAddOpen] = useState(false)
@@ -820,9 +997,9 @@ function DemoMascotControls({
         <div className="flex items-center gap-2">
           <Sparkles className="w-3.5 h-3.5 text-white/40" strokeWidth={2} />
           <span className="text-xs font-bold text-white/30 uppercase tracking-widest">
-            演示模式
+            {t('petPicker.demoMode')}
           </span>
-          <span className="text-[11px] text-white/30">独立窗口，状态共享</span>
+          <span className="text-[11px] text-white/30">{t('petPicker.demoModeDesc')}</span>
         </div>
         <button
           data-no-drag
@@ -847,7 +1024,7 @@ function DemoMascotControls({
         <div className="border-t border-white/5 p-3 space-y-2">
           {entries.length === 0 ? (
             <div className="text-[11px] text-white/30 px-1 py-1.5">
-              点 "添加看板娘" 在屏幕上多挂一个，可以单独拖动
+              {t('petPicker.demoModeEmpty')}
             </div>
           ) : (
             entries.map((entry, i) => {
@@ -891,11 +1068,11 @@ function DemoMascotControls({
             className="flex items-center gap-2 w-full p-2.5 rounded-xl border border-dashed border-white/10 text-white/40 hover:text-white/70 hover:border-white/20 hover:bg-white/[0.02] disabled:opacity-60 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            <span className="text-sm">添加看板娘</span>
+            <span className="text-sm">{t('petPicker.addMascot')}</span>
           </button>
           {addOpen && (
             <div className="rounded-xl border border-white/10 bg-black/30 p-3 max-h-[260px] overflow-y-auto scrollbar-hidden">
-              <div className="text-[11px] text-white/30 mb-2 px-1">点击宠物在屏幕上多挂一个</div>
+              <div className="text-[11px] text-white/30 mb-2 px-1">{t('petPicker.demoModePickHint')}</div>
               <div className="grid grid-cols-2 gap-2">
                 {allPets.map((pet) => (
                   <button

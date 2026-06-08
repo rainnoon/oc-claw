@@ -116,10 +116,9 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
     }
   }, [])
 
-  // Direct drag using the webview's setPosition. `core:window:allow-*`
-  // permissions in capabilities/default.json open this up for non-mini
-  // windows. macOS' acceptsFirstMouse swizzle ensures the first click
-  // delivers immediately even on a non-key floating window.
+  // Direct drag using the current webview's absolute position. Read the native
+  // position once on pointerdown, then coalesce move events through RAF so fast
+  // pointer bursts do not queue stale async window-position reads.
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0 || e.ctrlKey) return
     e.preventDefault()
@@ -128,14 +127,64 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
     const startX = e.screenX
     const startY = e.screenY
     let lastX = e.screenX
-    let lastY = e.screenY
     let dragging = false
     const pid = e.pointerId
+    let originX = 0
+    let originY = 0
+    let originReady = false
+    let targetX = 0
+    let targetY = 0
+    let rafId: number | null = null
+    let latestDxTotal = 0
+    let latestDyTotal = 0
+    let positionInFlight = false
+    let positionDirty = false
 
-    const onMove = async (ev: PointerEvent) => {
+    Promise.all([win.scaleFactor(), win.outerPosition()])
+      .then(([scale, pos]) => {
+        originX = pos.x / scale
+        originY = pos.y / scale
+        targetX = originX + latestDxTotal
+        targetY = originY + latestDyTotal
+        originReady = true
+        if (dragging) schedulePosition()
+      })
+      .catch(() => {
+        originReady = false
+      })
+
+    const flushPosition = () => {
+      rafId = null
+      if (!originReady || !dragActiveRef.current) return
+      if (positionInFlight) {
+        positionDirty = true
+        return
+      }
+      positionInFlight = true
+      const x = targetX
+      const y = targetY
+      win.setPosition(new LogicalPosition(x, y))
+        .catch(() => {})
+        .finally(() => {
+          positionInFlight = false
+          if (positionDirty && dragActiveRef.current) {
+            positionDirty = false
+            schedulePosition()
+          }
+        })
+    }
+
+    const schedulePosition = () => {
+      if (rafId !== null) return
+      rafId = requestAnimationFrame(flushPosition)
+    }
+
+    const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pid) return
+      const dxTotal = ev.screenX - startX
+      const dyTotal = ev.screenY - startY
       if (!dragging) {
-        if (Math.abs(ev.screenX - startX) + Math.abs(ev.screenY - startY) >= 3) {
+        if (Math.abs(dxTotal) + Math.abs(dyTotal) >= 3) {
           dragging = true
           // Force the hover/jump animation off so walkDir → run-left/run-right
           // is visible while dragging (otherwise the pointer stays over the
@@ -145,26 +194,27 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
           return
         }
       }
-      const dx = ev.screenX - lastX
-      const dy = ev.screenY - lastY
-      lastX = ev.screenX
-      lastY = ev.screenY
-      if (dx !== 0 || dy !== 0) {
-        try {
-          const scale = await win.scaleFactor()
-          const pos = await win.outerPosition()
-          await win.setPosition(
-            new LogicalPosition(pos.x / scale + dx, pos.y / scale + dy),
-          )
-        } catch {
-          /* permissions or focus loss; just drop the frame */
-        }
-        if (dx !== 0) setWalkDir(dx > 0 ? 1 : -1)
+      latestDxTotal = dxTotal
+      latestDyTotal = dyTotal
+      if (originReady) {
+        targetX = originX + latestDxTotal
+        targetY = originY + latestDyTotal
+        schedulePosition()
       }
+      const dx = ev.screenX - lastX
+      lastX = ev.screenX
+      if (dx !== 0) setWalkDir(dx > 0 ? 1 : -1)
     }
 
     const cleanup = () => {
       dragActiveRef.current = false
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId)
+        rafId = null
+      }
+      if (originReady) {
+        win.setPosition(new LogicalPosition(targetX, targetY)).catch(() => {})
+      }
       setWalkDir(0)
       setDragging(false)
       window.removeEventListener('pointermove', onMove)

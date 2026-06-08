@@ -258,6 +258,24 @@
     "go": "GO"
   },
 
+  "petPicker": {
+    "mascots": "Mascots",
+    "selectedMascot": "Selected {{name}}",
+    "noMascots": "No mascots",
+    "extraMascots": "Multi Mascots",
+    "multiMascotMode": "Multi-mascot mode",
+    "primaryMascot": "Main",
+    "changeMascotHint": "Pick a pet to replace this mascot",
+    "extraMascotsDesc": "Show more mascots",
+    "extraMascotsEmpty": "Click \"Add Mascot\" to place another mascot on the desktop. It can be dragged separately, and clicking it opens the panel.",
+    "extraMascotsPickHint": "Click a pet to place another mascot on the desktop",
+    "demoMode": "Demo Mode",
+    "demoModeDesc": "Separate windows, shared status",
+    "demoModeEmpty": "Click \"Add Mascot\" to place another mascot on screen. It can be dragged separately.",
+    "demoModePickHint": "Click a pet to place another mascot on screen",
+    "addMascot": "Add Mascot"
+  },
+
   "updateModal": {
     "title": "Update Available",
     "availableSubtitle": "A new version of OC-CLAW is ready to install.",

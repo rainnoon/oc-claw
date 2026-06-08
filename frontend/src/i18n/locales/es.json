@@ -238,6 +238,24 @@
     "go": "IR"
   },
 
+  "petPicker": {
+    "mascots": "Mascotas",
+    "selectedMascot": "{{name}} seleccionada",
+    "noMascots": "No hay mascotas",
+    "extraMascots": "Varias mascotas",
+    "multiMascotMode": "Modo varias mascotas",
+    "primaryMascot": "Principal",
+    "changeMascotHint": "Elige una mascota para reemplazar esta",
+    "extraMascotsDesc": "Muestra más mascotas",
+    "extraMascotsEmpty": "Pulsa \"Añadir mascota\" para colocar otra en el escritorio. Puedes arrastrarla por separado y hacer clic para abrir el panel.",
+    "extraMascotsPickHint": "Haz clic en una mascota para colocar otra en el escritorio",
+    "demoMode": "Modo demo",
+    "demoModeDesc": "Ventanas independientes, estado compartido",
+    "demoModeEmpty": "Pulsa \"Añadir mascota\" para colocar otra en la pantalla. Puedes arrastrarla por separado.",
+    "demoModePickHint": "Haz clic en una mascota para colocar otra en la pantalla",
+    "addMascot": "Añadir mascota"
+  },
+
   "character": {
     "trackAgent": "Seguir agente",
     "trackAgentDesc": "El estado y chat de la mascota se vincularán a este agente",

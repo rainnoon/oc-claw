@@ -238,6 +238,24 @@
     "go": "시작"
   },
 
+  "petPicker": {
+    "mascots": "마스코트",
+    "selectedMascot": "{{name}} 선택됨",
+    "noMascots": "마스코트가 없습니다",
+    "extraMascots": "멀티 마스코트",
+    "multiMascotMode": "멀티 마스코트 모드",
+    "primaryMascot": "메인",
+    "changeMascotHint": "펫을 선택해 이 마스코트를 교체",
+    "extraMascotsDesc": "마스코트를 더 표시할 수 있습니다",
+    "extraMascotsEmpty": "\"마스코트 추가\"를 눌러 데스크톱에 하나 더 배치하세요. 개별로 드래그할 수 있고, 클릭하면 패널이 열립니다.",
+    "extraMascotsPickHint": "펫을 클릭해 데스크톱에 마스코트 하나 더 배치",
+    "demoMode": "데모 모드",
+    "demoModeDesc": "독립 창, 상태 공유",
+    "demoModeEmpty": "\"마스코트 추가\"를 눌러 화면에 하나 더 배치하세요. 개별로 드래그할 수 있습니다.",
+    "demoModePickHint": "펫을 클릭해 화면에 마스코트 하나 더 배치",
+    "addMascot": "마스코트 추가"
+  },
+
   "character": {
     "trackAgent": "에이전트 추적",
     "trackAgentDesc": "데스크톱 펫 상태와 채팅을 이 에이전트에 바인딩",

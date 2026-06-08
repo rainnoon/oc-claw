@@ -238,6 +238,24 @@
     "go": "GO"
   },
 
+  "petPicker": {
+    "mascots": "マスコット",
+    "selectedMascot": "{{name}} を選択中",
+    "noMascots": "マスコットがありません",
+    "extraMascots": "複数マスコット",
+    "multiMascotMode": "複数マスコットモード",
+    "primaryMascot": "メイン",
+    "changeMascotHint": "ペットを選んでこのマスコットを置き換え",
+    "extraMascotsDesc": "さらにマスコットを表示できます",
+    "extraMascotsEmpty": "「マスコットを追加」を押すとデスクトップにもう1体配置できます。個別にドラッグでき、クリックするとパネルが開きます。",
+    "extraMascotsPickHint": "ペットをクリックしてデスクトップにもう1体配置",
+    "demoMode": "デモモード",
+    "demoModeDesc": "独立ウィンドウ、状態共有",
+    "demoModeEmpty": "「マスコットを追加」を押すと画面にもう1体配置できます。個別にドラッグできます。",
+    "demoModePickHint": "ペットをクリックして画面にもう1体配置",
+    "addMascot": "マスコットを追加"
+  },
+
   "character": {
     "trackAgent": "エージェントを追跡",
     "trackAgentDesc": "デスクトップペットのステータスとチャットをこのエージェントにバインド",

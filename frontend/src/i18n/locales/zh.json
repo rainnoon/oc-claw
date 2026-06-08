@@ -258,6 +258,24 @@
     "go": "开始"
   },
 
+  "petPicker": {
+    "mascots": "看板娘",
+    "selectedMascot": "已选择 {{name}}",
+    "noMascots": "没有看板娘",
+    "extraMascots": "多看板娘",
+    "multiMascotMode": "多看板娘模式",
+    "primaryMascot": "主",
+    "changeMascotHint": "点击宠物替换这只看板娘",
+    "extraMascotsDesc": "可以出现更多的看板娘",
+    "extraMascotsEmpty": "点“添加看板娘”在桌面上多挂一个，可单独拖动，点击它会展开面板",
+    "extraMascotsPickHint": "点击宠物在桌面上多挂一个",
+    "demoMode": "演示模式",
+    "demoModeDesc": "独立窗口，状态共享",
+    "demoModeEmpty": "点“添加看板娘”在屏幕上多挂一个，可以单独拖动",
+    "demoModePickHint": "点击宠物在屏幕上多挂一个",
+    "addMascot": "添加看板娘"
+  },
+
   "updateModal": {
     "title": "发现更新",
     "availableSubtitle": "OC-CLAW 新版本已可安装。",

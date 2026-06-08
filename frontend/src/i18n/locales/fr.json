@@ -238,6 +238,24 @@
     "go": "GO"
   },
 
+  "petPicker": {
+    "mascots": "Mascottes",
+    "selectedMascot": "{{name}} sélectionnée",
+    "noMascots": "Aucune mascotte",
+    "extraMascots": "Mascottes multiples",
+    "multiMascotMode": "Mode mascottes multiples",
+    "primaryMascot": "Principale",
+    "changeMascotHint": "Choisissez une mascotte pour remplacer celle-ci",
+    "extraMascotsDesc": "Afficher plus de mascottes",
+    "extraMascotsEmpty": "Cliquez sur « Ajouter une mascotte » pour en placer une autre sur le bureau. Elle peut être déplacée séparément et un clic ouvre le panneau.",
+    "extraMascotsPickHint": "Cliquez sur un animal pour placer une autre mascotte sur le bureau",
+    "demoMode": "Mode démo",
+    "demoModeDesc": "Fenêtres séparées, état partagé",
+    "demoModeEmpty": "Cliquez sur « Ajouter une mascotte » pour en placer une autre à l'écran. Elle peut être déplacée séparément.",
+    "demoModePickHint": "Cliquez sur un animal pour placer une autre mascotte à l'écran",
+    "addMascot": "Ajouter une mascotte"
+  },
+
   "character": {
     "trackAgent": "Suivre l'agent",
     "trackAgentDesc": "L'état et le chat de l'animal de compagnie seront liés à cet agent",

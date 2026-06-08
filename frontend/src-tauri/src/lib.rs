@@ -7369,28 +7369,27 @@ fn ensure_codex_hooks_feature_enabled(codex_dir: &std::path::Path) -> Result<(),
     }
 
     if let Some(start) = features_start {
-        let mut found = false;
+        let mut found_codex_hooks = false;
         for line in lines.iter_mut().take(features_end).skip(start + 1) {
             let trimmed = line.trim_start();
-            if (trimmed.starts_with("hooks ")
-                || trimmed.starts_with("hooks=")
-                || trimmed.starts_with("hooks\t"))
+            if (trimmed.starts_with("codex_hooks ")
+                || trimmed.starts_with("codex_hooks=")
+                || trimmed.starts_with("codex_hooks\t"))
                 && trimmed.contains('=')
             {
-                *line = "hooks = true".to_string();
-                found = true;
-                break;
+                *line = "codex_hooks = true".to_string();
+                found_codex_hooks = true;
             }
         }
-        if !found {
-            lines.insert(start + 1, "hooks = true".to_string());
+        if !found_codex_hooks {
+            lines.insert(start + 1, "codex_hooks = true".to_string());
         }
         content = lines.join("\n");
     } else {
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
         }
-        content.push_str("\n[features]\nhooks = true\n");
+        content.push_str("\n[features]\ncodex_hooks = true\n");
     }
 
     std::fs::write(&config_path, content).map_err(|e| e.to_string())?;
@@ -7444,6 +7443,124 @@ fn check_interrupted(path: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+fn codex_pending_approval(path: &std::path::Path) -> Option<(String, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut completed_calls = std::collections::HashSet::<String>::new();
+
+    for line in content.lines().rev().take(240) {
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(payload) = parsed.get("payload") else {
+            continue;
+        };
+        if parsed.get("type").and_then(|v| v.as_str()) == Some("event_msg")
+            && payload.get("type").and_then(|v| v.as_str()) == Some("mcp_tool_call_end")
+        {
+            if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
+                completed_calls.insert(call_id.to_string());
+            }
+            continue;
+        }
+        if parsed.get("type").and_then(|v| v.as_str()) != Some("response_item") {
+            continue;
+        }
+        match payload.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+            "function_call_output" | "custom_tool_call_output" => {
+                if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
+                    completed_calls.insert(call_id.to_string());
+                }
+            }
+            "function_call" | "custom_tool_call" => {
+                let call_id = payload.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                if !call_id.is_empty() && completed_calls.contains(call_id) {
+                    continue;
+                }
+                let status = payload
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if matches!(status.as_str(), "completed" | "failed" | "cancelled" | "canceled") {
+                    continue;
+                }
+
+                let args = payload
+                    .get("arguments")
+                    .or_else(|| payload.get("input"))
+                    .and_then(|v| {
+                        if v.is_object() {
+                            Some(v.clone())
+                        } else {
+                            v.as_str()
+                                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                        }
+                    })
+                    .unwrap_or_else(|| serde_json::json!({}));
+
+                let sandbox_permissions = payload
+                    .get("sandbox_permissions")
+                    .or_else(|| payload.get("sandboxPermissions"))
+                    .or_else(|| args.get("sandbox_permissions"))
+                    .or_else(|| args.get("sandboxPermissions"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let status_needs_approval = matches!(
+                    status.as_str(),
+                    "pending" | "waiting" | "needs_approval" | "approval_required" | "requires_approval"
+                );
+                let args_need_approval = sandbox_permissions.eq_ignore_ascii_case("require_escalated")
+                    || sandbox_permissions.eq_ignore_ascii_case("escalated")
+                    || payload.get("requires_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || payload.get("requiresApproval").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || args.get("requires_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || args.get("requiresApproval").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                let tool = payload
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Tool")
+                    .to_string();
+                let non_shell_call_waiting = tool != "shell_command"
+                    && status.is_empty()
+                    && parsed
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                        .map(|ts| {
+                            chrono::Utc::now()
+                                .signed_duration_since(ts.with_timezone(&chrono::Utc))
+                                .num_milliseconds()
+                                >= 1_000
+                        })
+                        .unwrap_or(false);
+                if !status_needs_approval && !args_need_approval && !non_shell_call_waiting {
+                    continue;
+                }
+
+                let command = args
+                    .get("command")
+                    .or_else(|| args.get("url"))
+                    .or_else(|| args.get("target"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let justification = args
+                    .get("justification")
+                    .or_else(|| payload.get("justification"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let detail = if !command.is_empty() { command } else { justification };
+                return Some((tool, detail));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Determine whether a Stop event represents a user-aborted turn rather than a
@@ -7532,6 +7649,25 @@ fn start_session_file_watcher(
                 };
 
                 let mut changed = false;
+
+                if session.source == "codex" {
+                    if let Some((tool, tool_input)) = codex_pending_approval(&path2) {
+                        if session.status != "waiting" {
+                            log::info!("File watcher: codex pending approval {}", sid2);
+                            session.status = "waiting".to_string();
+                            session.is_processing = false;
+                            changed = true;
+                        }
+                        session.tool = Some(tool);
+                        if !tool_input.is_empty() {
+                            session.tool_input = Some(tool_input);
+                        }
+                    } else if session.status == "waiting" {
+                        session.status = "processing".to_string();
+                        session.is_processing = true;
+                        changed = true;
+                    }
+                }
 
                 // Interruption detection: active/waiting but file shows interrupted
                 if matches!(session.status.as_str(), "processing" | "tool_running" | "waiting") {
@@ -7677,6 +7813,27 @@ fn get_frontmost_app_name() -> String {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn get_frontmost_window_title() -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0 == std::ptr::null_mut() {
+            return String::new();
+        }
+        let len = GetWindowTextLengthW(fg);
+        if len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u16; (len as usize) + 1];
+        let n = GetWindowTextW(fg, &mut buf) as usize;
+        String::from_utf16_lossy(&buf[..n])
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_frontmost_window_title() -> String { String::new() }
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn get_frontmost_app_name() -> String { String::new() }
 
@@ -7690,6 +7847,17 @@ fn is_codex_frontmost_app(name: &str) -> bool {
     }
     let lowered = name.to_ascii_lowercase();
     lowered == "codex" || lowered.contains("codex")
+}
+
+fn frontmost_app_is_codex() -> bool {
+    let app_name = get_frontmost_app_name();
+    if is_codex_frontmost_app(&app_name) {
+        return true;
+    }
+    // Windows Store / bundled desktop builds may expose a generic process
+    // name while the user-visible window title still contains "Codex".
+    let title = get_frontmost_window_title();
+    is_codex_frontmost_app(&title)
 }
 
 fn is_codex_host_terminal(name: &str) -> bool {
@@ -7736,7 +7904,7 @@ fn user_looking_at_session_tab(session: &ClaudeSession) -> bool {
             && session.terminal_id.as_ref()
                 .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
                 .unwrap_or(false);
-        ghostty_match || is_codex_frontmost_app(&frontmost)
+        ghostty_match || frontmost_app_is_codex()
     } else if is_ghostty_session {
         session.terminal_id.as_ref()
             .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
@@ -7772,6 +7940,20 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
 
             let is_desktop_hosted = session.host_terminal.as_deref() == Some("Claude Desktop");
             if session.source == "cursor" || session.source == "codex" || session.source == "opencode" || is_desktop_hosted {
+                if session.source == "codex" {
+                    if let Some(path) = resolve_session_jsonl_path(&session.session_id, Some(&session.cwd)) {
+                        if let Some((tool, tool_input)) = codex_pending_approval(&path) {
+                            session.status = "waiting".to_string();
+                            session.is_processing = false;
+                            session.tool = Some(tool);
+                            if !tool_input.is_empty() {
+                                session.tool_input = Some(tool_input);
+                            }
+                            session.updated_at = now_ms;
+                            continue;
+                        }
+                    }
+                }
                 // Cursor/Codex/opencode/CC Desktop: timeout-based staleness (120s without any event update).
                 // Hook PIDs are not stable enough for PID-alive checks in these environments.
                 let age_ms = now_ms.saturating_sub(session.updated_at);
@@ -7818,7 +8000,7 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     // - Codex standalone app: check if Codex/Code is frontmost
     let frontmost = get_frontmost_app_name();
     let cursor_is_active = is_cursor_frontmost_app(&frontmost);
-    let codex_is_active = is_codex_frontmost_app(&frontmost);
+    let codex_is_active = frontmost_app_is_codex();
     // While the user is interacting with our own panel, Cursor's window loses
     // OS focus. Treat the panel being frontmost as "still on Cursor" so a
     // completed session isn't (re)surfaced just because the user clicked oc-claw.
@@ -12452,8 +12634,8 @@ async fn install_codex_hooks() -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        let hook_script = r#"$ErrorActionPreference = 'SilentlyContinue'
-param([string]$HookEvent = '')
+        let hook_script = r#"param([string]$HookEvent = '')
+$ErrorActionPreference = 'SilentlyContinue'
 try {
     $stdin = [System.Console]::OpenStandardInput()
     $ms = New-Object System.IO.MemoryStream
@@ -12702,8 +12884,7 @@ except:
         serde_json::json!({
             "type": "command",
             "command": hook_command.clone(),
-            "command_windows": hook_command,
-            "timeoutSec": 5,
+            "timeout": 5,
         })
     };
     #[cfg(not(windows))]
@@ -12711,7 +12892,7 @@ except:
         serde_json::json!({
             "type": "command",
             "command": hook_command_base.clone(),
-            "timeoutSec": 5,
+            "timeout": 5,
         })
     };
 
@@ -12720,10 +12901,7 @@ except:
         ("UserPromptSubmit", false),
         ("PreToolUse", true),
         ("PostToolUse", true),
-        ("PermissionRequest", true),
         ("Stop", false),
-        ("StopFailure", false),
-        ("SubagentStop", false),
     ];
     for (event_name, needs_matcher) in hook_configs {
         let hook_def = make_hook_def(event_name);
@@ -12849,6 +13027,14 @@ fn is_codex_internal_utility_event(event: &serde_json::Value) -> bool {
     if prompt.starts_with("You are a helpful assistant. You will be presented with a user prompt") {
         return true;
     }
+    let prompt_lower = prompt.trim_start().to_ascii_lowercase();
+    if prompt_lower == "memories"
+        || prompt_lower.starts_with("memories -")
+        || prompt_lower.starts_with("## memory")
+        || prompt_lower.starts_with("# memory")
+    {
+        return true;
+    }
 
     let transcript_is_null = event.get("transcript_path").map(|v| v.is_null()).unwrap_or(false);
     let source = event.get("source").and_then(|v| v.as_str()).unwrap_or("");
@@ -12865,6 +13051,13 @@ fn is_codex_internal_utility_event(event: &serde_json::Value) -> bool {
     if last_message.starts_with("{\"title\":") {
         return true;
     }
+    let last_lower = last_message.to_ascii_lowercase();
+    if last_lower.starts_with("memories -")
+        || last_lower.starts_with("## memory")
+        || last_lower.starts_with("# memory")
+    {
+        return true;
+    }
 
     false
 }
@@ -12878,9 +13071,23 @@ fn is_codex_internal_utility_session(session: &ClaudeSession) -> bool {
     if prompt.starts_with("You are a helpful assistant. You will be presented with a user prompt") {
         return true;
     }
+    let prompt_lower = prompt.trim_start().to_ascii_lowercase();
+    if prompt_lower == "memories"
+        || prompt_lower.starts_with("memories -")
+        || prompt_lower.starts_with("## memory")
+        || prompt_lower.starts_with("# memory")
+    {
+        return true;
+    }
 
     let last = session.last_response.as_deref().unwrap_or("").trim_start();
-    last.starts_with("{\"title\":")
+    if last.starts_with("{\"title\":") {
+        return true;
+    }
+    let last_lower = last.to_ascii_lowercase();
+    last_lower.starts_with("memories -")
+        || last_lower.starts_with("## memory")
+        || last_lower.starts_with("# memory")
 }
 
 /// Process a Claude hook event (shared logic between Unix socket and TCP server).

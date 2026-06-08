@@ -188,6 +188,21 @@ export async function saveExtraMascots(petIds: string[]): Promise<void> {
   await store.save()
 }
 
+// ─── Multi-mascot mode toggle ───
+//
+// When on, the pet picker swaps its single-select list for the multi-mascot
+// (extra mascots) manager. Persisted so the chosen mode survives restarts.
+export async function loadMultiMascotMode(): Promise<boolean> {
+  const store = await getPetStore()
+  return (await store.get('multi_mascot_mode')) === true
+}
+
+export async function saveMultiMascotMode(enabled: boolean): Promise<void> {
+  const store = await getPetStore()
+  await store.set('multi_mascot_mode', enabled)
+  await store.save()
+}
+
 // ─── App-mode onboarding version gate ───
 //
 // Bump this whenever we want to force existing users through the mode-pick
