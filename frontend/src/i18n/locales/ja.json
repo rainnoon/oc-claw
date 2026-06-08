@@ -24,6 +24,8 @@
 
   "mini": {
     "geminiDone": "Gemini の作業が完了しました。クリックして表示。",
+    "opencodeDone": "opencode の作業が完了しました。クリックして表示。",
+    "viewInOpencode": "opencode に移動",
     "geminiDoneNoJump": "Gemini の作業が完了しました。",
     "goToTerminal": "ターミナルで承認してください",
     "cursorDone": "Cursor の作業が完了しました。クリックして表示。",
@@ -125,8 +127,8 @@
     "panelMaxHeightDesc": "展開パネルの最大高さ",
     "hoverDelay": "ホバー展開遅延",
     "hoverDelayDesc": "ノッチにホバーしてからパネルを展開するまでの遅延",
-    "largeMascotScale": "大マスコットサイズ",
-    "largeMascotScaleDesc": "大マスコットモードの拡大倍率",
+    "largeMascotScale": "マスコットサイズ",
+    "largeMascotScaleDesc": "マスコットの拡大倍率",
     "islandBg": "アイランド背景",
     "islandBgDesc": "背景画像を選択またはアップロードし、ドラッグで切り抜き範囲を選択",
 
@@ -152,6 +154,10 @@
     "geminiSound": "Gemini 完了サウンド",
     "geminiSoundDesc": "Geminiのタスク完了時にサウンドを再生",
     "viewInGemini": "Gemini に移動",
+    "enableOpencode": "opencode を有効化",
+    "enableOpencodeDesc": "プラグインでローカルの opencode セッションを監視",
+    "opencodeSound": "opencode 完了サウンド",
+    "opencodeSoundDesc": "opencode がタスクを完了したときに音を鳴らす",
     "enableHermes": "Hermes Agent を有効にする",
     "enableHermesDesc": "リモート接続はテスト後にプラグインをインストール。新しい Agent 追加後は再インストールが必要",
     "pluginRestartWarn": "インストール/更新すると Hermes Gateway が再起動し、進行中のセッションが中断される場合があります（約1分）。続行しますか？",
@@ -230,6 +236,24 @@
     "pat": "なでなで",
     "min": "分",
     "go": "GO"
+  },
+
+  "petPicker": {
+    "mascots": "マスコット",
+    "selectedMascot": "{{name}} を選択中",
+    "noMascots": "マスコットがありません",
+    "extraMascots": "複数マスコット",
+    "multiMascotMode": "複数マスコットモード",
+    "primaryMascot": "メイン",
+    "changeMascotHint": "ペットを選んでこのマスコットを置き換え",
+    "extraMascotsDesc": "さらにマスコットを表示できます",
+    "extraMascotsEmpty": "「マスコットを追加」を押すとデスクトップにもう1体配置できます。個別にドラッグでき、クリックするとパネルが開きます。",
+    "extraMascotsPickHint": "ペットをクリックしてデスクトップにもう1体配置",
+    "demoMode": "デモモード",
+    "demoModeDesc": "独立ウィンドウ、状態共有",
+    "demoModeEmpty": "「マスコットを追加」を押すと画面にもう1体配置できます。個別にドラッグできます。",
+    "demoModePickHint": "ペットをクリックして画面にもう1体配置",
+    "addMascot": "マスコットを追加"
   },
 
   "character": {
@@ -344,6 +368,7 @@
     "titleCursor": "Cursor 統計",
     "titleGemini": "Gemini CLI 統計",
     "titleHermes": "Hermes Agent 統計",
+    "titleOpencode": "opencode 統計",
     "last14Days": "過去14日間",
     "totalTokens": "合計トークン",
     "sessionsCount": "セッション",

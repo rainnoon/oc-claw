@@ -24,6 +24,8 @@
 
   "mini": {
     "geminiDone": "Gemini 작업이 완료되었습니다. 클릭하여 보기.",
+    "opencodeDone": "opencode 작업이 완료되었습니다. 클릭하여 보기.",
+    "viewInOpencode": "opencode로 이동",
     "geminiDoneNoJump": "Gemini 작업이 완료되었습니다.",
     "goToTerminal": "터미널에서 승인해 주세요",
     "cursorDone": "Cursor 작업이 완료되었습니다. 클릭하여 보기.",
@@ -125,8 +127,8 @@
     "panelMaxHeightDesc": "확장 패널의 최대 높이",
     "hoverDelay": "호버 트리거 지연",
     "hoverDelayDesc": "노치에 마우스를 올린 후 패널이 열리기까지의 지연 시간",
-    "largeMascotScale": "대형 마스코트 크기",
-    "largeMascotScaleDesc": "대형 마스코트 모드의 확대 배율",
+    "largeMascotScale": "마스코트 크기",
+    "largeMascotScaleDesc": "마스코트 확대 배율",
     "islandBg": "아일랜드 배경",
     "islandBgDesc": "배경 이미지를 선택하거나 업로드하고, 드래그하여 자르기 영역 선택",
 
@@ -152,6 +154,10 @@
     "geminiSound": "Gemini 완료 소리",
     "geminiSoundDesc": "Gemini 작업 완료 시 소리 재생",
     "viewInGemini": "Gemini로 이동",
+    "enableOpencode": "opencode 활성화",
+    "enableOpencodeDesc": "플러그인으로 로컬 opencode 세션 모니터링",
+    "opencodeSound": "opencode 완료 소리",
+    "opencodeSoundDesc": "opencode가 작업을 완료하면 소리 재생",
     "enableHermes": "Hermes Agent 활성화",
     "enableHermesDesc": "원격 연결은 테스트 후 플러그인 설치 필요. 새 Agent 추가 시 재설치 필요",
     "pluginRestartWarn": "설치/업데이트하면 Hermes Gateway가 재시작되어 진행 중인 세션이 중단될 수 있습니다(약 1분). 계속하시겠습니까?",
@@ -230,6 +236,24 @@
     "pat": "쓰다듬기",
     "min": "분",
     "go": "시작"
+  },
+
+  "petPicker": {
+    "mascots": "마스코트",
+    "selectedMascot": "{{name}} 선택됨",
+    "noMascots": "마스코트가 없습니다",
+    "extraMascots": "멀티 마스코트",
+    "multiMascotMode": "멀티 마스코트 모드",
+    "primaryMascot": "메인",
+    "changeMascotHint": "펫을 선택해 이 마스코트를 교체",
+    "extraMascotsDesc": "마스코트를 더 표시할 수 있습니다",
+    "extraMascotsEmpty": "\"마스코트 추가\"를 눌러 데스크톱에 하나 더 배치하세요. 개별로 드래그할 수 있고, 클릭하면 패널이 열립니다.",
+    "extraMascotsPickHint": "펫을 클릭해 데스크톱에 마스코트 하나 더 배치",
+    "demoMode": "데모 모드",
+    "demoModeDesc": "독립 창, 상태 공유",
+    "demoModeEmpty": "\"마스코트 추가\"를 눌러 화면에 하나 더 배치하세요. 개별로 드래그할 수 있습니다.",
+    "demoModePickHint": "펫을 클릭해 화면에 마스코트 하나 더 배치",
+    "addMascot": "마스코트 추가"
   },
 
   "character": {
@@ -344,6 +368,7 @@
     "titleCursor": "Cursor 통계",
     "titleGemini": "Gemini CLI 통계",
     "titleHermes": "Hermes Agent 통계",
+    "titleOpencode": "opencode 통계",
     "last14Days": "최근 14일",
     "totalTokens": "총 토큰",
     "sessionsCount": "세션",

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "enables the default permissions",
-  "windows": ["pet", "detail", "mini", "room", "demo-mascot-*"],
+  "windows": ["pet", "detail", "mini", "room", "demo-mascot-*", "extra-mascot-*"],
   "permissions": [
     "core:default",
     "core:window:allow-create",
@@ -12,6 +12,8 @@
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
     "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-inner-size",
     "core:window:allow-outer-position",
     "core:window:allow-scale-factor",
     "store:default",

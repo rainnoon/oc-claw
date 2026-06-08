@@ -26,6 +26,8 @@ import {
   applyHeadpat,
   loadMiniPetId,
   saveMiniPetId,
+  loadExtraMascots,
+  loadMultiMascotMode,
 } from './lib/petStore'
 import {
   DEFAULT_PET_QUEUE_IDS,
@@ -112,7 +114,7 @@ const MASCOT_BASE_SIZE = 43
 const SESSION_SPRITE_DISPLAY_MULTIPLIER = 0.88
 
 type PetState = 'idle' | 'working' | 'compacting' | 'waiting'
-type ClaudeStatsSource = 'cc' | 'codex' | 'cursor' | 'gemini' | 'hermes'
+type ClaudeStatsSource = 'cc' | 'codex' | 'cursor' | 'gemini' | 'hermes' | 'opencode'
 const TRANSIENT_PET_ACTIONS: PetAction[] = ['eat', 'headpat', 'dance', 'farewell', 'angry', 'spin', 'milktea', 'walkout']
 
 // Priority: higher number = harder to interrupt
@@ -489,6 +491,7 @@ export default function Mini() {
     if (source === 'codex') return 'codex'
     if (source === 'gemini') return 'gemini'
     if (source === 'hermes') return 'hermes'
+    if (source === 'opencode') return 'opencode'
     return 'cc'
   }, [])
   const resolveClaudeStatsSourceBySession = useCallback(
@@ -507,9 +510,10 @@ export default function Mini() {
   // currently fold both flows into `enableClaudeCode`, so this defaults to
   // mirror that flag everywhere except Windows.
   const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
-  const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
+  const [enableCodex, setEnableCodex] = useState(true)
   const [enableCursor, setEnableCursor] = useState(true)
   const [enableGemini, setEnableGemini] = useState(true)
+  const [enableOpencode, setEnableOpencode] = useState(true)
   const [hermesConns, setHermesConns] = useState<{ id: string; type: 'local' | 'remote'; host?: string; user?: string }[]>([])
   // Hermes is enabled whenever at least one connection is configured, mirroring
   // the OpenClaw model (presence of a connection implies it is enabled).
@@ -518,6 +522,7 @@ export default function Mini() {
   const [codexSoundEnabled, setCodexSoundEnabled] = useState(true)
   const [cursorSoundEnabled, setCursorSoundEnabled] = useState(false)
   const [geminiSoundEnabled, setGeminiSoundEnabled] = useState(true)
+  const [opencodeSoundEnabled, setOpencodeSoundEnabled] = useState(true)
   const [hermesSoundEnabled, setHermesSoundEnabled] = useState(false)
   const [notifySound, setNotifySound] = useState<'default' | 'manbo'>('default')
   const [waitingSound, setWaitingSound] = useState(false)
@@ -2033,11 +2038,12 @@ export default function Mini() {
       const ccDesktopEnabled = typeof ccDesktop === 'boolean' ? ccDesktop : true
       setEnableClaudeDesktop(ccDesktopEnabled)
       const cod = await store.get('enable_codex')
-      const codEnabled = isWindowsPlatform ? false : cod !== false
+      const codEnabled = cod !== false
       setEnableCodex(codEnabled)
       // Hook script is shared between CC CLI and CC Desktop, so install when
       // any of the Claude listeners are on.
-      if (cc !== false || codEnabled || ccDesktopEnabled) invoke('install_claude_hooks').catch(() => {})
+      if (cc !== false || ccDesktopEnabled) invoke('install_claude_hooks').catch(() => {})
+      if (codEnabled) invoke('install_codex_hooks').catch(() => {})
       const cur = await store.get('enable_cursor')
       const curEnabled = cur !== false
       setEnableCursor(curEnabled)
@@ -2046,15 +2052,14 @@ export default function Mini() {
       const gemEnabled = gem !== false
       setEnableGemini(gemEnabled)
       if (gemEnabled) invoke('install_gemini_hooks').catch(() => {})
+      const oc = await store.get('enable_opencode')
+      const ocEnabled = oc !== false
+      setEnableOpencode(ocEnabled)
+      if (ocEnabled) invoke('install_opencode_hooks').catch(() => {})
       // Hermes plugin install is user-triggered only (restarts gateway).
       // Enablement now follows whether any connection is configured.
       const hermConns = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
       if (hermConns) setHermesConns(hermConns)
-      if (isWindowsPlatform) {
-        // Codex is not yet supported on Windows; keep it forced off.
-        await store.set('enable_codex', false)
-        await store.save()
-      }
       const snd = await store.get('sound_enabled')
       if (typeof snd === 'boolean') setSoundEnabled(snd)
       const codsnd = await store.get('codex_sound_enabled')
@@ -2063,6 +2068,8 @@ export default function Mini() {
       if (typeof csnd === 'boolean') setCursorSoundEnabled(csnd)
       const gsnd = await store.get('gemini_sound_enabled')
       if (typeof gsnd === 'boolean') setGeminiSoundEnabled(gsnd)
+      const ocsnd = await store.get('opencode_sound_enabled')
+      if (typeof ocsnd === 'boolean') setOpencodeSoundEnabled(ocsnd)
       const hsnd = await store.get('hermes_sound_enabled')
       if (typeof hsnd === 'boolean') setHermesSoundEnabled(hsnd)
       const ns = (await store.get('notify_sound')) as string
@@ -2130,7 +2137,7 @@ export default function Mini() {
   // Poll Claude/Codex/Cursor sessions
   useEffect(() => {
     if (appMode !== 'coding') { setClaudeSessions([]); return }
-    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini || enableHermes)) {
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini || enableOpencode || enableHermes)) {
       setClaudeSessions([])
       return
     }
@@ -2320,7 +2327,7 @@ export default function Mini() {
     poll()
     const t = setInterval(poll, 2000)
     return () => clearInterval(t)
-  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableHermes, hermesConns, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableOpencode, enableHermes, hermesConns, appMode])
 
   // Listen for Claude/Codex/Cursor task completion → play sound
   const soundEnabledRef = useRef(soundEnabled)
@@ -2331,6 +2338,8 @@ export default function Mini() {
   cursorSoundEnabledRef.current = cursorSoundEnabled
   const geminiSoundEnabledRef = useRef(geminiSoundEnabled)
   geminiSoundEnabledRef.current = geminiSoundEnabled
+  const opencodeSoundEnabledRef = useRef(opencodeSoundEnabled)
+  opencodeSoundEnabledRef.current = opencodeSoundEnabled
   const hermesSoundEnabledRef = useRef(hermesSoundEnabled)
   hermesSoundEnabledRef.current = hermesSoundEnabled
   const notifySoundRef = useRef(notifySound)
@@ -2349,27 +2358,36 @@ export default function Mini() {
   enableClaudeDesktopRef.current = enableClaudeDesktop
   useEffect(() => {
     if (appMode !== 'coding') return
-    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini || enableHermes)) return
+    if (!(enableClaudeCode || enableClaudeDesktop || enableCodex || enableCursor || enableGemini || enableOpencode || enableHermes)) return
     const unlisten = listen('claude-task-complete', (ev: any) => {
       const currentSession = claudeSessionsRef.current.find((s) => s.sessionId === ev.payload?.sessionId)
       const isCursor = ev.payload?.source === 'cursor' || currentSession?.source === 'cursor'
       const isCodex = ev.payload?.source === 'codex' || currentSession?.source === 'codex'
       const isGemini = ev.payload?.source === 'gemini' || currentSession?.source === 'gemini'
+      const isOpencode = ev.payload?.source === 'opencode' || currentSession?.source === 'opencode'
       const isHermes = ev.payload?.source === 'hermes' || currentSession?.source === 'hermes'
       const hostTerminal = ev.payload?.hostTerminal || currentSession?.hostTerminal
-      const isClaudeDesktop = !isCursor && !isCodex && !isGemini && !isHermes && hostTerminal === 'Claude Desktop'
-      const isClaudeCli = !isCursor && !isCodex && !isGemini && !isHermes && !isClaudeDesktop
+      const isClaudeDesktop = !isCursor && !isCodex && !isGemini && !isOpencode && !isHermes && hostTerminal === 'Claude Desktop'
+      const isClaudeCli = !isCursor && !isCodex && !isGemini && !isOpencode && !isHermes && !isClaudeDesktop
       // Drop the event entirely if the matching listener toggle is off, so
       // muted streams never trigger auto-expand or completion popups either.
       if (isClaudeDesktop && !enableClaudeDesktopRef.current) return
       if (isClaudeCli && !enableClaudeCodeRef.current) return
       if (ev.payload?.waiting && viewModeRef.current === 'efficiency' && autoExpandOnTaskRef.current) {
+        // Optimistically mark the session as waiting in the same React event
+        // tick as the expand/collapse, so the panel's first frame already
+        // renders the permission popup instead of briefly flashing the full
+        // session list before the async session refetch lands.
+        const sid = ev.payload?.sessionId
+        if (sid) {
+          setClaudeSessions((prev) => prev.map((s) => s.sessionId === sid ? { ...s, status: 'waiting' } : s))
+        }
         setEffListCollapsed(true)
         if (!expandedRef.current && expandFnRef.current) {
           expandFnRef.current()
         }
       }
-      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : isGemini ? geminiSoundEnabledRef.current : isHermes ? hermesSoundEnabledRef.current : soundEnabledRef.current
+      const shouldSound = isCursor ? cursorSoundEnabledRef.current : isCodex ? codexSoundEnabledRef.current : isGemini ? geminiSoundEnabledRef.current : isOpencode ? opencodeSoundEnabledRef.current : isHermes ? hermesSoundEnabledRef.current : soundEnabledRef.current
       if (!shouldSound) return
       if (ev.payload?.waiting && !waitingSoundRef.current) return
       if (notifySoundRef.current === 'manbo') {
@@ -2381,7 +2399,7 @@ export default function Mini() {
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableHermes, appMode])
+  }, [enableClaudeCode, enableClaudeDesktop, enableCodex, enableCursor, enableGemini, enableOpencode, enableHermes, appMode])
 
   // Fetch OpenClaw session messages when selected
   useEffect(() => {
@@ -2484,6 +2502,7 @@ export default function Mini() {
     if (cs.source === 'cursor') return enableCursor
     if (cs.source === 'codex') return enableCodex
     if (cs.source === 'gemini') return enableGemini
+    if (cs.source === 'opencode') return enableOpencode
     if (cs.source === 'hermes') return enableHermes
     const isDesktop = cs.hostTerminal === 'Claude Desktop'
     return isDesktop ? enableClaudeDesktop : enableClaudeCode
@@ -2610,6 +2629,54 @@ export default function Mini() {
     }
   }, [syncExpandedWindowLayout])
   expandFnRef.current = expand
+
+  // Coding-mode multi-mascot: a tap on any extra mascot window broadcasts
+  // `extra-mascot-activate`; mirror the primary mascot's click by expanding the
+  // main session panel. No-op in pet mode (no panel) or when already expanded.
+  useEffect(() => {
+    const unlisten = listen('extra-mascot-activate', () => {
+      if (appModeRef.current === 'pet') return
+      if (expandedRef.current || expandingRef.current) return
+      void expandFnRef.current?.()
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [])
+
+  // Keep the extra mascot windows in sync with the persisted list. Coding mode
+  // respawns the saved mascots (closing any stale ones first) ONLY when
+  // multi-mascot mode is on; pet mode (or multi-mascot off) tears them all down
+  // so single-mascot mode never shows leftover extras.
+  useEffect(() => {
+    if (appMode == null) return
+    let cancelled = false
+    ;(async () => {
+      const multi = await loadMultiMascotMode()
+      if (appMode === 'coding' && multi) {
+        const ids = await loadExtraMascots()
+        await invoke('close_extra_mascots').catch(() => {})
+        for (const id of ids) {
+          if (cancelled) return
+          await invoke('spawn_extra_mascot', { petId: id }).catch(() => {})
+        }
+      } else {
+        await invoke('close_extra_mascots').catch(() => {})
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [appMode])
+
+  // Mirror the primary mascot exactly: while the session panel is expanded the
+  // primary mascot is replaced by the panel, so the extra (multi-pet) mascots
+  // must hide too — and reappear when it collapses. Pet mode has none.
+  useEffect(() => {
+    if (appMode !== 'coding') return
+    invoke('set_extra_mascots_hidden', { hidden: expanded }).catch(() => {})
+  }, [expanded, appMode])
+
   const updateModalWindowAdjustedRef = useRef(false)
   const updateModalPrevExpandedRef = useRef(false)
 
@@ -3274,11 +3341,13 @@ export default function Mini() {
           const ccDesktop = await store.get('enable_claude_desktop')
           setEnableClaudeDesktop(ccDesktop !== false)
           const cod = await store.get('enable_codex')
-          setEnableCodex(isWindowsPlatform ? false : cod !== false)
+          setEnableCodex(cod !== false)
           const cur = await store.get('enable_cursor')
           setEnableCursor(cur !== false)
           const gem = await store.get('enable_gemini')
           setEnableGemini(gem !== false)
+          const oc = await store.get('enable_opencode')
+          setEnableOpencode(oc !== false)
           const hcn = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
           if (hcn) setHermesConns(hcn)
         } catch {}
@@ -3582,11 +3651,13 @@ export default function Mini() {
         const ccDesktop = await store.get('enable_claude_desktop')
         setEnableClaudeDesktop(ccDesktop !== false)
         const cod = await store.get('enable_codex')
-        setEnableCodex(isWindowsPlatform ? false : cod !== false)
+        setEnableCodex(cod !== false)
         const cur = await store.get('enable_cursor')
         setEnableCursor(cur !== false)
         const gem = await store.get('enable_gemini')
         setEnableGemini(gem !== false)
+        const oc = await store.get('enable_opencode')
+        setEnableOpencode(oc !== false)
         const hcn2 = await store.get('hermes_connections') as { id: string; type: 'local' | 'remote'; host?: string; user?: string }[] | null
         if (hcn2) setHermesConns(hcn2)
         fetchAgents()
@@ -4091,6 +4162,13 @@ export default function Mini() {
   const collapsedStatusSize = 5
   const collapsedStatusBorder = 1.1
   const largeMascotVisualSize = collapsedMascotSize * largeMascotScale
+
+  // Keep the coding-mode extra mascots scaled together with the primary one:
+  // broadcast the current visual size whenever the "Mascot Size" slider moves.
+  useEffect(() => {
+    if (appMode !== 'coding') return
+    emit('mascot-visual-size', { size: largeMascotVisualSize }).catch(() => {})
+  }, [largeMascotVisualSize, appMode])
 
   useEffect(() => {
     if (!useWindowsChromaKey || !largeMascot) return
@@ -4679,6 +4757,7 @@ export default function Mini() {
                                 ...(enableCodex ? ['Codex'] : []),
                                 ...(enableCursor ? ['Cursor'] : []),
                                 ...(enableGemini ? ['Gemini'] : []),
+                                ...(enableOpencode ? ['opencode'] : []),
                                 ...(enableHermes ? ['Hermes'] : []),
                               ]
                               return (
@@ -4919,10 +4998,11 @@ export default function Mini() {
                                 const isCursorSource = cs.source === 'cursor'
                                 const isCodexSource = cs.source === 'codex'
                                 const isGeminiSource = cs.source === 'gemini'
+                                const isOpencodeSource = cs.source === 'opencode'
                                 const isHermesSource = cs.source === 'hermes'
                                 const isRemoteHermes = isHermesSource && cs.sessionId?.startsWith('ssh:')
-                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : isHermesSource ? 'Hermes' : 'Claude'
-                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : isGeminiSource ? 'bg-[#1d2736] text-[#8ab4f8]' : isHermesSource ? 'bg-[#2d1f3f] text-[#c084fc]' : 'bg-[#3f211d] text-[#e87a65]'
+                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : isOpencodeSource ? 'opencode' : isHermesSource ? 'Hermes' : 'Claude'
+                                const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : isGeminiSource ? 'bg-[#1d2736] text-[#8ab4f8]' : isOpencodeSource ? 'bg-[#2a2616] text-[#e6c07b]' : isHermesSource ? 'bg-[#2d1f3f] text-[#c084fc]' : 'bg-[#3f211d] text-[#e87a65]'
                                 const openClaudeDetail = () => {
                                   setSelectedAgentId(null)
                                   setSelectedSessionKey(null)
@@ -4964,7 +5044,7 @@ export default function Mini() {
                                         }
                                         return
                                       }
-                                      if (!isWaiting || isGeminiSource) {
+                                      if (!isWaiting || isGeminiSource || isOpencodeSource) {
                                         if (cs.source === 'cursor') {
                                           invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
                                         } else {
@@ -4972,7 +5052,7 @@ export default function Mini() {
                                         }
                                       }
                                     }}
-                                    className={`group hover:bg-white/[0.04] transition-colors ${(!isWaiting || isGeminiSource || isHermesSource) ? 'cursor-pointer' : ''}`}
+                                    className={`group hover:bg-white/[0.04] transition-colors ${(!isWaiting || isGeminiSource || isOpencodeSource || isHermesSource) ? 'cursor-pointer' : ''}`}
                                     style={{ padding: '10px 16px' }}
                                   >
                                     <div className="flex min-w-0 w-full items-center gap-3">
@@ -5193,7 +5273,7 @@ export default function Mini() {
                                             // Codex / Gemini approval should be made in their own UI.
                                             // oc-claw only surfaces a reminder and a jump action
                                             // so the user can approve there.
-                                            if (cs.source === 'codex' || cs.source === 'gemini' || cs.source === 'hermes') {
+                                            if (cs.source === 'codex' || cs.source === 'gemini' || cs.source === 'opencode' || cs.source === 'hermes') {
                                               const hermesPlatLabel = (() => {
                                                 if (cs.source !== 'hermes' || !cs.platform) return ''
                                                 const p = (cs.platform || '').toLowerCase()
@@ -5215,6 +5295,8 @@ export default function Mini() {
                                                 ? (hermesPlatLabel ? t('mini.viewInHermes', 'Go to Hermes').replace('Hermes', hermesPlatLabel) : t('mini.viewInHermes', 'Go to Hermes'))
                                                 : cs.source === 'gemini'
                                                 ? t('mini.viewInGemini', '前往 Gemini')
+                                                : cs.source === 'opencode'
+                                                ? t('mini.viewInOpencode', '前往 opencode')
                                                 : t('mini.viewInCodex', '前往 Codex')
                                               return (
                                                 <>
@@ -5355,7 +5437,7 @@ export default function Mini() {
                                           <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-400 shrink-0 ml-2">{t('mini.done', '完成')}</span>
                                         </div>
                                         <div className="px-3 py-2 max-h-[160px] overflow-y-auto scrollbar-thin text-[12px] text-slate-400 leading-[1.6] markdown-content">
-                                          {(cs.source === 'cursor' || cs.source === 'codex' || cs.source === 'gemini') && cs.lastResponse === '✓' ? (
+                                          {(cs.source === 'cursor' || cs.source === 'codex' || cs.source === 'gemini' || cs.source === 'opencode') && cs.lastResponse === '✓' ? (
                                             <p>
                                               {cs.source === 'codex'
                                                 ? t('mini.codeDone', 'Code has finished working. Click to view.')
@@ -5363,7 +5445,9 @@ export default function Mini() {
                                                   ? (isWindowsPlatform
                                                       ? t('mini.geminiDoneNoJump', 'Gemini has finished working.')
                                                       : t('mini.geminiDone', 'Gemini has finished working. Click to view.'))
-                                                  : t('mini.cursorDone', 'Cursor has finished working. Click to view.')}
+                                                  : cs.source === 'opencode'
+                                                    ? t('mini.opencodeDone', 'opencode has finished working. Click to view.')
+                                                    : t('mini.cursorDone', 'Cursor has finished working. Click to view.')}
                                             </p>
                                           ) : (
                                             <ReactMarkdown>{cs.lastResponse}</ReactMarkdown>
@@ -5616,6 +5700,7 @@ export default function Mini() {
                               ...(enableCodex ? ['Codex'] : []),
                               ...(enableCursor ? ['Cursor'] : []),
                               ...(enableGemini ? ['Gemini'] : []),
+                              ...(enableOpencode ? ['opencode'] : []),
                               ...(enableHermes ? ['Hermes'] : []),
                             ]
                             return targets.length > 0 ? <p className="text-slate-500 text-sm font-medium">{t('mini.startTracking', { targets: targets.join(' / ') })}</p> : null
@@ -6043,6 +6128,15 @@ export default function Mini() {
                           }}
                           queueIds={petQueue}
                           onChangeQueue={savePetQueue}
+                          largeMascotScale={largeMascotScale}
+                          onChangeLargeMascotScale={async (v) => {
+                            const clamped = Math.min(6, Math.max(1, v))
+                            setLargeMascotScale(clamped)
+                            largeMascotScaleRef.current = clamped
+                            const store = await load('settings.json', { defaults: {}, autoSave: true })
+                            await store.set('large_mascot_scale', clamped)
+                            await store.save()
+                          }}
                           onNativeDialogStart={() => {
                             debugToTerminal('dialog', `native picker start (before=${nativeDialogActiveRef.current})`)
                             if (settingsModeRef.current) {
@@ -6101,6 +6195,13 @@ export default function Mini() {
                           setGeminiSoundEnabled(v)
                           const store = await getStore()
                           await store.set('gemini_sound_enabled', v)
+                          await store.save()
+                        }}
+                        opencodeSoundEnabled={opencodeSoundEnabled}
+                        onToggleOpencodeSoundEnabled={async (v) => {
+                          setOpencodeSoundEnabled(v)
+                          const store = await getStore()
+                          await store.set('opencode_sound_enabled', v)
                           await store.save()
                         }}
                         hermesSoundEnabled={hermesSoundEnabled}

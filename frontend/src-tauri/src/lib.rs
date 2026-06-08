@@ -7152,6 +7152,133 @@ fn collect_hermes_stats() -> Result<ClaudeStats, String> {
     })
 }
 
+/// opencode persists per-message token usage in a local SQLite DB
+/// (`~/.local/share/opencode/opencode.db`). Assistant messages store a JSON
+/// `data` blob with `tokens.{input,output,cache.read,cache.write}`, `cost`,
+/// `modelID` and a millisecond `time.created`. We aggregate the last 14 days
+/// into the shared ClaudeStats shape, mirroring `collect_hermes_stats`.
+fn collect_opencode_stats() -> Result<ClaudeStats, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    // opencode uses the XDG data dir on every platform; also check the macOS
+    // Application Support location as a fallback.
+    let mut candidates = vec![home.join(".local").join("share").join("opencode").join("opencode.db")];
+    #[cfg(target_os = "macos")]
+    candidates.push(home.join("Library").join("Application Support").join("opencode").join("opencode.db"));
+    let db_path = match candidates.into_iter().find(|p| p.exists()) {
+        Some(p) => p,
+        None => return Ok(empty_claude_stats()),
+    };
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open opencode.db: {}", e))?;
+
+    // opencode migrated message storage from `message` to `session_message`
+    // (the latter adds a `type`/`seq` column). Read whichever currently holds
+    // rows so we use the active table and never double-count migrated copies.
+    let count_sm: i64 = conn
+        .query_row("SELECT COUNT(*) FROM session_message", [], |r| r.get(0))
+        .unwrap_or(-1);
+    let table = if count_sm > 0 { "session_message" } else { "message" };
+
+    let now = chrono::Utc::now();
+    let cutoff_ms = (now - chrono::Duration::days(14)).timestamp_millis();
+
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    for i in (0..14).rev() {
+        let day = (chrono::Local::now() - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        daily_map.insert(day.clone(), ClaudeDailyStats {
+            date: day, input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0, messages: 0, sessions: 0,
+        });
+    }
+    let mut day_sessions: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_cache_write = 0u64;
+    let mut total_messages = 0u64;
+    let mut sessions_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut model = String::new();
+
+    let sql = format!("SELECT session_id, time_created, data FROM \"{}\"", table);
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {}", e))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0).unwrap_or_default(),
+            row.get::<_, i64>(1).unwrap_or(0),
+            row.get::<_, String>(2).unwrap_or_default(),
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    for row in rows {
+        let (session_id, ts_raw, data_str) = row.map_err(|e| format!("row: {}", e))?;
+        // opencode stores time_created as unix ms; tolerate seconds just in case.
+        let ts_ms = if ts_raw > 1_000_000_000_000 { ts_raw } else { ts_raw * 1000 };
+        if ts_ms < cutoff_ms { continue; }
+        let data: serde_json::Value = match serde_json::from_str(&data_str) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // Only assistant messages carry a `tokens` object; user/system rows skip.
+        let tokens = match data.get("tokens") {
+            Some(t) if t.is_object() => t,
+            _ => continue,
+        };
+        let inp = tokens.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
+        let out = tokens.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cache = tokens.get("cache");
+        let cr = cache.and_then(|c| c.get("read")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let cw = cache.and_then(|c| c.get("write")).and_then(|v| v.as_u64()).unwrap_or(0);
+        if inp == 0 && out == 0 && cr == 0 && cw == 0 { continue; }
+
+        let day = chrono::DateTime::from_timestamp_millis(ts_ms)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+
+        if let Some(entry) = daily_map.get_mut(&day) {
+            entry.input_tokens += inp;
+            entry.output_tokens += out;
+            entry.cache_read_tokens += cr;
+            entry.cache_write_tokens += cw;
+            entry.messages += 1;
+            day_sessions.entry(day.clone()).or_default().insert(session_id.clone());
+        }
+
+        total_input += inp;
+        total_output += out;
+        total_cache_read += cr;
+        total_cache_write += cw;
+        total_messages += 1;
+        sessions_set.insert(session_id.clone());
+        if model.is_empty() {
+            if let Some(m) = data.get("modelID").and_then(|v| v.as_str()) {
+                if !m.is_empty() { model = m.to_string(); }
+            }
+        }
+    }
+
+    for (day, set) in day_sessions {
+        if let Some(entry) = daily_map.get_mut(&day) {
+            entry.sessions = set.len() as u64;
+        }
+    }
+
+    let daily_stats: Vec<ClaudeDailyStats> = daily_map.into_values().collect();
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
+        total_messages,
+        total_sessions: sessions_set.len() as u64,
+        daily_stats,
+        model,
+    })
+}
+
 fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
     let claude_projects = home.join(".claude").join("projects");
@@ -7180,8 +7307,12 @@ fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
 
 fn collect_codex_session_jsonl_files() -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
-    let codex_sessions = home.join(".Codex").join("sessions");
-    collect_jsonl_files_recursive(&codex_sessions)
+    let mut out = collect_jsonl_files_recursive(&home.join(".codex").join("sessions"));
+    let legacy_sessions = home.join(".Codex").join("sessions");
+    if legacy_sessions.exists() {
+        out.extend(collect_jsonl_files_recursive(&legacy_sessions));
+    }
+    out
 }
 
 fn find_claude_session_file(session_id: &str) -> Option<PathBuf> {
@@ -7196,7 +7327,7 @@ fn find_claude_session_file(session_id: &str) -> Option<PathBuf> {
 
 fn find_codex_session_file(session_id: &str) -> Option<PathBuf> {
     // Codex stores sessions as:
-    //   ~/.Codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl
+    //   ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl
     // so we cannot derive the path from cwd; we must scan for a filename
     // containing the session id.
     for path in collect_codex_session_jsonl_files() {
@@ -7208,6 +7339,61 @@ fn find_codex_session_file(session_id: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn ensure_codex_hooks_feature_enabled(codex_dir: &std::path::Path) -> Result<(), String> {
+    let config_path = codex_dir.join("config.toml");
+    let mut content = if config_path.exists() {
+        std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+
+    let mut lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+    let mut features_start: Option<usize> = None;
+    let mut features_end = lines.len();
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "[features]" {
+            features_start = Some(idx);
+            continue;
+        }
+        if features_start.is_some()
+            && idx > features_start.unwrap_or(0)
+            && trimmed.starts_with('[')
+            && trimmed.ends_with(']')
+        {
+            features_end = idx;
+            break;
+        }
+    }
+
+    if let Some(start) = features_start {
+        let mut found_codex_hooks = false;
+        for line in lines.iter_mut().take(features_end).skip(start + 1) {
+            let trimmed = line.trim_start();
+            if (trimmed.starts_with("codex_hooks ")
+                || trimmed.starts_with("codex_hooks=")
+                || trimmed.starts_with("codex_hooks\t"))
+                && trimmed.contains('=')
+            {
+                *line = "codex_hooks = true".to_string();
+                found_codex_hooks = true;
+            }
+        }
+        if !found_codex_hooks {
+            lines.insert(start + 1, "codex_hooks = true".to_string());
+        }
+        content = lines.join("\n");
+    } else {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str("\n[features]\ncodex_hooks = true\n");
+    }
+
+    std::fs::write(&config_path, content).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn resolve_session_jsonl_path(session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
@@ -7257,6 +7443,124 @@ fn check_interrupted(path: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+fn codex_pending_approval(path: &std::path::Path) -> Option<(String, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut completed_calls = std::collections::HashSet::<String>::new();
+
+    for line in content.lines().rev().take(240) {
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(payload) = parsed.get("payload") else {
+            continue;
+        };
+        if parsed.get("type").and_then(|v| v.as_str()) == Some("event_msg")
+            && payload.get("type").and_then(|v| v.as_str()) == Some("mcp_tool_call_end")
+        {
+            if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
+                completed_calls.insert(call_id.to_string());
+            }
+            continue;
+        }
+        if parsed.get("type").and_then(|v| v.as_str()) != Some("response_item") {
+            continue;
+        }
+        match payload.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+            "function_call_output" | "custom_tool_call_output" => {
+                if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
+                    completed_calls.insert(call_id.to_string());
+                }
+            }
+            "function_call" | "custom_tool_call" => {
+                let call_id = payload.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                if !call_id.is_empty() && completed_calls.contains(call_id) {
+                    continue;
+                }
+                let status = payload
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if matches!(status.as_str(), "completed" | "failed" | "cancelled" | "canceled") {
+                    continue;
+                }
+
+                let args = payload
+                    .get("arguments")
+                    .or_else(|| payload.get("input"))
+                    .and_then(|v| {
+                        if v.is_object() {
+                            Some(v.clone())
+                        } else {
+                            v.as_str()
+                                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                        }
+                    })
+                    .unwrap_or_else(|| serde_json::json!({}));
+
+                let sandbox_permissions = payload
+                    .get("sandbox_permissions")
+                    .or_else(|| payload.get("sandboxPermissions"))
+                    .or_else(|| args.get("sandbox_permissions"))
+                    .or_else(|| args.get("sandboxPermissions"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let status_needs_approval = matches!(
+                    status.as_str(),
+                    "pending" | "waiting" | "needs_approval" | "approval_required" | "requires_approval"
+                );
+                let args_need_approval = sandbox_permissions.eq_ignore_ascii_case("require_escalated")
+                    || sandbox_permissions.eq_ignore_ascii_case("escalated")
+                    || payload.get("requires_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || payload.get("requiresApproval").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || args.get("requires_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || args.get("requiresApproval").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                let tool = payload
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Tool")
+                    .to_string();
+                let non_shell_call_waiting = tool != "shell_command"
+                    && status.is_empty()
+                    && parsed
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                        .map(|ts| {
+                            chrono::Utc::now()
+                                .signed_duration_since(ts.with_timezone(&chrono::Utc))
+                                .num_milliseconds()
+                                >= 1_000
+                        })
+                        .unwrap_or(false);
+                if !status_needs_approval && !args_need_approval && !non_shell_call_waiting {
+                    continue;
+                }
+
+                let command = args
+                    .get("command")
+                    .or_else(|| args.get("url"))
+                    .or_else(|| args.get("target"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let justification = args
+                    .get("justification")
+                    .or_else(|| payload.get("justification"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let detail = if !command.is_empty() { command } else { justification };
+                return Some((tool, detail));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Determine whether a Stop event represents a user-aborted turn rather than a
@@ -7345,6 +7649,25 @@ fn start_session_file_watcher(
                 };
 
                 let mut changed = false;
+
+                if session.source == "codex" {
+                    if let Some((tool, tool_input)) = codex_pending_approval(&path2) {
+                        if session.status != "waiting" {
+                            log::info!("File watcher: codex pending approval {}", sid2);
+                            session.status = "waiting".to_string();
+                            session.is_processing = false;
+                            changed = true;
+                        }
+                        session.tool = Some(tool);
+                        if !tool_input.is_empty() {
+                            session.tool_input = Some(tool_input);
+                        }
+                    } else if session.status == "waiting" {
+                        session.status = "processing".to_string();
+                        session.is_processing = true;
+                        changed = true;
+                    }
+                }
 
                 // Interruption detection: active/waiting but file shows interrupted
                 if matches!(session.status.as_str(), "processing" | "tool_running" | "waiting") {
@@ -7490,6 +7813,27 @@ fn get_frontmost_app_name() -> String {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn get_frontmost_window_title() -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0 == std::ptr::null_mut() {
+            return String::new();
+        }
+        let len = GetWindowTextLengthW(fg);
+        if len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u16; (len as usize) + 1];
+        let n = GetWindowTextW(fg, &mut buf) as usize;
+        String::from_utf16_lossy(&buf[..n])
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_frontmost_window_title() -> String { String::new() }
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn get_frontmost_app_name() -> String { String::new() }
 
@@ -7503,6 +7847,17 @@ fn is_codex_frontmost_app(name: &str) -> bool {
     }
     let lowered = name.to_ascii_lowercase();
     lowered == "codex" || lowered.contains("codex")
+}
+
+fn frontmost_app_is_codex() -> bool {
+    let app_name = get_frontmost_app_name();
+    if is_codex_frontmost_app(&app_name) {
+        return true;
+    }
+    // Windows Store / bundled desktop builds may expose a generic process
+    // name while the user-visible window title still contains "Codex".
+    let title = get_frontmost_window_title();
+    is_codex_frontmost_app(&title)
 }
 
 fn is_codex_host_terminal(name: &str) -> bool {
@@ -7533,6 +7888,34 @@ fn frontmost_matches_host_terminal(frontmost: &str, host_terminal: &str) -> bool
     false
 }
 
+/// Returns true if the user is currently looking at the terminal tab/app that
+/// hosts this session. Used to suppress both the completion popup and the
+/// waiting/permission popup when the user is already watching the session.
+fn user_looking_at_session_tab(session: &ClaudeSession) -> bool {
+    let frontmost = get_frontmost_app_name();
+    let is_ghostty_session = matches!(
+        session.host_terminal.as_deref(),
+        Some("Ghostty" | "ghostty")
+    );
+    if session.source == "cursor" {
+        is_cursor_frontmost_app(&frontmost)
+    } else if session.source == "codex" {
+        let ghostty_match = is_ghostty_session
+            && session.terminal_id.as_ref()
+                .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+                .unwrap_or(false);
+        ghostty_match || frontmost_app_is_codex()
+    } else if is_ghostty_session {
+        session.terminal_id.as_ref()
+            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
+            .unwrap_or(false)
+    } else if let Some(ht) = session.host_terminal.as_deref() {
+        frontmost_matches_host_terminal(&frontmost, ht)
+    } else {
+        false
+    }
+}
+
 
 #[tauri::command]
 async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec<ClaudeSession>, String> {
@@ -7556,8 +7939,22 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
             if !dominated { continue; }
 
             let is_desktop_hosted = session.host_terminal.as_deref() == Some("Claude Desktop");
-            if session.source == "cursor" || session.source == "codex" || is_desktop_hosted {
-                // Cursor/Codex/CC Desktop: timeout-based staleness (120s without any event update).
+            if session.source == "cursor" || session.source == "codex" || session.source == "opencode" || is_desktop_hosted {
+                if session.source == "codex" {
+                    if let Some(path) = resolve_session_jsonl_path(&session.session_id, Some(&session.cwd)) {
+                        if let Some((tool, tool_input)) = codex_pending_approval(&path) {
+                            session.status = "waiting".to_string();
+                            session.is_processing = false;
+                            session.tool = Some(tool);
+                            if !tool_input.is_empty() {
+                                session.tool_input = Some(tool_input);
+                            }
+                            session.updated_at = now_ms;
+                            continue;
+                        }
+                    }
+                }
+                // Cursor/Codex/opencode/CC Desktop: timeout-based staleness (120s without any event update).
                 // Hook PIDs are not stable enough for PID-alive checks in these environments.
                 let age_ms = now_ms.saturating_sub(session.updated_at);
                 if age_ms > 120_000 {
@@ -7589,7 +7986,7 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let active_tid = get_active_ghostty_terminal_id();
     let mut list: Vec<ClaudeSession> = sessions.values()
-        .filter(|s| !s.cwd.is_empty() || s.source == "cursor")
+        .filter(|s| !s.cwd.is_empty() || s.source == "cursor" || s.source == "opencode")
         .filter(|s| !is_codex_internal_utility_session(s))
         .cloned()
         .collect();
@@ -7603,7 +8000,7 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     // - Codex standalone app: check if Codex/Code is frontmost
     let frontmost = get_frontmost_app_name();
     let cursor_is_active = is_cursor_frontmost_app(&frontmost);
-    let codex_is_active = is_codex_frontmost_app(&frontmost);
+    let codex_is_active = frontmost_app_is_codex();
     // While the user is interacting with our own panel, Cursor's window loses
     // OS focus. Treat the panel being frontmost as "still on Cursor" so a
     // completed session isn't (re)surfaced just because the user clicked oc-claw.
@@ -7642,6 +8039,15 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
             {
                 s.is_active_tab = cursor_is_active;
             }
+            continue;
+        }
+        // opencode runs in a terminal with no stable window of its own. On
+        // Windows, suppress the completion popup when the hosting terminal
+        // window is foregrounded (or our own panel is). macOS keeps matching by
+        // the Ghostty terminal id captured by the plugin.
+        #[cfg(target_os = "windows")]
+        if s.source == "opencode" {
+            s.is_active_tab = windows_terminal_session_active(s.pid) || panel_is_frontmost;
             continue;
         }
         if s.is_active_tab {
@@ -8219,6 +8625,12 @@ async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String>
         return Ok(empty_claude_stats());
     }
 
+    // opencode persists token usage in a local SQLite DB
+    // (~/.local/share/opencode/opencode.db); parse it for real stats.
+    if source == "opencode" {
+        return collect_opencode_stats();
+    }
+
     if source == "gemini" {
         return collect_gemini_stats();
     }
@@ -8624,8 +9036,61 @@ async fn spawn_demo_mascot(app: tauri::AppHandle, pet_id: String) -> Result<Stri
     static DEMO_COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = DEMO_COUNTER.fetch_add(1, Ordering::SeqCst);
     let label = format!("demo-mascot-{}", n);
-
     let url = format!("index.html#/mini?demo=1&pet={}", pet_id);
+    spawn_mascot_window(app, label, url, n, true)
+}
+
+/// Live registry of extra (multi-pet) mascots, mapping each spawned window's
+/// label to the codex pet id it renders. The clones share equal status with the
+/// primary mascot but may each render a different pet the user picked. Lets the
+/// settings picker list and manage the currently-open mascots without
+/// re-spawning them.
+static EXTRA_MASCOTS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Spawn an extra, fully-functional mascot window for coding mode's
+/// "multi-mascot" feature. Unlike demo mascots (dev-only, decorative), these
+/// windows load `?extra=1` so the renderer wires up the click→expand-main-panel
+/// effect, making each mascot equal in status to the primary mini mascot. They
+/// still mirror the same aggregated agent state via the `mini-pet-state`
+/// broadcast.
+#[tauri::command]
+async fn spawn_extra_mascot(app: tauri::AppHandle, pet_id: String) -> Result<String, String> {
+    use std::sync::atomic::AtomicU64;
+    static EXTRA_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = EXTRA_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let label = format!("extra-mascot-{}", n);
+    let url = format!("index.html#/mini?extra=1&pet={}", pet_id);
+    let result = spawn_mascot_window(app, label.clone(), url, n, false);
+    if result.is_ok() {
+        if let Ok(mut reg) = EXTRA_MASCOTS.lock() {
+            reg.push((label, pet_id));
+        }
+    }
+    result
+}
+
+/// List the currently-open extra mascots as `[{ label, petId }]` so the picker
+/// can reflect live state and remove individual windows.
+#[tauri::command]
+fn list_extra_mascots() -> Vec<serde_json::Value> {
+    EXTRA_MASCOTS
+        .lock()
+        .map(|reg| {
+            reg.iter()
+                .map(|(label, pet_id)| {
+                    serde_json::json!({ "label": label, "petId": pet_id })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Shared mascot-window builder used by both demo and extra (multi-pet) mascots.
+/// `n` is the spawn index used to step each subsequent window across the screen
+/// so they don't stack on top of each other. `over_fullscreen` controls whether
+/// the window stays visible above other apps' fullscreen spaces (demo: yes,
+/// extra mascots: no, so they hide on fullscreen like the primary mascot).
+fn spawn_mascot_window(app: tauri::AppHandle, label: String, url: String, n: u64, over_fullscreen: bool) -> Result<String, String> {
     let win = tauri::WebviewWindowBuilder::new(
         &app,
         label.clone(),
@@ -8633,7 +9098,10 @@ async fn spawn_demo_mascot(app: tauri::AppHandle, pet_id: String) -> Result<Stri
     )
     .title("oc-claw demo mascot")
     .inner_size(96.0, 96.0)
-    .min_inner_size(96.0, 96.0)
+    // Small floor so extra (multi-pet) mascots can shrink to match a low
+    // "Mascot Size" slider via setSize. Demo mascots keep the 96px frame since
+    // they never resize.
+    .min_inner_size(16.0, 16.0)
     .resizable(false)
     .decorations(false)
     .transparent(true)
@@ -8694,7 +9162,16 @@ async fn spawn_demo_mascot(app: tauri::AppHandle, pet_id: String) -> Result<Stri
                 unsafe {
                     let _: () = msg_send![demo_obj, setLevel: 27isize];
                     let _: () = msg_send![demo_obj, setFrame: new_frame, display: true, animate: false];
-                    let behavior: usize = (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6);
+                    // CanJoinAllSpaces | Stationary | FullScreenAuxiliary | IgnoresCycle
+                    // keeps demo mascots visible over other apps' fullscreen (handy for
+                    // screen-recording demos). Extra (multi-pet) mascots omit the
+                    // fullscreen bits so macOS hides them when a video/app goes
+                    // fullscreen — matching the primary mascot's behavior.
+                    let behavior: usize = if over_fullscreen {
+                        (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6)
+                    } else {
+                        (1 << 4) | (1 << 6)
+                    };
                     let _: () = msg_send![demo_obj, setCollectionBehavior: behavior];
                     let _: () = msg_send![demo_obj, setAcceptsMouseMovedEvents: true];
                 }
@@ -8716,6 +9193,8 @@ async fn spawn_demo_mascot(app: tauri::AppHandle, pet_id: String) -> Result<Stri
         }
         let _ = win.set_always_on_top(true);
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = over_fullscreen;
     let _ = win.show();
     Ok(label)
 }
@@ -8753,6 +9232,70 @@ async fn close_demo_mascots(app: tauri::AppHandle) -> Result<u32, String> {
     Ok(closed)
 }
 
+/// Close a single extra (multi-pet) mascot window by label.
+#[tauri::command]
+async fn close_extra_mascot(app: tauri::AppHandle, label: String) -> Result<bool, String> {
+    if !label.starts_with("extra-mascot-") {
+        return Err("invalid extra mascot label".into());
+    }
+    if let Ok(mut reg) = EXTRA_MASCOTS.lock() {
+        reg.retain(|(l, _)| l != &label);
+    }
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.close();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Close every spawned extra (multi-pet) mascot window, leaving only the main mini.
+#[tauri::command]
+async fn close_extra_mascots(app: tauri::AppHandle) -> Result<u32, String> {
+    if let Ok(mut reg) = EXTRA_MASCOTS.lock() {
+        reg.clear();
+    }
+    let mut closed = 0u32;
+    let labels: Vec<String> = app
+        .webview_windows()
+        .keys()
+        .filter(|l| l.starts_with("extra-mascot-"))
+        .cloned()
+        .collect();
+    for label in labels {
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = win.close();
+            closed += 1;
+        }
+    }
+    Ok(closed)
+}
+
+/// Hide or show every extra (multi-pet) mascot window without destroying it,
+/// so their positions survive. Used to keep the extra mascots in lock-step with
+/// the primary mascot: when the session panel is expanded the primary mascot is
+/// replaced by the panel, so the clones must disappear too (and reappear when it
+/// collapses).
+#[tauri::command]
+async fn set_extra_mascots_hidden(app: tauri::AppHandle, hidden: bool) -> Result<(), String> {
+    let labels: Vec<String> = app
+        .webview_windows()
+        .keys()
+        .filter(|l| l.starts_with("extra-mascot-"))
+        .cloned()
+        .collect();
+    for label in labels {
+        if let Some(win) = app.get_webview_window(&label) {
+            if hidden {
+                let _ = win.hide();
+            } else {
+                let _ = win.show();
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Open the platform's native folder picker so the user can choose a
 /// codex pet directory to import. Returns the absolute path or `null` if
 /// the user cancelled. Implemented with `osascript` on macOS and
@@ -8768,26 +9311,46 @@ async fn close_demo_mascots(app: tauri::AppHandle) -> Result<u32, String> {
 // main-thread assertions and aborts the app with SIGTERM.
 fn reassert_mini_floating(app: &tauri::AppHandle) {
     use tauri::Manager;
-    let Some(win) = app.get_webview_window("mini") else {
-        return;
-    };
-    let win_clone = win.clone();
-    let _ = app.run_on_main_thread(move || {
-        #[cfg(target_os = "macos")]
-        {
-            use objc2::runtime::AnyObject;
-            use objc2::msg_send;
-            if let Ok(ns_win) = win_clone.ns_window() {
-                let obj = unsafe { &*(ns_win as *mut AnyObject) };
-                unsafe {
-                    let _: () = msg_send![obj, setLevel: 27isize];
-                    let behavior: usize = (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6);
-                    let _: () = msg_send![obj, setCollectionBehavior: behavior];
+    // Reassert the main mini window plus every extra (multi-pet) mascot so they
+    // all sit at the exact same window level. macOS (and Tauri's own
+    // always-on-top bookkeeping) can silently demote floating windows after a
+    // foreign app takes focus; without this the extra mascots drift to a
+    // different layer than the primary mascot.
+    let mut wins: Vec<(tauri::WebviewWindow, bool)> = Vec::new();
+    if let Some(win) = app.get_webview_window("mini") {
+        wins.push((win, true));
+    }
+    for (label, win) in app.webview_windows() {
+        if label.starts_with("extra-mascot-") {
+            // Extra mascots omit the fullscreen bits so they hide on fullscreen.
+            wins.push((win, false));
+        }
+    }
+    for (win, over_fullscreen) in wins {
+        let win_clone = win.clone();
+        let _ = app.run_on_main_thread(move || {
+            #[cfg(target_os = "macos")]
+            {
+                use objc2::runtime::AnyObject;
+                use objc2::msg_send;
+                if let Ok(ns_win) = win_clone.ns_window() {
+                    let obj = unsafe { &*(ns_win as *mut AnyObject) };
+                    unsafe {
+                        let _: () = msg_send![obj, setLevel: 27isize];
+                        let behavior: usize = if over_fullscreen {
+                            (1 << 0) | (1 << 4) | (1 << 8) | (1 << 6)
+                        } else {
+                            (1 << 4) | (1 << 6)
+                        };
+                        let _: () = msg_send![obj, setCollectionBehavior: behavior];
+                    }
                 }
             }
-        }
-        let _ = win_clone.set_always_on_top(true);
-    });
+            #[cfg(not(target_os = "macos"))]
+            let _ = over_fullscreen;
+            let _ = win_clone.set_always_on_top(true);
+        });
+    }
 }
 
 #[tauri::command]
@@ -9523,6 +10086,38 @@ fn find_running_claude_desktop_pid() -> Option<u32> {
     result
 }
 
+/// PID owning the current foreground window, or None.
+#[cfg(target_os = "windows")]
+fn foreground_window_pid() -> Option<u32> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0 == std::ptr::null_mut() {
+            return None;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == 0 { None } else { Some(pid) }
+    }
+}
+
+/// Whether a terminal-hosted CLI session (e.g. opencode) is the one the user is
+/// currently looking at: true when the foreground window belongs to the
+/// terminal that hosts `pid` (its nearest window-owning ancestor). Used to
+/// suppress the completion popup when the relevant terminal is already focused.
+/// The CLI process itself has no window, so we compare against its hosting
+/// terminal's window (works for Windows Terminal; classic conhost — whose
+/// window is a child, not an ancestor — falls back to "not active").
+#[cfg(target_os = "windows")]
+fn windows_terminal_session_active(pid: Option<u32>) -> bool {
+    let pid = match pid { Some(p) => p, None => return false };
+    let fg_pid = match foreground_window_pid() { Some(p) => p, None => return false };
+    match find_ancestor_window_pid(pid) {
+        Some(term_pid) => term_pid == fg_pid,
+        None => false,
+    }
+}
+
 /// Walk up the process tree from `pid` to find the nearest ancestor that owns
 /// a visible window (i.e. the terminal hosting a CLI process like gemini/hermes).
 #[cfg(target_os = "windows")]
@@ -10123,6 +10718,13 @@ end tell"#,
                 }
             }
             return Err("No PID tracked for this Gemini session".to_string());
+        } else if source == "opencode" {
+            for app_name in ["Ghostty", "Terminal", "iTerm2", "iTerm", "Warp"] {
+                if try_activate_app(app_name) {
+                    return Ok(format!("Activated {}", app_name));
+                }
+            }
+            return Err("No PID tracked for this opencode session".to_string());
         } else if source == "hermes" {
             // Hermes supports multiple platforms. Use the platform field to
             // decide which application to activate, like OpenClaw does for
@@ -10418,6 +11020,15 @@ end tell"#,
             if let Some(p) = find_pid_by_exe_names(terminal_exes) {
                 activate_window_by_pid(p);
                 return Ok("Activated terminal for Gemini session".to_string());
+            }
+        } else if source == "opencode" {
+            let terminal_exes = &[
+                "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                "alacritty.exe", "wezterm-gui.exe", "hyper.exe",
+            ];
+            if let Some(p) = find_pid_by_exe_names(terminal_exes) {
+                activate_window_by_pid(p);
+                return Ok("Activated terminal for opencode session".to_string());
             }
         } else if source == "hermes" {
             let plat = platform.as_deref().unwrap_or("unknown").to_lowercase();
@@ -12006,78 +12617,120 @@ try {
     std::fs::write(&settings_path, serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
 
-    // Keep Codex desktop integration in sync with Claude integration.
-    // Frontend still invokes `install_claude_hooks`, so we install both
-    // hook systems here to avoid requiring frontend API changes.
-    install_codex_hooks().await?;
-
     Ok(())
 }
 
+#[tauri::command]
 async fn install_codex_hooks() -> Result<(), String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
-    let codex_dir = home.join(".Codex");
+    let codex_dir = home.join(".codex");
     let hooks_dir = codex_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
 
-    // Codex support is dropped on Windows. Same as the cursor branch above:
-    // proactively delete any previously-installed hook script and strip our
-    // entries from hooks.json so the codex CLI cannot reach the oc-claw
-    // socket on this machine anymore.
+    #[cfg(windows)]
+    let hook_path = hooks_dir.join("ooclaw-codex-hook.ps1");
+    #[cfg(not(windows))]
+    let hook_path = hooks_dir.join("ooclaw-codex-hook.sh");
+
     #[cfg(windows)]
     {
-        let _ = std::fs::remove_file(hooks_dir.join("ooclaw-codex-hook.ps1"));
-        // Codex's home is conventionally `.codex` on Windows but the install
-        // path used `.Codex` historically — the file system is case-
-        // insensitive so we clean the same dir, but also catch the
-        // lowercase variant explicitly in case both ever exist.
-        let alt = home.join(".codex").join("hooks").join("ooclaw-codex-hook.ps1");
-        if alt.exists() {
-            let _ = std::fs::remove_file(&alt);
+        let hook_script = r#"param([string]$HookEvent = '')
+$ErrorActionPreference = 'SilentlyContinue'
+try {
+    $stdin = [System.Console]::OpenStandardInput()
+    $ms = New-Object System.IO.MemoryStream
+    $buffer = New-Object byte[] 8192
+    while (($n = $stdin.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        $ms.Write($buffer, 0, $n)
+    }
+    $bytes = $ms.ToArray()
+    if ($bytes.Length -eq 0) { [Console]::Out.Write('{}'); exit 0 }
+
+    $offset = 0
+    $count = $bytes.Length
+    if ($count -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $offset = 3
+        $count = $count - 3
+    }
+
+    $raw = [System.Text.Encoding]::UTF8.GetString($bytes, $offset, $count)
+    if ([string]::IsNullOrWhiteSpace($raw)) { [Console]::Out.Write('{}'); exit 0 }
+    try {
+        if ($env:OC_CLAW_DEBUG_CODEX_HOOK -eq '1') {
+            $debugPath = Join-Path $env:TEMP 'oc-claw-codex-hook-last.json'
+            ('event=' + $HookEvent + "`n" + $raw) | Set-Content -LiteralPath $debugPath -Encoding UTF8
         }
-        for hooks_json_path in [codex_dir.join("hooks.json"), home.join(".codex").join("hooks.json")] {
-            if !hooks_json_path.exists() { continue; }
-            let Ok(content) = std::fs::read_to_string(&hooks_json_path) else { continue; };
-            let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) else { continue; };
-            if let Some(hooks) = config.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-                let event_names: Vec<String> = hooks.keys().cloned().collect();
-                for name in event_names {
-                    if let Some(arr) = hooks.get_mut(&name).and_then(|v| v.as_array_mut()) {
-                        arr.retain(|entry| {
-                            let cmd_match = entry.get("command").and_then(|c| c.as_str())
-                                .map(|c| c.contains("ooclaw-codex-hook"))
-                                .unwrap_or(false);
-                            let nested_match = entry.get("hooks").and_then(|hs| hs.as_array())
-                                .map(|hs| hs.iter().any(|inner| {
-                                    inner.get("command").and_then(|c| c.as_str())
-                                        .map(|c| c.contains("ooclaw-codex-hook"))
-                                        .unwrap_or(false)
-                                }))
-                                .unwrap_or(false);
-                            !(cmd_match || nested_match)
-                        });
-                        if arr.is_empty() {
-                            hooks.remove(&name);
-                        }
+    } catch {}
+
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json } catch {}
+    if ($obj -ne $null) {
+        if (-not $obj.source) { $obj | Add-Member -NotePropertyName source -NotePropertyValue 'codex' -Force }
+        if (-not $obj.hook_event_name) {
+            $eventName = ''
+            if ($obj.event) { $eventName = [string]$obj.event }
+            elseif ($obj.codex_event_type) { $eventName = [string]$obj.codex_event_type }
+            elseif ($HookEvent) { $eventName = $HookEvent }
+            if ($eventName) { $obj | Add-Member -NotePropertyName hook_event_name -NotePropertyValue $eventName -Force }
+        }
+        if (-not $obj.cwd -and -not $obj.workdir) {
+            try { $obj | Add-Member -NotePropertyName cwd -NotePropertyValue (Get-Location).Path -Force } catch {}
+        }
+        if (-not $obj.pid) {
+            try {
+                $current = $PID
+                for ($i = 0; $i -lt 10; $i++) {
+                    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$current"
+                    if (-not $proc) { break }
+                    $parentId = $proc.ParentProcessId
+                    if (-not $parentId -or $parentId -eq 0 -or $parentId -eq $current) { break }
+                    $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId"
+                    if (-not $parent) { break }
+                    $exe = ''
+                    if ($parent.ExecutablePath) { $exe = $parent.ExecutablePath.ToLower() }
+                    if ($exe -and ($exe.EndsWith('\codex.exe') -or $exe.EndsWith('\node.exe') -or $exe.EndsWith('\powershell.exe') -or $exe.EndsWith('\pwsh.exe'))) {
+                        $obj | Add-Member -NotePropertyName pid -NotePropertyValue ([int]$parent.ProcessId) -Force
+                        break
                     }
+                    $current = $parentId
                 }
-            }
-            if let Ok(json_str) = serde_json::to_string_pretty(&config) {
-                let _ = std::fs::write(&hooks_json_path, json_str);
-            }
+            } catch {}
         }
-        log::info!("[codex_hooks] codex support disabled on windows; cleaned previously installed hooks");
-        return Ok(());
+        $raw = $obj | ConvertTo-Json -Compress -Depth 30
+    }
+
+    $hookName = ''
+    if ($obj -ne $null -and $obj.hook_event_name) { $hookName = [string]$obj.hook_event_name }
+    if (-not $hookName -and $HookEvent) { $hookName = $HookEvent }
+
+    try {
+        $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
+        $stream = $client.GetStream()
+        $payload = [System.Text.Encoding]::UTF8.GetBytes($raw)
+        $stream.Write($payload, 0, $payload.Length)
+        $stream.Flush()
+        $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+
+        if ($hookName -eq 'PermissionRequest') {
+            $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+            $response = $reader.ReadToEnd()
+            if ($response) { [Console]::Out.Write($response) } else { [Console]::Out.Write('{}') }
+            $reader.Close()
+        } else {
+            [Console]::Out.Write('{}')
+        }
+        $client.Close()
+    } catch {
+        [Console]::Out.Write('{}')
+    }
+} catch {
+    try { [Console]::Out.Write('{}') } catch {}
+}
+"#;
+        std::fs::write(&hook_path, hook_script).map_err(|e| e.to_string())?;
     }
 
     #[cfg(not(windows))]
-    std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
-
-    #[cfg(unix)]
-    let hook_path = hooks_dir.join("ooclaw-codex-hook.sh");
-    #[cfg(windows)]
-    let hook_path = hooks_dir.join("ooclaw-codex-hook.ps1");
-
-    #[cfg(unix)]
     {
         let hook_script = r#"#!/bin/bash
 # ooclaw Codex hook - forwards events to /tmp/ooclaw-claude.sock
@@ -12176,58 +12829,6 @@ except:
             .map_err(|e| e.to_string())?;
     }
 
-    #[cfg(windows)]
-    {
-        // On Windows, keep the hook simple: forward Codex JSON to the existing
-        // oc-claw TCP hook server. `process_claude_event` handles both Codex
-        // and Claude field variants.
-        let ps1_script = r#"$ErrorActionPreference = 'SilentlyContinue'
-[Console]::InputEncoding = [System.Text.Encoding]::UTF8
-try {
-    $raw = [Console]::In.ReadToEnd()
-    if ([string]::IsNullOrWhiteSpace($raw)) {
-        [Console]::Out.Write('{}')
-        exit 0
-    }
-
-    $obj = $null
-    try { $obj = $raw | ConvertFrom-Json } catch {}
-    if ($obj -ne $null) {
-        $ccPid = $null; try { $cur = $PID; for ($i = 0; $i -lt 8; $i++) { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$cur"; if (-not $p) { break }; $cur = $p.ParentProcessId; if ($cur -le 0) { break }; $pp = Get-CimInstance Win32_Process -Filter "ProcessId=$cur"; if ($pp -and $pp.Name -eq 'claude.exe' -and $pp.ExecutablePath -and $pp.ExecutablePath.ToLower().Contains('windowsapps')) { $ccPid = $cur; break } } } catch {}
-        if (-not $obj.source) { $obj.source = 'codex' }
-        if ($ccPid -and -not $obj.pid) { $obj | Add-Member -NotePropertyName pid -NotePropertyValue $ccPid -Force }
-        if (-not $obj.hook_event_name -and $obj.codex_event_type) { $obj.hook_event_name = $obj.codex_event_type }
-        if (-not $obj.cwd -and -not $obj.workdir) { $obj.cwd = (Get-Location).Path }
-        $raw = $obj | ConvertTo-Json -Compress -Depth 20
-    }
-
-    $hookName = ''
-    if ($obj -ne $null -and $obj.hook_event_name) { $hookName = [string]$obj.hook_event_name }
-
-    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
-    $stream = $client.GetStream()
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Flush()
-    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
-
-    if ($hookName -eq 'PermissionRequest') {
-        $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
-        $response = $reader.ReadToEnd()
-        if ($response) { [Console]::Out.Write($response) } else { [Console]::Out.Write('{}') }
-        $reader.Close()
-    } else {
-        [Console]::Out.Write('{}')
-    }
-    [Console]::Out.Flush()
-    $client.Close()
-} catch {
-    try { [Console]::Out.Write('{}'); [Console]::Out.Flush() } catch {}
-}
-"#;
-        std::fs::write(&hook_path, ps1_script).map_err(|e| e.to_string())?;
-    }
-
     let hooks_json_path = codex_dir.join("hooks.json");
     let mut config: serde_json::Value = if hooks_json_path.exists() {
         let content = std::fs::read_to_string(&hooks_json_path).map_err(|e| e.to_string())?;
@@ -12241,44 +12842,83 @@ try {
     let hooks = config["hooks"].as_object_mut().ok_or("hooks is not an object")?;
 
     #[cfg(windows)]
-    let hook_command = format!(
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+    let hook_command_windows_base = format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
         hook_path.to_string_lossy().replace('\\', "/"),
     );
     #[cfg(not(windows))]
-    let hook_command = hook_path.to_string_lossy().to_string();
+    let hook_command_base = hook_path.to_string_lossy().to_string();
 
     let has_our_hook = |entry: &serde_json::Value| -> bool {
         let is_ours = |cmd: &str| -> bool {
-            cmd == hook_command || cmd.contains("ooclaw-codex-hook")
+            cmd.contains("ooclaw-codex-hook")
         };
         entry.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c))
+            || entry
+                .get("command_windows")
+                .and_then(|c| c.as_str())
+                .map_or(false, |c| is_ours(c))
             || entry.get("hooks").and_then(|hs| hs.as_array()).map_or(false, |hs| {
-                hs.iter().any(|inner| inner.get("command").and_then(|c| c.as_str()).map_or(false, |c| is_ours(c)))
+                hs.iter().any(|inner| {
+                    inner
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .map_or(false, |c| is_ours(c))
+                        || inner
+                            .get("command_windows")
+                            .and_then(|c| c.as_str())
+                            .map_or(false, |c| is_ours(c))
+                })
             })
     };
 
-    let hook_def = serde_json::json!({"type": "command", "command": hook_command});
-    let event_names = [
-        "SessionStart",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PermissionRequest",
-        "Stop",
-        "StopFailure",
-        "SubagentStop",
+    for event_hooks in hooks.values_mut() {
+        if let Some(list) = event_hooks.as_array_mut() {
+            list.retain(|entry| !has_our_hook(entry));
+        }
+    }
+
+    #[cfg(windows)]
+    let make_hook_def = |event_name: &str| {
+        let hook_command = format!("{} {}", hook_command_windows_base, event_name);
+        serde_json::json!({
+            "type": "command",
+            "command": hook_command.clone(),
+            "timeout": 5,
+        })
+    };
+    #[cfg(not(windows))]
+    let make_hook_def = |_event_name: &str| {
+        serde_json::json!({
+            "type": "command",
+            "command": hook_command_base.clone(),
+            "timeout": 5,
+        })
+    };
+
+    let hook_configs = vec![
+        ("SessionStart", false),
+        ("UserPromptSubmit", false),
+        ("PreToolUse", true),
+        ("PostToolUse", true),
+        ("Stop", false),
     ];
-    for event_name in event_names {
+    for (event_name, needs_matcher) in hook_configs {
+        let hook_def = make_hook_def(event_name);
         let arr = hooks.entry(event_name.to_string()).or_insert(serde_json::json!([]));
         let list = arr.as_array_mut().ok_or("hook event is not an array")?;
-        list.retain(|entry| !has_our_hook(entry));
-        list.push(serde_json::json!({"hooks": [hook_def.clone()]}));
+        if needs_matcher {
+            list.push(serde_json::json!({"matcher": "*", "hooks": [hook_def.clone()]}));
+        } else {
+            list.push(serde_json::json!({"hooks": [hook_def.clone()]}));
+        }
     }
 
     let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(&hooks_json_path, json_str).map_err(|e| e.to_string())?;
+    ensure_codex_hooks_feature_enabled(&codex_dir)?;
 
+    log::info!("[codex_hooks] installed hooks to {:?}", hooks_json_path);
     Ok(())
 }
 
@@ -12387,6 +13027,14 @@ fn is_codex_internal_utility_event(event: &serde_json::Value) -> bool {
     if prompt.starts_with("You are a helpful assistant. You will be presented with a user prompt") {
         return true;
     }
+    let prompt_lower = prompt.trim_start().to_ascii_lowercase();
+    if prompt_lower == "memories"
+        || prompt_lower.starts_with("memories -")
+        || prompt_lower.starts_with("## memory")
+        || prompt_lower.starts_with("# memory")
+    {
+        return true;
+    }
 
     let transcript_is_null = event.get("transcript_path").map(|v| v.is_null()).unwrap_or(false);
     let source = event.get("source").and_then(|v| v.as_str()).unwrap_or("");
@@ -12403,6 +13051,13 @@ fn is_codex_internal_utility_event(event: &serde_json::Value) -> bool {
     if last_message.starts_with("{\"title\":") {
         return true;
     }
+    let last_lower = last_message.to_ascii_lowercase();
+    if last_lower.starts_with("memories -")
+        || last_lower.starts_with("## memory")
+        || last_lower.starts_with("# memory")
+    {
+        return true;
+    }
 
     false
 }
@@ -12416,9 +13071,23 @@ fn is_codex_internal_utility_session(session: &ClaudeSession) -> bool {
     if prompt.starts_with("You are a helpful assistant. You will be presented with a user prompt") {
         return true;
     }
+    let prompt_lower = prompt.trim_start().to_ascii_lowercase();
+    if prompt_lower == "memories"
+        || prompt_lower.starts_with("memories -")
+        || prompt_lower.starts_with("## memory")
+        || prompt_lower.starts_with("# memory")
+    {
+        return true;
+    }
 
     let last = session.last_response.as_deref().unwrap_or("").trim_start();
-    last.starts_with("{\"title\":")
+    if last.starts_with("{\"title\":") {
+        return true;
+    }
+    let last_lower = last.to_ascii_lowercase();
+    last_lower.starts_with("memories -")
+        || last_lower.starts_with("## memory")
+        || last_lower.starts_with("# memory")
 }
 
 /// Process a Claude hook event (shared logic between Unix socket and TCP server).
@@ -12594,6 +13263,10 @@ fn process_claude_event(
         let session_source: String;
         let session_host_terminal: Option<String>;
         let stop_was_interrupted;
+        // Whether the user is already looking at this session's terminal tab at
+        // the moment a waiting/permission event arrives — used to suppress the
+        // waiting popup, same focus rule as the completion popup.
+        let mut wait_tab_active = false;
 
         {
             let mut sessions = state.lock().unwrap();
@@ -12651,7 +13324,8 @@ fn process_claude_event(
                         "codex" => 2,
                         "gemini" => 3,
                         "hermes" => 4,
-                        "cursor" => 5,
+                        "opencode" => 5,
+                        "cursor" => 6,
                         _ => 0,
                     }
                 };
@@ -12874,28 +13548,7 @@ fn process_claude_event(
                     // Cursor: check if Cursor (or oc-claw) is the frontmost app.
                     // If a terminal ID is missing (older hooks / non-Ghostty),
                     // fall back to host-terminal checks where available.
-                    let frontmost = get_frontmost_app_name();
-                    let is_ghostty_session = matches!(
-                        session.host_terminal.as_deref(),
-                        Some("Ghostty" | "ghostty")
-                    );
-                    let is_tab_active = if session.source == "cursor" {
-                        is_cursor_frontmost_app(&frontmost)
-                    } else if session.source == "codex" {
-                        let ghostty_match = is_ghostty_session
-                            && session.terminal_id.as_ref()
-                                .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
-                                .unwrap_or(false);
-                        ghostty_match || is_codex_frontmost_app(&frontmost)
-                    } else if is_ghostty_session {
-                        session.terminal_id.as_ref()
-                            .and_then(|tid| get_active_ghostty_terminal_id().map(|a| a == *tid))
-                            .unwrap_or(false)
-                    } else if let Some(ht) = session.host_terminal.as_deref() {
-                        frontmost_matches_host_terminal(&frontmost, ht)
-                    } else {
-                        false
-                    };
+                    let is_tab_active = user_looking_at_session_tab(session);
                     if is_tab_active || interrupted {
                         session.last_response = None;
                     } else if session.source == "hermes" {
@@ -12922,9 +13575,9 @@ fn process_claude_event(
                         if resp_from_event.is_some() {
                             session.last_response = resp_from_event;
                         } else if session.last_response.is_none()
-                            && (session.source == "cursor" || session.source == "codex" || session.source == "gemini")
+                            && (session.source == "cursor" || session.source == "codex" || session.source == "gemini" || session.source == "opencode")
                         {
-                            // Gemini's AfterAgent hook carries no assistant text, so fall
+                            // Gemini/opencode hooks carry no assistant text, so fall
                             // back to a placeholder like Cursor/Codex so the completion
                             // popup still triggers. The frontend renders "✓" specially.
                             session.last_response = Some("✓".to_string());
@@ -12947,6 +13600,14 @@ fn process_claude_event(
                     session.permission_suggestions = None;
                 }
 
+                // For waiting/permission events, capture tab focus now (real-time,
+                // not polling) so the waiting popup can be suppressed when the
+                // user is already watching the session's terminal tab.
+                if hook_event == "PermissionRequest"
+                    || (hook_event == "PreToolUse" && status == "waiting") {
+                    wait_tab_active = user_looking_at_session_tab(session);
+                }
+
                 pending_agents = session.pending_agents;
                 session_source = session.source.clone();
                 session_host_terminal = session.host_terminal.clone();
@@ -12961,8 +13622,11 @@ fn process_claude_event(
         // Also suppress sound while sub-agents are still running (pending_agents > 0).
         // Each PreToolUse(Agent) increments the counter, each SubagentStop decrements it.
         // Sound only plays when all sub-agents have completed.
-        let is_wait_event = hook_event == "PermissionRequest"
-            || (hook_event == "PreToolUse" && status == "waiting");
+        let is_wait_event = (hook_event == "PermissionRequest"
+            || (hook_event == "PreToolUse" && status == "waiting"))
+            // Suppress the waiting popup when the user is already looking at the
+            // session's terminal tab (same focus rule as the completion popup).
+            && !wait_tab_active;
         let is_completion_stop = hook_event == "Stop" && pending_agents == 0 && !stop_was_interrupted;
         if was_processing && !was_compacting
             && (is_completion_stop || is_wait_event) {
@@ -13320,6 +13984,378 @@ try {
     std::fs::write(&settings_path, json_str).map_err(|e| e.to_string())?;
     log::info!("[gemini_hooks] installed hooks to {:?}", settings_path);
 
+    Ok(())
+}
+
+// ─── opencode Integration ──────────────────────────────────────────────
+
+// oc-claw plugin source for opencode. opencode auto-loads any *.js/*.ts file
+// under ~/.config/opencode/plugins/, so we just drop this file there (no
+// opencode.json edit needed). It runs inside the opencode (Bun) process and
+// forwards session/tool events to the oc-claw socket. Zero dependencies
+// (node:net + node:os). Event names use Claude Code's PascalCase vocabulary so
+// process_claude_event() can normalize opencode the same way as other agents.
+const OPENCODE_PLUGIN_JS: &str = r#"// oc-claw opencode plugin (auto-generated by oc-claw — do not edit).
+// Forwards opencode session/tool events to oc-claw over a local socket so the
+// desktop pet can react to opencode activity. Runs in the opencode/Bun process.
+//
+// Event shapes (verified on opencode 1.16.2) put the session id in different
+// places depending on the event, so we extract it per-event instead of from a
+// single field:
+//   - session.created/updated/deleted: properties.info.id
+//   - session.status:                  properties.sessionID
+//   - message.updated:                 properties.info.sessionID
+//   - message.part.updated (tool/text):properties.part.sessionID
+// Completion ("Stop") is delivered as session.status with status.type==="idle",
+// NOT as a session.idle event.
+import net from "node:net";
+import os from "node:os";
+import { execFileSync } from "node:child_process";
+
+const IS_WIN = os.platform() === "win32";
+const SOCKET_PATH = "/tmp/ooclaw-opencode.sock";
+const TCP_PORT = 19287;
+const SOURCE = "opencode";
+
+// Only the root session (first non-subtask session seen in this opencode
+// process) is forwarded. Subtask sessions spawned by the `task` tool carry a
+// parentID and would otherwise show up as extra rows + duplicate sounds.
+let rootSessionId = null;
+// sessionId -> cwd, captured from session.created so every event can report it.
+const sessionCwd = new Map();
+// messageID -> { role, sessionID }, so message.part.updated text parts know
+// whether they belong to the user (prompt) or the assistant (reply text).
+const msgRoles = new Map();
+// Most recent assistant text on the root session — sent with Stop so oc-claw
+// can show it in the completion popup.
+let lastAssistantText = "";
+// Dedup consecutive identical event+status so streaming part updates don't spam.
+let lastSent = null;
+// True while opencode is blocked on a permission/question prompt. The gated tool
+// stays "running" and keeps streaming part updates during the wait, so we must
+// keep mapping those to the waiting state instead of letting them flip the pet
+// back to "working" (green). Cleared once answered, the tool finishes, or idle.
+let pendingWait = false;
+
+// Ghostty terminal id of the tab opencode runs in. oc-claw uses it to skip the
+// completion popup when that tab is already focused (same trick the CC/Gemini
+// hooks use). Captured lazily at startup, when the opencode tab is frontmost.
+// Empty for non-Ghostty terminals, which fall back to host-app focus matching.
+let terminalId = null;
+let tidAttempts = 0;
+function resolveTerminalId() {
+  if (terminalId || IS_WIN || tidAttempts >= 5) return terminalId;
+  tidAttempts++;
+  try {
+    const out = execFileSync(
+      "osascript",
+      ["-e", 'try\ntell application "Ghostty" to return id of first terminal of selected tab of front window as text\nend try'],
+      { encoding: "utf8", timeout: 2000 },
+    ).trim();
+    if (out) terminalId = out;
+  } catch {}
+  return terminalId;
+}
+
+// Fire-and-forget: a broken or missing oc-claw must never stall opencode.
+function sendToOcClaw(payload) {
+  let sock;
+  try {
+    sock = IS_WIN
+      ? net.createConnection({ host: "127.0.0.1", port: TCP_PORT })
+      : net.createConnection({ path: SOCKET_PATH });
+  } catch {
+    return;
+  }
+  const done = () => { try { sock.destroy(); } catch {} };
+  sock.setTimeout(1000);
+  sock.on("error", done);
+  sock.on("timeout", done);
+  sock.on("connect", () => {
+    try { sock.end(JSON.stringify(payload)); } catch { done(); }
+  });
+}
+
+function emit(sessionId, eventName, status, extra, force) {
+  if (!sessionId) return;
+  if (!rootSessionId) rootSessionId = sessionId;
+  // Ignore everything that isn't the root session.
+  if (sessionId !== rootSessionId) return;
+
+  const dedupKey = sessionId + "|" + eventName + "|" + status;
+  // `force` lets permission/question events carry their text through even when
+  // the interactive tool already pushed an identical waiting state.
+  if (!force && dedupKey === lastSent) return;
+  lastSent = dedupKey;
+
+  const payload = Object.assign({
+    sessionId,
+    cwd: sessionCwd.get(sessionId) || "",
+    event: eventName,
+    claudeStatus: status,
+    source: SOURCE,
+    pid: process.pid,
+  }, extra || {});
+  const tid = resolveTerminalId();
+  if (tid) payload.terminalId = tid;
+  sendToOcClaw(payload);
+}
+
+const plugin = async (ctx) => {
+  const initCwd = ctx && typeof ctx.directory === "string" ? ctx.directory : "";
+  // Capture the Ghostty tab id while opencode's tab is still frontmost.
+  resolveTerminalId();
+  return {
+    event: async ({ event }) => {
+      try {
+        if (!event || typeof event.type !== "string") return;
+        const t = event.type;
+        const p = event.properties || {};
+
+        switch (t) {
+          case "session.created": {
+            const info = p.info;
+            if (!info || !info.id) return;
+            sessionCwd.set(info.id, info.directory || initCwd || "");
+            // Subtask sessions carry a parentID — never promote them to root.
+            if (info.parentID) return;
+            emit(info.id, "SessionStart", "waiting_for_input");
+            return;
+          }
+
+          case "session.updated": {
+            const info = p.info;
+            if (!info || !info.id) return;
+            if (info.directory) sessionCwd.set(info.id, info.directory);
+            if (info.time && info.time.archived) emit(info.id, "SessionEnd", "ended");
+            return;
+          }
+
+          case "session.deleted": {
+            const info = p.info;
+            if (info && info.id) emit(info.id, "SessionEnd", "ended");
+            return;
+          }
+
+          case "server.instance.disposed": {
+            if (rootSessionId) emit(rootSessionId, "SessionEnd", "ended");
+            return;
+          }
+
+          case "session.status": {
+            const sid = p.sessionID;
+            if (!sid) return;
+            const type = p.status && p.status.type;
+            if (type === "idle") {
+              pendingWait = false;
+              emit(sid, "Stop", "waiting_for_input",
+                lastAssistantText ? { last_assistant_message: lastAssistantText } : null);
+            } else if (type === "busy") {
+              emit(sid, "UserPromptSubmit", "processing");
+            }
+            return;
+          }
+
+          // Some builds may still emit these directly — handle as a fallback.
+          case "session.idle": {
+            pendingWait = false;
+            emit(p.sessionID || rootSessionId, "Stop", "waiting_for_input",
+              lastAssistantText ? { last_assistant_message: lastAssistantText } : null);
+            return;
+          }
+          case "session.error": {
+            pendingWait = false;
+            emit(p.sessionID || rootSessionId, "Stop", "waiting_for_input");
+            return;
+          }
+          case "session.compacted": {
+            emit(p.sessionID || rootSessionId, "PreCompact", "compacting");
+            return;
+          }
+
+          // Permission / interactive question — opencode is blocked waiting for
+          // the user to choose in its own TUI, so surface the "waiting" pet
+          // state (oc-claw shows a "go to opencode" jump, not allow/deny).
+          case "permission.asked": {
+            pendingWait = true;
+            const perm = p.permission || (p.metadata && p.metadata.title) || "";
+            emit(p.sessionID || rootSessionId, "PermissionRequest", "waiting",
+              perm ? { tool_name: perm } : null, true);
+            return;
+          }
+          case "question.asked": {
+            pendingWait = true;
+            const qtext = Array.isArray(p.questions)
+              ? p.questions.map((q) => (q && (q.question || q.title)) || "").filter(Boolean).join("; ")
+              : "";
+            emit(p.sessionID || rootSessionId, "PermissionRequest", "waiting",
+              qtext ? { prompt: qtext } : null, true);
+            return;
+          }
+          case "permission.replied":
+          case "question.replied":
+          case "question.rejected": {
+            pendingWait = false;
+            emit(p.sessionID || rootSessionId, "PostToolUse", "processing");
+            return;
+          }
+
+          case "message.updated": {
+            const info = p.info;
+            if (info && info.id && info.sessionID) {
+              msgRoles.set(info.id, { role: info.role, sessionID: info.sessionID });
+              if (msgRoles.size > 200) msgRoles.delete(msgRoles.keys().next().value);
+            }
+            return;
+          }
+
+          case "message.part.updated": {
+            const part = p.part;
+            if (!part || typeof part !== "object") return;
+
+            if (part.type === "text") {
+              const meta = msgRoles.get(part.messageID);
+              if (!meta) return;
+              const text = part.text || "";
+              if (meta.role === "user" && text) {
+                emit(meta.sessionID, "UserPromptSubmit", "processing", { prompt: text });
+              } else if (meta.role === "assistant" && text) {
+                // Only the root session's reply feeds the completion popup.
+                if (!rootSessionId || meta.sessionID === rootSessionId) lastAssistantText = text;
+              }
+              return;
+            }
+
+            if (part.type === "tool") {
+              const sid = part.sessionID;
+              if (!sid) return;
+              const st = part.state && part.state.status;
+              const toolName = part.tool || "";
+              // The interactive "question"/"ask" tool stays in the running state
+              // the whole time opencode waits for the user to choose, and keeps
+              // streaming part updates. Map it to the waiting state so those
+              // updates don't overwrite question.asked's waiting back to working.
+              const tl = toolName.toLowerCase();
+              const interactive = tl === "question" || tl === "ask"
+                || tl.includes("question") || tl.includes("ask_user");
+              if (st === "running" || st === "pending") {
+                if (interactive || pendingWait) {
+                  emit(sid, "PermissionRequest", "waiting");
+                } else {
+                  emit(sid, "PreToolUse", "running_tool", toolName ? { tool_name: toolName } : null);
+                }
+              } else if (st === "completed" || st === "error") {
+                // The gated tool finished → the permission/question wait is over.
+                pendingWait = false;
+                emit(sid, "PostToolUse", "processing", toolName ? { tool_name: toolName } : null);
+              }
+              return;
+            }
+
+            if (part.type === "compaction") {
+              emit(part.sessionID || rootSessionId, "PreCompact", "compacting");
+              return;
+            }
+            return;
+          }
+
+          default:
+            return;
+        }
+      } catch {}
+    },
+  };
+};
+
+export default plugin;
+"#;
+
+/// Install the oc-claw plugin for opencode.
+/// opencode auto-loads any *.js/*.ts file under ~/.config/opencode/plugins/,
+/// so we just drop a plugin file there (no opencode.json edit needed). The
+/// plugin forwards session/tool events to /tmp/ooclaw-opencode.sock (unix) or
+/// TCP 127.0.0.1:19287 (Windows). Skips if ~/.config/opencode/ is missing.
+#[tauri::command]
+async fn install_opencode_hooks() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let opencode_dir = home.join(".config").join("opencode");
+
+    // Skip if ~/.config/opencode/ doesn't exist (opencode not installed)
+    if !opencode_dir.exists() {
+        log::info!("[opencode_hooks] ~/.config/opencode/ not found — skipping");
+        return Ok(());
+    }
+
+    let plugins_dir = opencode_dir.join("plugins");
+    std::fs::create_dir_all(&plugins_dir).map_err(|e| e.to_string())?;
+
+    let plugin_path = plugins_dir.join("ooclaw-opencode.js");
+    std::fs::write(&plugin_path, OPENCODE_PLUGIN_JS).map_err(|e| e.to_string())?;
+    log::info!("[opencode_hooks] installed plugin to {:?}", plugin_path);
+
+    // opencode only reliably loads plugins listed in opencode.json's "plugin"
+    // array (auto-scanning ~/.config/opencode/plugins/ is version-dependent),
+    // so register the file explicitly with the documented file:// scheme. Both
+    // load paths resolve to the same module, and the plugin dedups at module
+    // scope, so there's no double-reporting.
+    let config_path = opencode_dir.join("opencode.json");
+    let plugin_uri = path_to_file_uri(&plugin_path);
+    if let Err(e) = register_opencode_plugin(&config_path, &plugin_uri) {
+        // Don't fail the whole install over a config we couldn't safely edit
+        // (e.g. opencode.jsonc with comments) — the plugins/ file may still be
+        // auto-loaded on newer opencode builds.
+        log::warn!("[opencode_hooks] could not register in opencode.json: {}", e);
+    }
+
+    Ok(())
+}
+
+/// Convert an absolute path to a `file://` URI opencode accepts in its "plugin"
+/// array. Uses forward slashes on every platform (file:///Users/… on macOS,
+/// file:///C:/… on Windows).
+fn path_to_file_uri(path: &std::path::Path) -> String {
+    let p = path.to_string_lossy().replace('\\', "/");
+    if p.starts_with('/') {
+        format!("file://{}", p)
+    } else {
+        format!("file:///{}", p)
+    }
+}
+
+/// Idempotently add `plugin_uri` to the `plugin` array of opencode.json,
+/// creating the file if missing. Returns an error (without clobbering) when the
+/// existing config can't be parsed as strict JSON.
+fn register_opencode_plugin(config_path: &std::path::Path, plugin_uri: &str) -> Result<(), String> {
+    use serde_json::Value;
+    let mut root: Value = if config_path.exists() {
+        let raw = std::fs::read_to_string(config_path).map_err(|e| e.to_string())?;
+        if raw.trim().is_empty() {
+            serde_json::json!({ "$schema": "https://opencode.ai/config.json" })
+        } else {
+            serde_json::from_str(&raw).map_err(|e| format!("parse opencode.json: {}", e))?
+        }
+    } else {
+        serde_json::json!({ "$schema": "https://opencode.ai/config.json" })
+    };
+
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| "opencode.json is not a JSON object".to_string())?;
+    let arr = obj
+        .entry("plugin")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let list = arr
+        .as_array_mut()
+        .ok_or_else(|| "opencode.json 'plugin' is not an array".to_string())?;
+
+    if list.iter().any(|v| v.as_str() == Some(plugin_uri)) {
+        return Ok(()); // already registered
+    }
+    list.push(Value::String(plugin_uri.to_string()));
+
+    let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    std::fs::write(config_path, pretty).map_err(|e| e.to_string())?;
+    log::info!("[opencode_hooks] registered plugin in {:?}", config_path);
     Ok(())
 }
 
@@ -15376,6 +16412,74 @@ fn start_gemini_socket_server(
     }
 }
 
+/// Start the opencode IPC server.
+/// On macOS/Linux: Unix domain socket at /tmp/ooclaw-opencode.sock
+/// On Windows: TCP server on localhost:19287
+fn start_opencode_socket_server(
+    claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    app: tauri::AppHandle,
+) {
+    #[cfg(unix)]
+    {
+        let socket_path = "/tmp/ooclaw-opencode.sock";
+        let _ = std::fs::remove_file(socket_path);
+        let listener = match std::os::unix::net::UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[opencode_socket] bind failed: {}", e); return; }
+        };
+        log::info!("[opencode_socket] listening on {}", socket_path);
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            // opencode handles permission in its own TUI, so events never block.
+                            process_claude_event(&buf, &state, &app, Some("opencode"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:19287") {
+            Ok(l) => l,
+            Err(e) => { log::warn!("[opencode_socket] TCP bind failed: {}", e); return; }
+        };
+        log::info!("[opencode_socket] listening on 127.0.0.1:19287");
+
+        let state = Arc::clone(&claude_state);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut stream) = stream {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let state = Arc::clone(&state);
+                    let app = app2.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        let _ = stream.read_to_string(&mut buf);
+                        if !buf.is_empty() {
+                            process_claude_event(&buf, &state, &app, Some("opencode"));
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
 /// Start the Hermes Agent IPC server.
 /// On macOS/Linux: Unix domain socket at /tmp/ooclaw-hermes.sock
 /// On Windows: TCP server on localhost:19286
@@ -15592,14 +16696,6 @@ fn start_claude_socket_server(
                                     "[claude_tcp] dropping cursor-originated event on cc socket (len={})",
                                     text.len()
                                 );
-                                return;
-                            }
-                            // Codex on Windows is still unsupported; keep the
-                            // drop guard until that integration is ported.
-                            if text.contains("\"source\":\"codex\"")
-                                || text.contains("\"source\": \"codex\"")
-                            {
-                                log::info!("[claude_tcp] dropping codex-originated event on windows (len={})", text.len());
                                 return;
                             }
                             if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app, None) {
@@ -15910,6 +17006,9 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(install_claude_hooks()) {
                 log::warn!("Failed to install Claude hooks on startup: {}", e);
             }
+            if let Err(e) = tauri::async_runtime::block_on(install_codex_hooks()) {
+                log::warn!("Failed to install Codex hooks on startup: {}", e);
+            }
             // Install Cursor hooks + terminal-focus extension on startup (idempotent)
             if let Err(e) = tauri::async_runtime::block_on(install_cursor_hooks()) {
                 log::warn!("Failed to install Cursor hooks on startup: {}", e);
@@ -15917,6 +17016,10 @@ pub fn run() {
             // Install Gemini CLI hooks on startup (idempotent, skips if ~/.gemini/ missing)
             if let Err(e) = tauri::async_runtime::block_on(install_gemini_hooks()) {
                 log::warn!("Failed to install Gemini hooks on startup: {}", e);
+            }
+            // Install opencode plugin on startup (idempotent, skips if ~/.config/opencode/ missing)
+            if let Err(e) = tauri::async_runtime::block_on(install_opencode_hooks()) {
+                log::warn!("Failed to install opencode plugin on startup: {}", e);
             }
             // Hermes plugin is NOT auto-installed on startup because it restarts
             // the gateway. User must manually install via Settings UI.
@@ -16158,6 +17261,14 @@ pub fn run() {
                 start_gemini_socket_server(sessions_arc, app.handle().clone());
             }
 
+            // Start opencode socket server (shares ClaudeState for unified session tracking).
+            // Unix uses /tmp/ooclaw-opencode.sock, Windows uses TCP 127.0.0.1:19287.
+            {
+                let claude_state = app.state::<ClaudeState>();
+                let sessions_arc = Arc::clone(&claude_state.sessions);
+                start_opencode_socket_server(sessions_arc, app.handle().clone());
+            }
+
             // Start Hermes Agent socket server.
             // Unix uses /tmp/ooclaw-hermes.sock, Windows uses TCP 127.0.0.1:19286.
             {
@@ -16235,7 +17346,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, set_outside_click_watch, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, set_outside_click_watch, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_codex_hooks, install_cursor_hooks, install_gemini_hooks, install_opencode_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, spawn_extra_mascot, close_extra_mascot, close_extra_mascots, list_extra_mascots, set_extra_mascots_hidden, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())

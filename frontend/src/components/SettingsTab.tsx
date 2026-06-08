@@ -680,20 +680,21 @@ function HermesSection({ hermesHookStatus, t }: {
   )
 }
 
-export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, geminiSoundEnabled, onToggleGeminiSoundEnabled, hermesSoundEnabled, onToggleHermesSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; geminiSoundEnabled: boolean; onToggleGeminiSoundEnabled: (v: boolean) => void; hermesSoundEnabled: boolean; onToggleHermesSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
+export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, onToggleWaitingSound, soundEnabled, onToggleSoundEnabled, codexSoundEnabled, onToggleCodexSoundEnabled, cursorSoundEnabled, onToggleCursorSoundEnabled, geminiSoundEnabled, onToggleGeminiSoundEnabled, opencodeSoundEnabled, onToggleOpencodeSoundEnabled, hermesSoundEnabled, onToggleHermesSoundEnabled, autoCloseCompletion, onToggleAutoCloseCompletion, autoExpandOnTask, onToggleAutoExpandOnTask, islandBg, onChangeIslandBg, bgPos, onChangeBgPos, panelMaxHeight, onChangePanelMaxHeight, hoverDelay, onChangeHoverDelay, largeMascotScale, onChangeLargeMascotScale, appMode, onChangeAppMode, petSfxEnabled, onTogglePetSfxEnabled, petIdleIntervalMin, onChangePetIdleIntervalMin }: { notifySound: 'default' | 'manbo'; onChangeNotifySound: (v: 'default' | 'manbo') => void; waitingSound: boolean; onToggleWaitingSound: (v: boolean) => void; soundEnabled: boolean; onToggleSoundEnabled: (v: boolean) => void; codexSoundEnabled: boolean; onToggleCodexSoundEnabled: (v: boolean) => void; cursorSoundEnabled: boolean; onToggleCursorSoundEnabled: (v: boolean) => void; geminiSoundEnabled: boolean; onToggleGeminiSoundEnabled: (v: boolean) => void; opencodeSoundEnabled: boolean; onToggleOpencodeSoundEnabled: (v: boolean) => void; hermesSoundEnabled: boolean; onToggleHermesSoundEnabled: (v: boolean) => void; autoCloseCompletion: boolean; onToggleAutoCloseCompletion: (v: boolean) => void; autoExpandOnTask: boolean; onToggleAutoExpandOnTask: (v: boolean) => void; islandBg: string; onChangeIslandBg: (v: string) => void; bgPos: { x: number; y: number }; onChangeBgPos: (v: { x: number; y: number }) => void; panelMaxHeight: number; onChangePanelMaxHeight: (v: number) => void; hoverDelay: number; onChangeHoverDelay: (v: number) => void; largeMascotScale: number; onChangeLargeMascotScale: (v: number) => void; appMode?: 'coding' | 'pet' | null; onChangeAppMode?: (v: 'coding' | 'pet') => void; petSfxEnabled?: boolean; onTogglePetSfxEnabled?: (v: boolean) => void; petIdleIntervalMin?: number; onChangePetIdleIntervalMin?: (v: number) => void }) {
   const { t, i18n } = useTranslation()
-  const isWindowsPlatform = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
   const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
   const [claudeDesktopHookStatus, setClaudeDesktopHookStatus] = useState('')
-  const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
+  const [enableCodex, setEnableCodex] = useState(true)
   const [codexHookStatus, setCodexHookStatus] = useState('')
   const [enableCursor, setEnableCursor] = useState(true)
   const [cursorHookStatus, setCursorHookStatus] = useState('')
   const [enableGemini, setEnableGemini] = useState(true)
   const [geminiHookStatus, setGeminiHookStatus] = useState('')
+  const [enableOpencode, setEnableOpencode] = useState(true)
+  const [opencodeHookStatus, setOpencodeHookStatus] = useState('')
   const [hermesHookStatus] = useState('')
   const [enableAutostart, setEnableAutostart] = useState(false)
   const [autostartStatus, setAutostartStatus] = useState('')
@@ -754,15 +755,13 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       const ccDesktop = await store.get('enable_claude_desktop')
       if (typeof ccDesktop === 'boolean') setEnableClaudeDesktop(ccDesktop)
       const cod = await store.get('enable_codex')
-      if (isWindowsPlatform) {
-        setEnableCodex(false)
-        await store.set('enable_codex', false)
-        await store.save()
-      } else if (typeof cod === 'boolean') setEnableCodex(cod)
+      setEnableCodex(cod !== false)
       const cur = await store.get('enable_cursor')
       if (typeof cur === 'boolean') setEnableCursor(cur)
       const gem = await store.get('enable_gemini')
       if (typeof gem === 'boolean') setEnableGemini(gem)
+      const oc = await store.get('enable_opencode')
+      if (typeof oc === 'boolean') setEnableOpencode(oc)
       // Reconcile autostart toggle with the system: the OS-level registration
       // (registry on Windows, LaunchAgent on macOS) is the source of truth in
       // case the user disabled it externally; mirror that into our store so
@@ -940,7 +939,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     await store.save()
     if (val) {
       try {
-        await invoke('install_claude_hooks')
+        await invoke('install_codex_hooks')
         setCodexHookStatus(t('settings.hookInstalled'))
       } catch (e: any) {
         setCodexHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
@@ -959,6 +958,21 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         setGeminiHookStatus(t('settings.hookInstalled'))
       } catch (e: any) {
         setGeminiHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
+      }
+    }
+  }
+
+  const toggleOpencode = async (val: boolean) => {
+    setEnableOpencode(val)
+    const store = await getStore()
+    await store.set('enable_opencode', val)
+    await store.save()
+    if (val) {
+      try {
+        await invoke('install_opencode_hooks')
+        setOpencodeHookStatus(t('settings.hookInstalled'))
+      } catch (e: any) {
+        setOpencodeHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
       }
     }
   }
@@ -1145,8 +1159,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         </div>
       </section>
 
-      {!isWindowsPlatform && (
-      /* Codex (not yet supported on Windows) */
+      {/* Codex */}
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">{t('settings.codex', 'Codex')}</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -1160,7 +1173,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
           </div>
         </div>
       </section>
-      )}
 
       {/* Cursor */}
       <section className="flex flex-col gap-4">
@@ -1188,6 +1200,21 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               {geminiHookStatus && <span className="text-xs text-white/30 mt-1">{geminiHookStatus}</span>}
             </div>
             <Toggle checked={enableGemini} onChange={toggleGemini} />
+          </div>
+        </div>
+      </section>
+
+      {/* opencode */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-medium text-white">opencode</h2>
+        <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.enableOpencode', 'Enable opencode')}</span>
+              <span className="text-xs text-white/40">{t('settings.enableOpencodeDesc', 'Monitor local opencode sessions via a plugin')}</span>
+              {opencodeHookStatus && <span className="text-xs text-white/30 mt-1">{opencodeHookStatus}</span>}
+            </div>
+            <Toggle checked={enableOpencode} onChange={toggleOpencode} />
           </div>
         </div>
       </section>
@@ -1236,24 +1263,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               step={0.1}
               value={hoverDelay}
               onChange={(e) => onChangeHoverDelay(Number(e.target.value))}
-              className="w-full accent-white/60 h-1"
-            />
-          </div>
-          <div className="p-4 border-b border-white/5">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-white/90">{t('settings.largeMascotScale', 'Mascot Size')}</span>
-                <span className="text-xs text-white/40">{t('settings.largeMascotScaleDesc', 'Scale multiplier for mascot')}</span>
-              </div>
-              <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
-            </div>
-            <input
-              type="range"
-              min={1}
-              max={6}
-              step={0.1}
-              value={largeMascotScale}
-              onChange={(e) => onChangeLargeMascotScale(Number(e.target.value))}
               className="w-full accent-white/60 h-1"
             />
           </div>
@@ -1371,7 +1380,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={soundEnabled} onChange={onToggleSoundEnabled} />
           </div>
-          {!isWindowsPlatform && (
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.codexSound', 'Codex Completion Sound')}</span>
@@ -1379,7 +1387,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             </div>
             <Toggle checked={codexSoundEnabled} onChange={onToggleCodexSoundEnabled} />
           </div>
-          )}
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium text-white/90">{t('settings.cursorSound', 'Cursor Completion Sound')}</span>
@@ -1393,6 +1400,13 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               <span className="text-xs text-white/40">{t('settings.geminiSoundDesc', 'Play sound when Gemini finishes a task')}</span>
             </div>
             <Toggle checked={geminiSoundEnabled} onChange={onToggleGeminiSoundEnabled} />
+          </div>
+          <div className="flex items-center justify-between p-4 border-b border-white/5">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-white/90">{t('settings.opencodeSound', 'opencode Completion Sound')}</span>
+              <span className="text-xs text-white/40">{t('settings.opencodeSoundDesc', 'Play sound when opencode finishes a task')}</span>
+            </div>
+            <Toggle checked={opencodeSoundEnabled} onChange={onToggleOpencodeSoundEnabled} />
           </div>
           <div className="flex items-center justify-between p-4 border-b border-white/5">
             <div className="flex flex-col gap-1">

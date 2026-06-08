@@ -24,6 +24,8 @@
 
   "mini": {
     "geminiDone": "Gemini ha terminado. Haz clic para ver.",
+    "opencodeDone": "opencode ha terminado de trabajar. Haz clic para ver.",
+    "viewInOpencode": "Ir a opencode",
     "geminiDoneNoJump": "Gemini ha terminado.",
     "goToTerminal": "Por favor, apruébalo en la terminal",
     "cursorDone": "Cursor ha terminado. Haz clic para ver.",
@@ -125,8 +127,8 @@
     "panelMaxHeightDesc": "Altura máxima del panel expandido",
     "hoverDelay": "Retardo de activación al pasar",
     "hoverDelayDesc": "Retardo antes de expandir el panel al pasar el cursor",
-    "largeMascotScale": "Tamaño de mascota grande",
-    "largeMascotScaleDesc": "Multiplicador de escala para el modo de mascota grande",
+    "largeMascotScale": "Tamaño de la mascota",
+    "largeMascotScaleDesc": "Multiplicador de escala de la mascota",
     "islandBg": "Fondo de isla",
     "islandBgDesc": "Selecciona o sube una imagen de fondo, arrastra para seleccionar el área de recorte",
 
@@ -152,6 +154,10 @@
     "geminiSound": "Sonido de finalización Gemini",
     "geminiSoundDesc": "Reproducir sonido cuando Gemini termina una tarea",
     "viewInGemini": "Ir a Gemini",
+    "enableOpencode": "Activar opencode",
+    "enableOpencodeDesc": "Monitorea sesiones locales de opencode mediante un plugin",
+    "opencodeSound": "Sonido de finalización de opencode",
+    "opencodeSoundDesc": "Reproducir sonido cuando opencode termina una tarea",
     "enableHermes": "Activar Hermes Agent",
     "enableHermesDesc": "Remoto: probar conexión e instalar plugin. Reinstalar tras agregar nuevos Agents",
     "pluginRestartWarn": "Instalar/actualizar reinicia el Hermes Gateway; las sesiones en curso pueden interrumpirse (~1 min). ¿Continuar?",
@@ -230,6 +236,24 @@
     "pat": "Acariciar",
     "min": "min",
     "go": "IR"
+  },
+
+  "petPicker": {
+    "mascots": "Mascotas",
+    "selectedMascot": "{{name}} seleccionada",
+    "noMascots": "No hay mascotas",
+    "extraMascots": "Varias mascotas",
+    "multiMascotMode": "Modo varias mascotas",
+    "primaryMascot": "Principal",
+    "changeMascotHint": "Elige una mascota para reemplazar esta",
+    "extraMascotsDesc": "Muestra más mascotas",
+    "extraMascotsEmpty": "Pulsa \"Añadir mascota\" para colocar otra en el escritorio. Puedes arrastrarla por separado y hacer clic para abrir el panel.",
+    "extraMascotsPickHint": "Haz clic en una mascota para colocar otra en el escritorio",
+    "demoMode": "Modo demo",
+    "demoModeDesc": "Ventanas independientes, estado compartido",
+    "demoModeEmpty": "Pulsa \"Añadir mascota\" para colocar otra en la pantalla. Puedes arrastrarla por separado.",
+    "demoModePickHint": "Haz clic en una mascota para colocar otra en la pantalla",
+    "addMascot": "Añadir mascota"
   },
 
   "character": {
@@ -344,6 +368,7 @@
     "titleCursor": "Estadísticas de Cursor",
     "titleGemini": "Estadísticas de Gemini CLI",
     "titleHermes": "Estadísticas de Hermes Agent",
+    "titleOpencode": "Estadísticas de opencode",
     "last14Days": "Últimos 14 días",
     "totalTokens": "Tokens totales",
     "sessionsCount": "sesión(es)",

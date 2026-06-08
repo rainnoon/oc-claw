@@ -38,6 +38,8 @@
 
   "mini": {
     "geminiDone": "Gemini has finished working. Click to view.",
+    "opencodeDone": "opencode has finished working. Click to view.",
+    "viewInOpencode": "Go to opencode",
     "geminiDoneNoJump": "Gemini has finished working.",
     "goToTerminal": "Please approve in the terminal",
     "cursorDone": "Cursor has finished working. Click to view.",
@@ -142,8 +144,8 @@
     "panelMaxHeightDesc": "Maximum height of the expanded panel",
     "hoverDelay": "Hover Trigger Delay",
     "hoverDelayDesc": "Delay before expanding panel on hover",
-    "largeMascotScale": "Large Mascot Size",
-    "largeMascotScaleDesc": "Scale multiplier for large mascot mode",
+    "largeMascotScale": "Mascot Size",
+    "largeMascotScaleDesc": "Scale multiplier for the mascot",
     "islandBg": "Island Background",
     "islandBgDesc": "Select or upload a background image, drag to select the crop area",
 
@@ -171,6 +173,10 @@
     "geminiSound": "Gemini Completion Sound",
     "geminiSoundDesc": "Play sound when Gemini finishes a task",
     "viewInGemini": "Go to Gemini",
+    "enableOpencode": "Enable opencode",
+    "enableOpencodeDesc": "Monitor local opencode sessions via a plugin",
+    "opencodeSound": "opencode Completion Sound",
+    "opencodeSoundDesc": "Play sound when opencode finishes a task",
     "enableHermes": "Enable Hermes Agent",
     "enableHermesDesc": "Remote: test connection then install plugin. Reinstall after adding new Agents",
     "pluginRestartWarn": "Installing/updating restarts the Hermes Gateway; running sessions may be interrupted (~1 min). Continue?",
@@ -250,6 +256,24 @@
     "pat": "Pat",
     "min": "min",
     "go": "GO"
+  },
+
+  "petPicker": {
+    "mascots": "Mascots",
+    "selectedMascot": "Selected {{name}}",
+    "noMascots": "No mascots",
+    "extraMascots": "Multi Mascots",
+    "multiMascotMode": "Multi-mascot mode",
+    "primaryMascot": "Main",
+    "changeMascotHint": "Pick a pet to replace this mascot",
+    "extraMascotsDesc": "Show more mascots",
+    "extraMascotsEmpty": "Click \"Add Mascot\" to place another mascot on the desktop. It can be dragged separately, and clicking it opens the panel.",
+    "extraMascotsPickHint": "Click a pet to place another mascot on the desktop",
+    "demoMode": "Demo Mode",
+    "demoModeDesc": "Separate windows, shared status",
+    "demoModeEmpty": "Click \"Add Mascot\" to place another mascot on screen. It can be dragged separately.",
+    "demoModePickHint": "Click a pet to place another mascot on screen",
+    "addMascot": "Add Mascot"
   },
 
   "updateModal": {
@@ -384,6 +408,7 @@
     "titleCursor": "Cursor Stats",
     "titleGemini": "Gemini CLI Stats",
     "titleHermes": "Hermes Agent Stats",
+    "titleOpencode": "opencode Stats",
     "last14Days": "Last 14 Days",
     "totalTokens": "Total Tokens",
     "sessionsCount": "session(s)",

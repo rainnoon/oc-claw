@@ -27,7 +27,7 @@ interface ClaudeStats {
 }
 
 type ChartMetric = 'tokens' | 'messages'
-type ClaudeStatsSource = 'cc' | 'codex' | 'cursor' | 'gemini' | 'hermes'
+type ClaudeStatsSource = 'cc' | 'codex' | 'cursor' | 'gemini' | 'hermes' | 'opencode'
 
 function DailyChart({ stats }: { stats: DailyStats[] }) {
   const { t } = useTranslation()
@@ -273,7 +273,9 @@ export function ClaudeStatsView({ source = 'cc', isActive, channel, sshConn, her
         ? 'claudeStats.titleGemini'
         : source === 'hermes'
           ? 'claudeStats.titleHermes'
-          : 'claudeStats.title'
+          : source === 'opencode'
+            ? 'claudeStats.titleOpencode'
+            : 'claudeStats.title'
 
   if (source === 'cursor') {
     const unsupportedTitle = t('claudeStats.cursorUnsupportedTitle', 'Cursor 暂不支持详细统计')
