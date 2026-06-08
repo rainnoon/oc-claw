@@ -42,6 +42,10 @@ interface PetPickerProps {
   // "AGENT 队列" section above 自定义宠物 with reorder + remove + add UI.
   queueIds?: string[]
   onChangeQueue?: (next: string[]) => Promise<void> | void
+  // Large-mascot (大看板娘) scale slider, shown above the Agent queue. Optional;
+  // the slider only renders when both are provided.
+  largeMascotScale?: number
+  onChangeLargeMascotScale?: (v: number) => void
   // Bracketed around invocations of native pickers (osascript/PowerShell
   // folder dialog) so the parent can suppress the window-blur handler
   // that would otherwise close the settings panel when the dialog steals
@@ -79,6 +83,8 @@ export function PetPicker({
   specialPets,
   queueIds,
   onChangeQueue,
+  largeMascotScale,
+  onChangeLargeMascotScale,
   onNativeDialogStart,
   onNativeDialogEnd,
   petdexUrl,
@@ -352,6 +358,28 @@ export function PetPicker({
           </>
         )}
       </PetSection>
+
+      {showQueue && largeMascotScale !== undefined && onChangeLargeMascotScale && (
+        <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 overflow-hidden">
+          <div className="p-4">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <span className="text-xs font-bold text-white/30 uppercase tracking-widest">
+                {t('settings.largeMascotScale')}
+              </span>
+              <span className="text-sm text-white/60 tabular-nums">{largeMascotScale.toFixed(1)}x</span>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={6}
+              step={0.1}
+              value={largeMascotScale}
+              onChange={(e) => onChangeLargeMascotScale(Number(e.target.value))}
+              className="w-full accent-white/60 h-1"
+            />
+          </div>
+        </div>
+      )}
 
       {showQueue && (
         <div className="bg-[#0f0f0f] rounded-2xl border border-white/5 overflow-hidden">

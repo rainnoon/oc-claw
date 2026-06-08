@@ -6128,6 +6128,15 @@ export default function Mini() {
                           }}
                           queueIds={petQueue}
                           onChangeQueue={savePetQueue}
+                          largeMascotScale={largeMascotScale}
+                          onChangeLargeMascotScale={async (v) => {
+                            const clamped = Math.min(6, Math.max(1, v))
+                            setLargeMascotScale(clamped)
+                            largeMascotScaleRef.current = clamped
+                            const store = await load('settings.json', { defaults: {}, autoSave: true })
+                            await store.set('large_mascot_scale', clamped)
+                            await store.save()
+                          }}
                           onNativeDialogStart={() => {
                             debugToTerminal('dialog', `native picker start (before=${nativeDialogActiveRef.current})`)
                             if (settingsModeRef.current) {
