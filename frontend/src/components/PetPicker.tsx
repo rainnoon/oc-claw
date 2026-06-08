@@ -108,7 +108,16 @@ export function PetPicker({
   const toggleMultiMascot = useCallback(() => {
     setMultiMascot((prev) => {
       const next = !prev
-      void saveMultiMascotMode(next)
+      void (async () => {
+        await saveMultiMascotMode(next)
+        // Turning multi-mascot mode off must leave single-mascot mode with only
+        // the main mascot: close every extra window and clear the persisted
+        // list so nothing lingers or respawns on the next launch.
+        if (!next) {
+          await invoke('close_extra_mascots').catch(() => {})
+          await saveExtraMascots([])
+        }
+      })()
       return next
     })
   }, [])
@@ -301,6 +310,11 @@ export function PetPicker({
             onChangePrimary={(id) => {
               const p = findPet(id)
               if (p) void onSelect(p)
+            }}
+            specialPets={specialPets}
+            onChangePrimarySpecial={(id) => {
+              const sp = specialPets?.find((p) => p.id === id)
+              if (sp) void onSelectSpecial?.(sp)
             }}
           />
         ) : (
@@ -635,6 +649,8 @@ function ExtraMascotControls({
   primaryPet,
   primaryAvatar,
   onChangePrimary,
+  specialPets,
+  onChangePrimarySpecial,
 }: {
   allPets: CodexPet[]
   onNativeDialogStart?: () => void
@@ -652,6 +668,11 @@ function ExtraMascotControls({
   // Change the main mascot's pet (maps to the single-select onSelect in the
   // parent), so the first row is editable without leaving multi-mascot mode.
   onChangePrimary?: (petId: string) => void
+  // Special (non-codex) mascots like the WebM 香企鹅. Offered only when editing
+  // the main row, since extra-mascot windows can't render them. Selecting one
+  // routes through onChangePrimarySpecial (the parent's onSelectSpecial).
+  specialPets?: SpecialPet[]
+  onChangePrimarySpecial?: (id: string) => void
 }) {
   const { t } = useTranslation()
   const [entries, setEntries] = useState<DemoEntry[]>([])
@@ -884,6 +905,29 @@ function ExtraMascotControls({
                 : t('petPicker.changeMascotHint')}
             </div>
             <div className="grid grid-cols-2 gap-2">
+              {picker.mode === 'main' &&
+                (specialPets ?? []).map((sp) => (
+                  <button
+                    data-no-drag
+                    key={sp.id}
+                    disabled={busy}
+                    onClick={() => {
+                      onChangePrimarySpecial?.(sp.id)
+                      setPicker(null)
+                    }}
+                    className="flex items-center gap-2 p-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-transparent hover:border-white/10 transition-colors disabled:opacity-60"
+                  >
+                    <div
+                      className="shrink-0 rounded-md bg-black/40 border border-white/10 overflow-hidden flex items-center justify-center"
+                      style={{ width: 28, height: 28 }}
+                    >
+                      {sp.avatar}
+                    </div>
+                    <span className="text-xs text-white/75 truncate flex-1 text-left">
+                      {sp.displayName}
+                    </span>
+                  </button>
+                ))}
               {allPets.map((pet) => (
                 <button
                   data-no-drag

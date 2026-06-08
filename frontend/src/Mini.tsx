@@ -27,6 +27,7 @@ import {
   loadMiniPetId,
   saveMiniPetId,
   loadExtraMascots,
+  loadMultiMascotMode,
 } from './lib/petStore'
 import {
   DEFAULT_PET_QUEUE_IDS,
@@ -2644,13 +2645,15 @@ export default function Mini() {
   }, [])
 
   // Keep the extra mascot windows in sync with the persisted list. Coding mode
-  // respawns the saved mascots (closing any stale ones first); pet mode tears
-  // them all down since there's no agent state to mirror there.
+  // respawns the saved mascots (closing any stale ones first) ONLY when
+  // multi-mascot mode is on; pet mode (or multi-mascot off) tears them all down
+  // so single-mascot mode never shows leftover extras.
   useEffect(() => {
     if (appMode == null) return
     let cancelled = false
     ;(async () => {
-      if (appMode === 'coding') {
+      const multi = await loadMultiMascotMode()
+      if (appMode === 'coding' && multi) {
         const ids = await loadExtraMascots()
         await invoke('close_extra_mascots').catch(() => {})
         for (const id of ids) {
