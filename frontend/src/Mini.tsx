@@ -554,8 +554,11 @@ export default function Mini() {
   const largePetActionRef = useRef<LargePetAction | null>(null)
   largePetActionRef.current = largePetAction
   const largeActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [panelMaxHeight, setPanelMaxHeight] = useState(300)
-  const panelMaxHeightRef = useRef(300)
+  const defaultPanelMaxHeight = typeof window !== 'undefined'
+    ? Math.max(300, Math.min(500, Math.floor((window.screen?.availHeight || 1080) * 0.35)))
+    : 300
+  const [panelMaxHeight, setPanelMaxHeight] = useState(defaultPanelMaxHeight)
+  const panelMaxHeightRef = useRef(defaultPanelMaxHeight)
   panelMaxHeightRef.current = panelMaxHeight
   const [hoverDelay, setHoverDelay] = useState(0.2)
   const hoverDelayRef = useRef(0.2)
@@ -2114,7 +2117,7 @@ export default function Mini() {
         largeMascotScaleRef.current = clamped
       }
       const pmh = await store.get('panel_max_height')
-      if (typeof pmh === 'number' && pmh >= 200 && pmh <= 500) setPanelMaxHeight(pmh)
+      if (typeof pmh === 'number' && pmh >= 200 && pmh <= 700) setPanelMaxHeight(pmh)
       const hd = await store.get('hover_delay')
       if (typeof hd === 'number' && hd >= 0 && hd <= 2) {
         setHoverDelay(hd)
@@ -4201,7 +4204,14 @@ export default function Mini() {
 
   // Panel dimensions — CSS uses fixed base sizes; on Windows high-DPI screens
   // the panel root applies `zoom: uiScale` so all content scales uniformly.
-  const panelW = viewMode === 'efficiency' ? 575 : 475
+  // On Windows, scale panel width with screen width (40%/35%) so the panel
+  // doesn't feel cramped on high-DPI displays.
+  const screenW = typeof window !== 'undefined' ? (window.screen?.availWidth || 1920) : 1920
+  const panelW = isWindowsPlatform
+    ? (viewMode === 'efficiency'
+      ? Math.max(575, Math.min(875, Math.floor(screenW * 0.4 - 25)))
+      : Math.max(475, Math.min(775, Math.floor(screenW * 0.35 - 25))))
+    : (viewMode === 'efficiency' ? 575 : 475)
   const closedNotchWidth = 44
   const closedNotchHeight = 10
   const openClipPath = 'inset(0 0 0 0 round 0 0 24px 24px)'

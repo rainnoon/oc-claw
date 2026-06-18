@@ -1241,7 +1241,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
             <input
               type="range"
               min={200}
-              max={500}
+              max={700}
               step={10}
               value={panelMaxHeight}
               onChange={(e) => onChangePanelMaxHeight(Number(e.target.value))}

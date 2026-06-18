@@ -3667,7 +3667,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                     }
                     let (final_x, final_y, final_w, final_h) = if expanded {
                         let win_w = if efficiency.unwrap_or(false) { 600.0 } else { 500.0 };
-                        let win_h = max_height.unwrap_or(350.0).max(200.0).min(500.0);
+                        let win_h = max_height.unwrap_or(350.0).max(200.0).min(700.0);
                         let x = sx + (sw - win_w) / 2.0;
                         // Expanded panel hugs the top of the screen (its window
                         // level is high enough to draw over the menu bar). The
@@ -3742,9 +3742,9 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
             let sw = monitor.size().width as f64 / scale;
             let ui = win_ui_scale(&monitor);
             if expanded {
-                let base_w = if efficiency.unwrap_or(false) { 600.0 } else { 500.0 };
-                let win_w = (base_w * ui).round();
-                let win_h = (400.0 * ui).round();
+                let (frac, min_w) = if efficiency.unwrap_or(false) { (0.4, 600.0) } else { (0.35, 500.0) };
+                let win_w = (sw * frac).max(min_w * ui).round();
+                let win_h = (max_height.unwrap_or(350.0).max(200.0).min(700.0) * ui).round();
                 let x = mx + (sw - win_w) / 2.0;
                 // Expanded panel hugs the top of the monitor (no inset) so it
                 // does not get pushed below the IDE chrome.
